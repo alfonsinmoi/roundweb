@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, useEffect } from 'react'
-import { loginEasy, getEntrenador } from '../utils/api'
+import { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react'
+import { loginEasy, getEntrenador, invalidateCache, abortRequests } from '../utils/api'
 
 const AuthContext = createContext(null)
 
@@ -15,13 +15,7 @@ export function AuthProvider({ children }) {
     setLoading(false)
   }, [])
 
-  /**
-   * Calls the real WiemsPro API:
-   * 1. POST account/loginEasy → token
-   * 2. GET api/dispositivos/entrenador → trainer profile
-   * Returns { ok: true } or { ok: false, error: string }
-   */
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     try {
       const { token, manager } = await loginEasy(email, password)
       const entrenador = await getEntrenador(token, manager)
@@ -38,25 +32,31 @@ export function AuthProvider({ children }) {
       }
 
       sessionStorage.setItem('round_session', JSON.stringify(userData))
-      sessionStorage.setItem('round_token', token)
       setUser(userData)
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err.message ?? 'Error de autenticación' }
     }
-  }
+  }, [])
 
-  const logout = () => {
+  const logout = useCallback(() => {
     sessionStorage.removeItem('round_session')
-    sessionStorage.removeItem('round_token')
+    invalidateCache()
+    abortRequests()
     setUser(null)
-  }
+  }, [])
+
+  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   )
 }
 
-export const useAuth = () => useContext(AuthContext)
+export function useAuth() {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider')
+  return ctx
+}

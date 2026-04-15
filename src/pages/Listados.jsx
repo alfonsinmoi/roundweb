@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
-import { BarChart3, Download, Users, Dumbbell, Activity, Loader2 } from 'lucide-react'
+import { Users, Dumbbell, Activity, Loader2 } from 'lucide-react'
 import { Card, Badge, Table, SectionTitle } from '../components/UI'
+import { useToast } from '../components/Toast'
 import { getClientes, getEjercicios, getActividades, getEntrenadores } from '../utils/api'
+import { tipoLabel, tipoColor } from '../utils/colors'
 
 const reports = [
   { id: 'clientes-activos',  label: 'Clientes activos',   icon: Users },
@@ -11,6 +13,7 @@ const reports = [
 ]
 
 export default function Listados() {
+  const toast = useToast()
   const [reporte, setReporte] = useState('clientes-activos')
   const [data, setData] = useState({})
   const [loading, setLoading] = useState(true)
@@ -25,29 +28,31 @@ export default function Listados() {
       .then(([clientes, ejercicios, actividades, entrenadores]) => {
         setData({ clientes, ejercicios, actividades, entrenadores })
       })
-      .catch(() => {})
+      .catch(() => toast.error('Error cargando datos de listados'))
       .finally(() => setLoading(false))
   }, [])
 
   if (loading) return (
-    <div className="flex items-center justify-center py-24">
-      <Loader2 size={24} className="animate-spin" style={{ color: 'var(--green)' }} />
+    <div className="flex items-center justify-center py-24" role="status" aria-label="Cargando listados">
+      <Loader2 size={24} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
     </div>
   )
 
   return (
     <div className="max-w-6xl space-y-5">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" role="group" aria-label="Tipo de listado">
         {reports.map(r => {
           const Icon = r.icon
           return (
             <button key={r.id} onClick={() => setReporte(r.id)}
-                    style={{ padding: 24, borderRadius: 16, cursor: "pointer", textAlign: "left", border: "1px solid var(--line)", transition: "all 0.1s" }}
+                    aria-pressed={reporte === r.id}
                     style={{
+                      padding: 24, borderRadius: 16, cursor: 'pointer', textAlign: 'left',
+                      transition: 'all 0.1s',
                       background: reporte === r.id ? 'rgba(45,212,168,0.1)' : 'var(--bg-2)',
-                      borderColor: reporte === r.id ? 'rgba(45,212,168,0.4)' : 'var(--line)',
+                      border: `1px solid ${reporte === r.id ? 'rgba(45,212,168,0.4)' : 'var(--line)'}`,
                     }}>
-              <Icon size={20} className="mb-2"
+              <Icon size={20} className="mb-2" aria-hidden="true"
                     style={{ color: reporte === r.id ? 'var(--green)' : 'var(--text-3)' }} />
               <p className="text-xs font-medium" style={{ color: reporte === r.id ? 'var(--text-1)' : 'var(--text-2)' }}>
                 {r.label}
@@ -80,6 +85,7 @@ function ListadoClientes({ data, titulo }) {
         <SectionTitle>{titulo} ({data.length})</SectionTitle>
       </div>
       <Table
+        ariaLabel={titulo}
         columns={[
           { key: 'name', label: 'Nombre', render: (v, row) => `${v} ${row.surname}` },
           { key: 'email', label: 'Email' },
@@ -94,9 +100,6 @@ function ListadoClientes({ data, titulo }) {
   )
 }
 
-const tipoLabel = { 0: 'Fuerza', 1: 'Cardio', 2: 'Funcional', 3: 'Resistencia', 4: 'HIIT', 5: 'Flexibilidad' }
-const tipoColor = { 0: 'blue', 1: 'red', 2: 'yellow', 3: 'green', 4: 'red', 5: 'green' }
-
 function ListadoEjercicios({ data }) {
   return (
     <Card style={{ padding: 28 }}>
@@ -104,6 +107,7 @@ function ListadoEjercicios({ data }) {
         <SectionTitle>Ejercicios ({data.length})</SectionTitle>
       </div>
       <Table
+        ariaLabel="Ejercicios"
         columns={[
           { key: 'nombre', label: 'Nombre' },
           { key: 'tipoEj', label: 'Tipo', render: v => <Badge color={tipoColor[v] ?? 'gray'}>{tipoLabel[v] ?? `Tipo ${v}`}</Badge> },
@@ -124,6 +128,7 @@ function ListadoActividades({ data }) {
         <SectionTitle>Actividades ({data.length})</SectionTitle>
       </div>
       <Table
+        ariaLabel="Actividades"
         columns={[
           { key: 'Nombre', label: 'Nombre', render: (v, row) => v ?? row.nombre ?? '—' },
           { key: 'numMaxReservas', label: 'Aforo', render: v => v != null ? v : '—' },

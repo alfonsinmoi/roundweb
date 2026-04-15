@@ -3,7 +3,11 @@ import md5 from 'md5'
 const BASE = '/wiemspro'
 const APP_VERSION = '1.8.39'
 const APP_ID = '1'
+const CACHE_TTL = 5 * 60_000 // 5 minutes
+const CACHE_MAX_ENTRIES = 50
 
+// NOTE: MD5 hashing is a backend API protocol constraint.
+// The server expects MD5-hashed passwords — this is NOT a secure design choice.
 const hashPassword = (pass) => md5(pass).toUpperCase()
 
 const authHeaders = (token, manager) => ({
@@ -15,40 +19,76 @@ const authHeaders = (token, manager) => ({
 })
 
 function getSession() {
-  const token = sessionStorage.getItem('round_token') ?? ''
   try {
     const raw = sessionStorage.getItem('round_session')
     const session = raw ? JSON.parse(raw) : {}
-    return { token, manager: session.manager ?? '', trainerId: session.id }
+    return { token: session.token ?? '', manager: session.manager ?? '', trainerId: session.id }
   } catch {
-    return { token, manager: '', trainerId: null }
+    return { token: '', manager: '', trainerId: null }
   }
 }
 
-export async function apiGet(path) {
+// ── User-friendly error mapping ─────────────────────────────────────────────
+
+function userFriendlyError(rawMessage, fallback = 'Error en la operación') {
+  if (!rawMessage) return fallback
+  const msg = String(rawMessage).toLowerCase()
+  if (msg.includes('unauthorized') || msg.includes('401')) return 'Sesión expirada. Vuelve a iniciar sesión'
+  if (msg.includes('forbidden') || msg.includes('403')) return 'No tienes permisos para esta acción'
+  if (msg.includes('not found') || msg.includes('404')) return 'Recurso no encontrado'
+  if (msg.includes('timeout') || msg.includes('network')) return 'Error de conexión. Comprueba tu red'
+  if (msg.includes('500') || msg.includes('internal')) return 'Error del servidor. Inténtalo más tarde'
+  return fallback
+}
+
+// ── AbortController registry for request cancellation ───────────────────────
+
+const _controllers = new Map()
+
+export function abortRequests(key) {
+  if (key) {
+    _controllers.get(key)?.abort()
+    _controllers.delete(key)
+  } else {
+    _controllers.forEach(c => c.abort())
+    _controllers.clear()
+  }
+}
+
+function getSignal(key) {
+  if (!key) return undefined
+  _controllers.get(key)?.abort()
+  const controller = new AbortController()
+  _controllers.set(key, controller)
+  return controller.signal
+}
+
+export async function apiGet(path, { abortKey } = {}) {
   const { token, manager } = getSession()
+  const signal = getSignal(abortKey)
   const res = await fetch(`${BASE}/${path}`, {
     method: 'GET',
     headers: authHeaders(token, manager),
+    signal,
   })
-  if (!res.ok) throw new Error(`Error ${res.status}`)
+  if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
-  if (data?.mensaje !== 'OK') throw new Error(data?.mensaje ?? 'Error en la respuesta')
+  if (data?.mensaje !== 'OK') throw new Error(userFriendlyError(data?.mensaje, 'Error en la respuesta'))
   return data
 }
 
-// For endpoints that return raw JSON without { mensaje: "OK" } wrapper (e.g. ERP)
-export async function apiGetRaw(path) {
+export async function apiGetRaw(path, { abortKey } = {}) {
   const { token, manager } = getSession()
+  const signal = getSignal(abortKey)
   const res = await fetch(`${BASE}/${path}`, {
     method: 'GET',
     headers: authHeaders(token, manager),
+    signal,
   })
-  if (!res.ok) throw new Error(`Error ${res.status}`)
+  if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   return res.json()
 }
 
-// Remove null/undefined keys from object (like NooFitPro's NullValueHandling.Ignore)
 function stripNulls(obj) {
   if (Array.isArray(obj)) return obj.map(stripNulls)
   if (obj && typeof obj === 'object') {
@@ -59,35 +99,47 @@ function stripNulls(obj) {
   return obj
 }
 
-export async function apiPost(path, body = {}, extraHeaders = {}) {
+export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } = {}) {
   const { token, manager } = getSession()
+  const signal = getSignal(abortKey)
   const res = await fetch(`${BASE}/${path}`, {
     method: 'POST',
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(stripNulls(body)),
+    signal,
   })
-  if (!res.ok) throw new Error(`Error ${res.status}`)
+  if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
-  if (data?.mensaje !== 'OK') throw new Error(data?.mensaje ?? 'Error en la respuesta')
+  if (data?.mensaje !== 'OK') throw new Error(userFriendlyError(data?.mensaje, 'Error en la operación'))
   return data
 }
 
-// ── In-memory cache ──────────────────────────────────────────────────────────
-const _cache = {}
-const CACHE_TTL = 60_000 // 1 minuto
+// ── In-memory cache with Map for O(1) eviction ─────────────────────────────
+const _cache = new Map()
+
+function evictOldest() {
+  if (_cache.size <= CACHE_MAX_ENTRIES) return
+  // Map iterates in insertion order — first key is oldest
+  const oldest = _cache.keys().next().value
+  _cache.delete(oldest)
+}
 
 function cached(key, fetcher) {
-  const entry = _cache[key]
+  const entry = _cache.get(key)
   if (entry && Date.now() - entry.ts < CACHE_TTL) return Promise.resolve(entry.data)
-  return fetcher().then(data => { _cache[key] = { data, ts: Date.now() }; return data })
+  return fetcher().then(data => {
+    _cache.set(key, { data, ts: Date.now() })
+    evictOldest()
+    return data
+  })
 }
 
 export function invalidateCache(key) {
-  if (key) delete _cache[key]
-  else Object.keys(_cache).forEach(k => delete _cache[k])
+  if (key) _cache.delete(key)
+  else _cache.clear()
 }
 
-// Named endpoint helpers
+// ── Named endpoint helpers ──────────────────────────────────────────────────
 
 export const getClientes = () =>
   cached('clientes', () => apiGet('api/dispositivos/getClienteSimple').then(d => d.clientes ?? []))
@@ -202,8 +254,8 @@ export async function getEntrenador(token, manager) {
     method: 'GET',
     headers: authHeaders(token, manager),
   })
-  if (!res.ok) throw new Error(`Error cargando perfil (${res.status})`)
+  if (!res.ok) throw new Error('Error cargando perfil')
   const data = await res.json()
-  if (data?.mensaje !== 'OK') throw new Error(`Perfil no disponible: ${data?.mensaje ?? 'sin respuesta'}`)
+  if (data?.mensaje !== 'OK') throw new Error('Perfil no disponible')
   return data.entrenador
 }

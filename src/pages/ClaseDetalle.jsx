@@ -5,23 +5,16 @@ import {
   UserMinus, Loader2, Search
 } from 'lucide-react'
 import { Card, Badge, Btn, Avatar } from '../components/UI'
+import Modal from '../components/Modal'
+import ConfirmDialog from '../components/ConfirmDialog'
+import { useToast } from '../components/Toast'
+import { formatHora, formatFecha } from '../utils/formatters'
 import { getSalas, getUsuariosBySala, updateUsuarioSala, userJoinSalas, userRemoveSala, getClientes } from '../utils/api'
-
-function formatHora(dateStr) {
-  if (!dateStr) return '—'
-  const d = new Date(dateStr)
-  return isNaN(d) ? '—' : d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatFecha(dateStr) {
-  if (!dateStr) return '—'
-  const d = new Date(dateStr)
-  return isNaN(d) ? '—' : d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
-}
 
 export default function ClaseDetalle() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const toast = useToast()
   const [sala, setSala] = useState(null)
   const [usuarios, setUsuarios] = useState([])
   const [loading, setLoading] = useState(true)
@@ -34,6 +27,9 @@ export default function ClaseDetalle() {
   const [clientSearch, setClientSearch] = useState('')
   const [loadingClientes, setLoadingClientes] = useState(false)
 
+  // Para confirmar eliminación
+  const [confirmRemove, setConfirmRemove] = useState(null)
+
   const fetchData = async () => {
     try {
       const [salasData, usuariosData] = await Promise.all([
@@ -41,11 +37,11 @@ export default function ClaseDetalle() {
         getUsuariosBySala(Number(id)),
       ])
       const found = salasData.find(s => String(s.id) === String(id))
-      if (!found) { setError('Sala no encontrada'); return }
+      if (!found) { setError('No se pudo cargar la información solicitada'); return }
       setSala(found)
       setUsuarios(usuariosData)
-    } catch (err) {
-      setError(err.message)
+    } catch {
+      setError('No se pudo cargar la información. Inténtalo de nuevo más tarde.')
     } finally {
       setLoading(false)
     }
@@ -58,23 +54,25 @@ export default function ClaseDetalle() {
     try {
       await updateUsuarioSala({ ...usuario, verify: !usuario.verify })
       setUsuarios(prev => prev.map(u => u.id === usuario.id ? { ...u, verify: !u.verify } : u))
-    } catch (err) {
-      alert('Error: ' + err.message)
+      toast.success(usuario.verify ? 'Asistencia desmarcada' : 'Asistencia confirmada')
+    } catch {
+      toast.error('No se pudo actualizar la asistencia. Inténtalo de nuevo.')
     } finally {
       setActionLoading('')
     }
   }
 
   const handleEliminarUsuario = async (usuario) => {
-    if (!window.confirm(`¿Eliminar a ${usuario.nameClient} de esta clase?`)) return
     setActionLoading(`remove-${usuario.id}`)
     try {
       await userRemoveSala(usuario.id)
       setUsuarios(prev => prev.filter(u => u.id !== usuario.id))
-    } catch (err) {
-      alert('Error: ' + err.message)
+      toast.success(`${usuario.nameClient} eliminado de la clase`)
+    } catch {
+      toast.error('No se pudo eliminar al usuario. Inténtalo de nuevo.')
     } finally {
       setActionLoading('')
+      setConfirmRemove(null)
     }
   }
 
@@ -86,6 +84,7 @@ export default function ClaseDetalle() {
         const data = await getClientes()
         setClientes(data.filter(c => c.enabled !== false))
       } catch {
+        // silently handled — empty list shown
       } finally {
         setLoadingClientes(false)
       }
@@ -111,11 +110,11 @@ export default function ClaseDetalle() {
       })
       setShowInscribir(false)
       setClientSearch('')
-      // Recargar usuarios
       const updated = await getUsuariosBySala(Number(id))
       setUsuarios(updated)
-    } catch (err) {
-      alert('Error al inscribir: ' + err.message)
+      toast.success(`${cliente.name} ${cliente.surname} inscrito correctamente`)
+    } catch {
+      toast.error('No se pudo inscribir al cliente. Inténtalo de nuevo.')
     } finally {
       setActionLoading('')
     }
@@ -134,14 +133,14 @@ export default function ClaseDetalle() {
 
   if (loading) return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '120px 0' }}>
-      <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} />
+      <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} aria-label="Cargando datos de la clase" />
     </div>
   )
 
   if (error) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '120px 0' }}>
       <p style={{ color: 'var(--red)', fontSize: 14 }}>{error}</p>
-      <Btn variant="secondary" onClick={() => navigate('/clases')}><ArrowLeft size={14} /> Volver</Btn>
+      <Btn variant="secondary" onClick={() => navigate('/clases')}><ArrowLeft size={14} aria-hidden="true" /> Volver</Btn>
     </div>
   )
 
@@ -153,10 +152,9 @@ export default function ClaseDetalle() {
 
       {/* Back */}
       <button onClick={() => navigate('/clases')}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', color: 'var(--text-3)', background: 'none', border: 'none', marginBottom: 28, transition: 'color 0.15s' }}
-              onMouseEnter={e => e.currentTarget.style.color = 'var(--text-1)'}
-              onMouseLeave={e => e.currentTarget.style.color = 'var(--text-3)'}>
-        <ArrowLeft size={15} /> Clases
+              className="nav-link"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', background: 'none', border: 'none', marginBottom: 28 }}>
+        <ArrowLeft size={15} aria-hidden="true" /> Clases
       </button>
 
       {/* Header */}
@@ -168,7 +166,7 @@ export default function ClaseDetalle() {
             </h1>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, fontSize: 13, color: 'var(--text-3)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Clock size={14} /> {formatFecha(sala.dateStart)} · {formatHora(sala.dateStart)}
+                <Clock size={14} aria-hidden="true" /> {formatFecha(sala.dateStart)} · {formatHora(sala.dateStart)}
               </span>
               {sala.nameTrainer && <span>Monitor: {sala.nameTrainer}</span>}
               {sala.durationTraining > 0 && <span>{Math.round(sala.durationTraining / 60)} min</span>}
@@ -205,14 +203,14 @@ export default function ClaseDetalle() {
           Lista de asistencia
         </h2>
         <Btn variant="primary" size="md" onClick={handleOpenInscribir}>
-          <UserPlus size={15} /> Inscribir cliente
+          <UserPlus size={15} aria-hidden="true" /> Inscribir cliente
         </Btn>
       </div>
 
       {/* Usuarios inscritos */}
       {usuarios.length === 0 ? (
         <Card style={{ padding: 64, textAlign: 'center' }}>
-          <Users size={28} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }} />
+          <Users size={28} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }} aria-hidden="true" />
           <p style={{ fontSize: 14, color: 'var(--text-3)' }}>No hay clientes inscritos en esta clase</p>
         </Card>
       ) : (
@@ -229,8 +227,8 @@ export default function ClaseDetalle() {
                   </p>
                   <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                     {u.verify
-                      ? <Badge color="green"><CheckCircle2 size={10} /> Asistió</Badge>
-                      : <Badge color="gray"><XCircle size={10} /> Sin confirmar</Badge>
+                      ? <Badge color="green"><CheckCircle2 size={10} aria-hidden="true" /> Asistió</Badge>
+                      : <Badge color="gray"><XCircle size={10} aria-hidden="true" /> Sin confirmar</Badge>
                     }
                     {u.isPause && <Badge color="yellow">Pausado</Badge>}
                   </div>
@@ -239,41 +237,31 @@ export default function ClaseDetalle() {
                 {/* Actions */}
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                   {/* Toggle asistencia */}
-                  <button
+                  <Btn
+                    variant={u.verify ? 'danger' : 'primary'}
+                    size="sm"
                     onClick={() => handleToggleAsistencia(u)}
                     disabled={actionLoading === `toggle-${u.id}`}
-                    title={u.verify ? 'Desmarcar asistencia' : 'Marcar asistencia'}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 6,
-                      padding: '10px 18px', borderRadius: 12, fontSize: 13, fontWeight: 500,
-                      cursor: 'pointer', border: 'none', transition: 'all 0.1s',
-                      background: u.verify ? 'rgba(248,113,113,0.08)' : 'rgba(45,212,168,0.08)',
-                      color: u.verify ? 'var(--red)' : 'var(--green)',
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.background = u.verify ? 'rgba(248,113,113,0.15)' : 'rgba(45,212,168,0.15)'}
-                    onMouseLeave={e => e.currentTarget.style.background = u.verify ? 'rgba(248,113,113,0.08)' : 'rgba(45,212,168,0.08)'}>
+                  >
                     {actionLoading === `toggle-${u.id}`
-                      ? <Loader2 size={14} className="animate-spin" />
-                      : u.verify ? <XCircle size={14} /> : <CheckCircle2 size={14} />
+                      ? <Loader2 size={14} className="animate-spin" aria-label="Procesando" />
+                      : u.verify ? <XCircle size={14} aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />
                     }
                     {u.verify ? 'Desmarcar' : 'Asistió'}
-                  </button>
+                  </Btn>
 
                   {/* Eliminar */}
-                  <button
-                    onClick={() => handleEliminarUsuario(u)}
+                  <Btn
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setConfirmRemove(u)}
                     disabled={actionLoading === `remove-${u.id}`}
-                    title="Eliminar de la clase"
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      padding: 10, borderRadius: 12, cursor: 'pointer',
-                      background: 'var(--bg-3)', border: '1px solid var(--line)',
-                      color: 'var(--text-3)', transition: 'all 0.1s',
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.color = 'var(--red)'; e.currentTarget.style.borderColor = 'var(--red)' }}
-                    onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-3)'; e.currentTarget.style.borderColor = 'var(--line)' }}>
-                    {actionLoading === `remove-${u.id}` ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />}
-                  </button>
+                  >
+                    {actionLoading === `remove-${u.id}`
+                      ? <Loader2 size={14} className="animate-spin" aria-label="Procesando" />
+                      : <UserMinus size={14} aria-hidden="true" />
+                    }
+                  </Btn>
                 </div>
               </div>
             </Card>
@@ -281,95 +269,94 @@ export default function ClaseDetalle() {
         </div>
       )}
 
+      {/* ConfirmDialog for removing a user */}
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        title="Eliminar de la clase"
+        message={confirmRemove ? `¿Eliminar a ${confirmRemove.nameClient} de esta clase?` : ''}
+        confirmText="Eliminar"
+        variant="danger"
+        onConfirm={() => confirmRemove && handleEliminarUsuario(confirmRemove)}
+        onCancel={() => setConfirmRemove(null)}
+      />
+
       {/* Modal inscribir cliente */}
-      {showInscribir && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 1000,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
-        }}
-        onClick={e => { if (e.target === e.currentTarget) { setShowInscribir(false); setClientSearch('') } }}>
-          <div style={{
-            width: '100%', maxWidth: 520, maxHeight: '80vh',
-            background: 'var(--bg-2)', border: '1px solid var(--line)',
-            borderRadius: 24, overflow: 'hidden', display: 'flex', flexDirection: 'column',
-          }}>
-
-            {/* Modal header */}
-            <div style={{ padding: '28px 28px 0' }}>
-              <h3 style={{ fontFamily: 'Outfit', fontSize: 20, fontWeight: 600, color: 'var(--text-0)', marginBottom: 20 }}>
-                Inscribir cliente
-              </h3>
-              <div style={{ position: 'relative', marginBottom: 20 }}>
-                <Search size={15} style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
-                <input
-                  type="search" placeholder="Buscar cliente..." value={clientSearch}
-                  onChange={e => setClientSearch(e.target.value)} autoFocus
-                  style={{
-                    width: '100%', padding: '14px 18px 14px 48px', borderRadius: 14, fontSize: 14,
-                    background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
-                    outline: 'none', transition: 'border-color 0.15s',
-                  }}
-                  onFocus={e => e.target.style.borderColor = 'var(--green)'}
-                  onBlur={e => e.target.style.borderColor = 'var(--line)'}
-                />
-              </div>
-            </div>
-
-            {/* Client list */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '0 28px 28px' }}>
-              {loadingClientes ? (
-                <div style={{ padding: 40, textAlign: 'center' }}>
-                  <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} />
-                </div>
-              ) : clientesFiltrados.length === 0 ? (
-                <p style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
-                  {clientSearch ? 'No se encontraron clientes' : 'Todos los clientes ya están inscritos'}
-                </p>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {clientesFiltrados.slice(0, 30).map(c => (
-                    <button key={c.id}
-                            onClick={() => handleInscribirCliente(c)}
-                            disabled={actionLoading === `join-${c.id}`}
-                            style={{
-                              display: 'flex', alignItems: 'center', gap: 14,
-                              padding: 14, borderRadius: 14, cursor: 'pointer',
-                              background: 'transparent', border: '1px solid transparent',
-                              textAlign: 'left', width: '100%', transition: 'all 0.1s',
-                            }}
-                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-3)'; e.currentTarget.style.borderColor = 'var(--line)' }}
-                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent' }}>
-                      <Avatar nombre={`${c.name} ${c.surname}`} size={38} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>{c.name} {c.surname}</p>
-                        <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{c.email}</p>
-                      </div>
-                      {actionLoading === `join-${c.id}`
-                        ? <Loader2 size={16} className="animate-spin" style={{ color: 'var(--green)' }} />
-                        : <UserPlus size={16} style={{ color: 'var(--green)', flexShrink: 0 }} />
-                      }
-                    </button>
-                  ))}
-                  {clientesFiltrados.length > 30 && (
-                    <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-3)', padding: 10 }}>
-                      +{clientesFiltrados.length - 30} más — usa el buscador
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Modal footer */}
-            <div style={{ padding: '16px 28px', borderTop: '1px solid var(--line)' }}>
-              <Btn variant="secondary" size="md" onClick={() => { setShowInscribir(false); setClientSearch('') }}
-                   style={{ width: '100%', justifyContent: 'center' }}>
-                Cerrar
-              </Btn>
-            </div>
+      <Modal
+        open={showInscribir}
+        onClose={() => { setShowInscribir(false); setClientSearch('') }}
+        title="Inscribir cliente"
+        maxWidth={520}
+      >
+        {/* Search */}
+        <div style={{ padding: '20px 32px 0' }}>
+          <div style={{ position: 'relative', marginBottom: 20 }}>
+            <Search size={15} style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50)', color: 'var(--text-3)' }} aria-hidden="true" />
+            <input
+              type="search"
+              placeholder="Buscar cliente..."
+              value={clientSearch}
+              onChange={e => setClientSearch(e.target.value)}
+              autoFocus
+              className="form-input"
+              style={{
+                width: '100%', padding: '14px 18px 14px 48px', borderRadius: 14, fontSize: 14,
+                background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+              }}
+            />
           </div>
         </div>
-      )}
+
+        {/* Client list */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 32px 28px', maxHeight: '50vh' }}>
+          {loadingClientes ? (
+            <div style={{ padding: 40, textAlign: 'center' }}>
+              <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} aria-label="Cargando clientes" />
+            </div>
+          ) : clientesFiltrados.length === 0 ? (
+            <p style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
+              {clientSearch ? 'No se encontraron clientes' : 'Todos los clientes ya están inscritos'}
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {clientesFiltrados.slice(0, 30).map(c => (
+                <button key={c.id}
+                        onClick={() => handleInscribirCliente(c)}
+                        disabled={actionLoading === `join-${c.id}`}
+                        className="interactive-row"
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 14,
+                          padding: 14, borderRadius: 14, cursor: 'pointer',
+                          background: 'transparent', border: '1px solid transparent',
+                          textAlign: 'left', width: '100%',
+                        }}>
+                  <Avatar nombre={`${c.name} ${c.surname}`} size={38} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>{c.name} {c.surname}</p>
+                    <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{c.email}</p>
+                  </div>
+                  {actionLoading === `join-${c.id}`
+                    ? <Loader2 size={16} className="animate-spin" style={{ color: 'var(--green)' }} aria-label="Inscribiendo" />
+                    : <UserPlus size={16} style={{ color: 'var(--green)', flexShrink: 0 }} aria-hidden="true" />
+                  }
+                </button>
+              ))}
+              {clientesFiltrados.length > 30 && (
+                <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-3)', padding: 10 }}>
+                  +{clientesFiltrados.length - 30} más — usa el buscador
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Modal footer */}
+        <div style={{ padding: '16px 32px', borderTop: '1px solid var(--line)' }}>
+          <Btn variant="secondary" size="md" onClick={() => { setShowInscribir(false); setClientSearch('') }}
+               style={{ width: '100%', justifyContent: 'center' }}>
+            Cerrar
+          </Btn>
+        </div>
+      </Modal>
     </div>
   )
 }

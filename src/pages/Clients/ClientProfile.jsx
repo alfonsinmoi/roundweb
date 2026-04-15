@@ -8,6 +8,9 @@ import {
   Pencil
 } from 'lucide-react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
+import ConfirmDialog from '../../components/ConfirmDialog'
+import Modal from '../../components/Modal'
+import { useToast } from '../../components/Toast'
 import { getClientes, getTrainingsUser, getPlanesCliente, postClientes, desvinculaCliente as apiDesvincular } from '../../utils/api'
 
 const tabs = [
@@ -41,14 +44,7 @@ function boolLabel(val) {
   return '—'
 }
 
-// Reusable field row — supports edit mode
 function Field({ label, value, children, editing, fieldKey, editForm, setEditForm, type = 'text' }) {
-  const inputStyle = {
-    width: '100%', maxWidth: 240, padding: '8px 12px', borderRadius: 10, fontSize: 13,
-    background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
-    outline: 'none', textAlign: 'right', transition: 'border-color 0.15s',
-  }
-
   if (editing && fieldKey && editForm && setEditForm) {
     return (
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
@@ -58,9 +54,12 @@ function Field({ label, value, children, editing, fieldKey, editForm, setEditFor
             type={type}
             value={editForm[fieldKey] ?? ''}
             onChange={e => setEditForm(f => ({ ...f, [fieldKey]: type === 'number' ? (e.target.value === '' ? null : Number(e.target.value)) : e.target.value }))}
-            style={inputStyle}
-            onFocus={e => e.target.style.borderColor = 'var(--green)'}
-            onBlur={e => e.target.style.borderColor = 'var(--line)'}
+            className="form-input"
+            style={{
+              width: '100%', maxWidth: 240, padding: '8px 12px', borderRadius: 10, fontSize: 13,
+              background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+              textAlign: 'right', transition: 'border-color 0.15s',
+            }}
           />
         </dd>
       </div>
@@ -84,8 +83,9 @@ function BoolField({ label, value, editing, fieldKey, editForm, setEditForm }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
         <dt style={{ fontSize: 13, color: 'var(--text-3)', flexShrink: 0 }}>{label}</dt>
         <dd>
-          <button
+          <button type="button"
             onClick={() => setEditForm(f => ({ ...f, [fieldKey]: !checked }))}
+            aria-pressed={checked}
             style={{
               padding: '6px 16px', borderRadius: 10, fontSize: 12, fontWeight: 500, cursor: 'pointer',
               background: checked ? 'rgba(248,113,113,0.1)' : 'rgba(45,212,168,0.1)',
@@ -103,8 +103,8 @@ function BoolField({ label, value, editing, fieldKey, editForm, setEditForm }) {
   return (
     <Field label={label}>
       {yes
-        ? <Badge color="red"><XCircle size={10} /> Sí</Badge>
-        : <Badge color="green"><CheckCircle2 size={10} /> No</Badge>
+        ? <Badge color="red"><XCircle size={10} aria-hidden="true" /> Sí</Badge>
+        : <Badge color="green"><CheckCircle2 size={10} aria-hidden="true" /> No</Badge>
       }
     </Field>
   )
@@ -113,6 +113,7 @@ function BoolField({ label, value, editing, fieldKey, editForm, setEditForm }) {
 export default function ClientProfile() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const toast = useToast()
   const [tab, setTab] = useState('perfil')
   const [cliente, setCliente] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -120,6 +121,12 @@ export default function ClientProfile() {
   const [actionLoading, setActionLoading] = useState('')
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState(null)
+
+  // Dialog states (replaces window.confirm/prompt/alert)
+  const [confirmArchivar, setConfirmArchivar] = useState(false)
+  const [confirmDesvincular, setConfirmDesvincular] = useState(false)
+  const [motivoModal, setMotivoModal] = useState(false)
+  const [motivo, setMotivo] = useState('')
 
   useEffect(() => {
     getClientes()
@@ -132,43 +139,48 @@ export default function ClientProfile() {
       .finally(() => setLoading(false))
   }, [id])
 
-  const handleArchivar = async () => {
+  const handleArchivar = () => {
     if (!cliente) return
     const isArchived = cliente.enabled === false
-    const msg = isArchived
-      ? '¿Desarchivar este cliente?'
-      : '¿Archivar este cliente?'
-    if (!window.confirm(msg)) return
-
-    let motivo = null
-    if (!isArchived) {
-      motivo = window.prompt('Motivo del archivado (opcional):') ?? ''
+    if (isArchived) {
+      setConfirmArchivar(true)
+    } else {
+      setMotivoModal(true)
+      setMotivo('')
     }
+  }
 
+  const doArchivar = async (motivoArchivado = null) => {
+    const isArchived = cliente.enabled === false
+    setConfirmArchivar(false)
+    setMotivoModal(false)
     setActionLoading('archivar')
     try {
-      const updated = { ...cliente, enabled: isArchived, motivoArchivado: isArchived ? null : motivo }
+      const updated = { ...cliente, enabled: isArchived, motivoArchivado: isArchived ? null : motivoArchivado }
       await postClientes([updated])
       setCliente(updated)
-      alert(isArchived ? 'Cliente desarchivado' : 'Cliente archivado')
-    } catch (err) {
-      alert('Error: ' + err.message)
+      toast.success(isArchived ? 'Cliente desarchivado' : 'Cliente archivado')
+    } catch {
+      toast.error('Error al archivar/desarchivar el cliente')
     } finally {
       setActionLoading('')
     }
   }
 
-  const handleDesvincular = async () => {
+  const handleDesvincular = () => {
     if (!cliente) return
-    if (!window.confirm('¿Desvincular este cliente? Esta acción no se puede deshacer.')) return
+    setConfirmDesvincular(true)
+  }
 
+  const doDesvincular = async () => {
+    setConfirmDesvincular(false)
     setActionLoading('desvincular')
     try {
       await apiDesvincular(cliente.id)
-      alert('Cliente desvinculado')
+      toast.success('Cliente desvinculado')
       navigate('/clientes')
-    } catch (err) {
-      alert('Error: ' + err.message)
+    } catch {
+      toast.error('Error al desvincular el cliente')
     } finally {
       setActionLoading('')
     }
@@ -188,8 +200,9 @@ export default function ClientProfile() {
       setCliente({ ...editForm })
       setEditing(false)
       setEditForm(null)
-    } catch (err) {
-      alert('Error al guardar: ' + err.message)
+      toast.success('Cambios guardados correctamente')
+    } catch {
+      toast.error('Error al guardar los cambios')
     } finally {
       setActionLoading('')
     }
@@ -201,15 +214,15 @@ export default function ClientProfile() {
   }
 
   if (loading) return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '120px 0' }}>
-      <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} />
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '120px 0' }} role="status" aria-label="Cargando perfil">
+      <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
     </div>
   )
 
   if (notFound || !cliente) return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '120px 0' }}>
       <p style={{ color: 'var(--text-3)', fontSize: 15 }}>Cliente no encontrado</p>
-      <Btn onClick={() => navigate('/clientes')} variant="secondary"><ArrowLeft size={14} /> Volver</Btn>
+      <Btn onClick={() => navigate('/clientes')} variant="secondary"><ArrowLeft size={14} aria-hidden="true" /> Volver</Btn>
     </div>
   )
 
@@ -220,10 +233,10 @@ export default function ClientProfile() {
 
       {/* Back */}
       <button onClick={() => navigate('/clientes')}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', color: 'var(--text-3)', background: 'none', border: 'none', marginBottom: 28, transition: 'color 0.15s' }}
-              onMouseEnter={e => e.currentTarget.style.color = 'var(--text-1)'}
-              onMouseLeave={e => e.currentTarget.style.color = 'var(--text-3)'}>
-        <ArrowLeft size={15} /> Clientes
+              aria-label="Volver a la lista de clientes"
+              className="nav-link"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', color: 'var(--text-3)', background: 'none', border: 'none', marginBottom: 28, transition: 'color 0.15s' }}>
+        <ArrowLeft size={15} aria-hidden="true" /> Clientes
       </button>
 
       {/* Hero card */}
@@ -232,7 +245,6 @@ export default function ClientProfile() {
           <Avatar nombre={`${cliente.name} ${cliente.surname}`} size={72} imgUrl={cliente.imgUrl} />
 
           <div style={{ flex: 1, minWidth: 240 }}>
-            {/* Name + badges */}
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8 }}>
               <div>
                 <h1 style={{ fontFamily: 'Outfit', fontSize: 28, fontWeight: 700, color: 'var(--text-0)', lineHeight: 1.2 }}>
@@ -242,13 +254,13 @@ export default function ClientProfile() {
                   )}
                 </h1>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 8, fontSize: 13, color: 'var(--text-3)' }}>
-                  {cliente.email && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Mail size={13} /> {cliente.email}</span>}
-                  {cliente.cellPhone && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Phone size={13} /> {cliente.cellPhone}</span>}
+                  {cliente.email && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Mail size={13} aria-hidden="true" /> {cliente.email}</span>}
+                  {cliente.cellPhone && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Phone size={13} aria-hidden="true" /> {cliente.cellPhone}</span>}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {cliente.enabled === false
-                  ? <Badge color="gray"><Archive size={10} /> Archivado</Badge>
+                  ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Archivado</Badge>
                   : cliente.activo === false
                     ? <Badge color="yellow">Inactivo</Badge>
                     : <Badge color="green">Activo</Badge>
@@ -270,7 +282,7 @@ export default function ClientProfile() {
               ].map(({ icon: Icon, label, value }) => (
                 <div key={label}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                    <Icon size={13} style={{ color: 'var(--text-3)' }} />
+                    <Icon size={13} style={{ color: 'var(--text-3)' }} aria-hidden="true" />
                     <span style={{ fontSize: 12, color: 'var(--text-3)' }}>{label}</span>
                   </div>
                   <p style={{ fontFamily: 'Outfit', fontSize: 22, fontWeight: 700, color: 'var(--text-0)' }}>{value}</p>
@@ -278,7 +290,6 @@ export default function ClientProfile() {
               ))}
             </div>
 
-            {/* Objective */}
             {cliente.objective && (
               <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 14, background: 'var(--bg-3)' }}>
                 <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Objetivo</span>
@@ -286,7 +297,6 @@ export default function ClientProfile() {
               </div>
             )}
           </div>
-
         </div>
 
         {/* Action buttons */}
@@ -294,24 +304,24 @@ export default function ClientProfile() {
           {editing ? (
             <>
               <Btn variant="primary" size="md" onClick={handleSaveEdit} disabled={actionLoading === 'guardar'}>
-                {actionLoading === 'guardar' ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                {actionLoading === 'guardar' ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
                 {' Guardar cambios'}
               </Btn>
               <Btn variant="secondary" size="md" onClick={handleCancelEdit} disabled={actionLoading === 'guardar'}>
-                <XCircle size={15} /> Cancelar
+                <XCircle size={15} aria-hidden="true" /> Cancelar
               </Btn>
             </>
           ) : (
             <>
               <Btn variant="primary" size="md" onClick={handleModificar} disabled={!!actionLoading}>
-                <Pencil size={15} /> Modificar
+                <Pencil size={15} aria-hidden="true" /> Modificar
               </Btn>
               <Btn variant="secondary" size="md" onClick={handleArchivar} disabled={!!actionLoading}>
-                {actionLoading === 'archivar' ? <Loader2 size={15} className="animate-spin" /> : <Archive size={15} />}
+                {actionLoading === 'archivar' ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <Archive size={15} aria-hidden="true" />}
                 {cliente.enabled === false ? ' Desarchivar' : ' Archivar'}
               </Btn>
               <Btn variant="danger" size="md" onClick={handleDesvincular} disabled={!!actionLoading}>
-                {actionLoading === 'desvincular' ? <Loader2 size={15} className="animate-spin" /> : <UserX size={15} />}
+                {actionLoading === 'desvincular' ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <UserX size={15} aria-hidden="true" />}
                 {' Desvincular'}
               </Btn>
             </>
@@ -320,9 +330,9 @@ export default function ClientProfile() {
       </Card>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4, marginBottom: 24 }}>
+      <div role="tablist" aria-label="Secciones del cliente" style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4, marginBottom: 24 }}>
         {tabs.map(({ id: tid, label, icon: Icon }) => (
-          <button key={tid} onClick={() => setTab(tid)}
+          <button key={tid} role="tab" aria-selected={tab === tid} onClick={() => setTab(tid)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
                     padding: '12px 20px', borderRadius: 14,
@@ -333,7 +343,7 @@ export default function ClientProfile() {
                     outline: tab === tid ? '1px solid rgba(45,212,168,0.3)' : '1px solid var(--line)',
                     transition: 'all 0.1s',
                   }}>
-            <Icon size={14} />
+            <Icon size={14} aria-hidden="true" />
             {label}
           </button>
         ))}
@@ -345,25 +355,66 @@ export default function ClientProfile() {
       {tab === 'tests'          && <TabPlaceholder icon={FlaskConical} msg="Tests físicos no disponibles en esta versión de la API" />}
       {tab === 'reservas'       && <TabPlaceholder icon={CalendarCheck} msg="Reservas de clases no disponibles en esta versión de la API" />}
       {tab === 'bonos'          && <TabPlaceholder icon={BookMarked} msg="Reservas de largo plazo no disponibles en esta versión de la API" />}
+
+      {/* Confirm: Desarchivar */}
+      <ConfirmDialog
+        open={confirmArchivar}
+        title="Desarchivar cliente"
+        message={`¿Quieres desarchivar a ${cliente.name} ${cliente.surname}?`}
+        confirmText="Desarchivar"
+        variant="primary"
+        onConfirm={() => doArchivar(null)}
+        onCancel={() => setConfirmArchivar(false)}
+      />
+
+      {/* Confirm: Desvincular */}
+      <ConfirmDialog
+        open={confirmDesvincular}
+        title="Desvincular cliente"
+        message={`¿Desvincular a ${cliente.name} ${cliente.surname}? Esta acción no se puede deshacer.`}
+        confirmText="Desvincular"
+        onConfirm={doDesvincular}
+        onCancel={() => setConfirmDesvincular(false)}
+      />
+
+      {/* Modal: Motivo archivado (replaces window.prompt) */}
+      <Modal open={motivoModal} onClose={() => setMotivoModal(false)} title="Archivar cliente"
+             subtitle={`${cliente.name} ${cliente.surname}`} maxWidth={480}>
+        <div style={{ padding: '28px 32px' }}>
+          <label htmlFor="motivo-archivado" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+            Motivo del archivado (opcional)
+          </label>
+          <input id="motivo-archivado" type="text" value={motivo} onChange={e => setMotivo(e.target.value)}
+                 placeholder="Ej: Baja voluntaria, cambio de centro..."
+                 className="form-input"
+                 style={{
+                   width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                   background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                   transition: 'border-color 0.15s',
+                 }} />
+        </div>
+        <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" size="md" onClick={() => setMotivoModal(false)}>Cancelar</Btn>
+          <Btn variant="primary" size="md" onClick={() => doArchivar(motivo)}>Archivar</Btn>
+        </div>
+      </Modal>
     </div>
   )
 }
 
 // ── Tab Perfil ────────────────────────────────────────────────────────────────
 function TabPerfil({ cliente, editing, editForm, setEditForm }) {
-  // Shorthand to pass edit props
   const ep = { editing, editForm, setEditForm }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 20 }}>
+    <div role="tabpanel" aria-label="Perfil" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(380px, 100%), 1fr))', gap: 20 }}>
 
       {editing && (
         <div style={{ gridColumn: '1 / -1', padding: '14px 20px', borderRadius: 14, background: 'rgba(45,212,168,0.08)', border: '1px solid rgba(45,212,168,0.2)', fontSize: 13, color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Pencil size={14} /> Modo edición — modifica los campos y pulsa "Guardar cambios"
+          <Pencil size={14} aria-hidden="true" /> Modo edición — modifica los campos y pulsa "Guardar cambios"
         </div>
       )}
 
-      {/* Datos personales */}
       <Card style={{ padding: 32 }}>
         <SectionTitle><User size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />Datos personales</SectionTitle>
         <dl>
@@ -390,7 +441,6 @@ function TabPerfil({ cliente, editing, editForm, setEditForm }) {
         </dl>
       </Card>
 
-      {/* Datos físicos y de salud */}
       <Card style={{ padding: 32 }}>
         <SectionTitle><Activity size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />Datos físicos y salud</SectionTitle>
         <dl>
@@ -406,7 +456,6 @@ function TabPerfil({ cliente, editing, editForm, setEditForm }) {
         </dl>
       </Card>
 
-      {/* Entrenamiento */}
       <Card style={{ padding: 32 }}>
         <SectionTitle><Dumbbell size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />Entrenamiento</SectionTitle>
         <dl>
@@ -422,7 +471,6 @@ function TabPerfil({ cliente, editing, editForm, setEditForm }) {
         </dl>
       </Card>
 
-      {/* PAR-Q y médico */}
       <Card style={{ padding: 32 }}>
         <SectionTitle><Shield size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />Cuestionario médico (PAR-Q)</SectionTitle>
         <dl>
@@ -441,7 +489,6 @@ function TabPerfil({ cliente, editing, editForm, setEditForm }) {
         </dl>
       </Card>
 
-      {/* Dispositivo y sensores */}
       <Card style={{ padding: 32 }}>
         <SectionTitle><Smartphone size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />Dispositivo y sensores</SectionTitle>
         <dl>
@@ -452,7 +499,6 @@ function TabPerfil({ cliente, editing, editForm, setEditForm }) {
         </dl>
       </Card>
 
-      {/* Estado y configuración */}
       <Card style={{ padding: 32 }}>
         <SectionTitle><Settings size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />Estado y configuración</SectionTitle>
         <dl>
@@ -488,58 +534,60 @@ function TabEntrenamientos({ clienteId }) {
   }, [clienteId])
 
   if (loading) return <LoadingCard />
-  if (error) return <ErrorCard msg={error} />
+  if (error) return <ErrorCard msg="Error cargando entrenamientos" />
 
   return (
-    <Card style={{ padding: 32 }}>
-      <SectionTitle>Últimos entrenamientos ({trainings.length})</SectionTitle>
-      {trainings.length === 0
-        ? <p style={{ fontSize: 14, padding: '40px 0', textAlign: 'center', color: 'var(--text-3)' }}>Sin entrenamientos registrados</p>
-        : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', fontSize: 14, borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                {['Fecha','Entrenamiento','Duración','FC media','Calorías','Estado'].map(h => (
-                  <th key={h} style={{ padding: '12px 16px 12px 0', textAlign: 'left', fontSize: 12, fontWeight: 500, color: 'var(--text-3)' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {trainings.map((e, i) => (
-                <tr key={e.id ?? i} style={{ borderBottom: i < trainings.length - 1 ? '1px solid var(--line)' : 'none' }}>
-                  <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-1)' }}>
-                    {e.fecha ? new Date(e.fecha).toLocaleDateString('es-ES') : '—'}
-                  </td>
-                  <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-2)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {e.nombre ?? e.idEntrenamiento ?? '—'}
-                  </td>
-                  <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-1)' }}>
-                    {e.duracion != null ? `${e.duracion} min` : '—'}
-                  </td>
-                  <td style={{ padding: '14px 16px 14px 0' }}>
-                    {e.fcMedia != null
-                      ? <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#EF4444' }}><Heart size={12} />{e.fcMedia}</span>
-                      : '—'}
-                  </td>
-                  <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-2)' }}>
-                    {e.calorias != null ? `${e.calorias} kcal` : '—'}
-                  </td>
-                  <td style={{ padding: '14px 0' }}>
-                    {e.completado != null
-                      ? e.completado
-                        ? <Badge color="green">Completado</Badge>
-                        : <Badge color="red">Interrumpido</Badge>
-                      : <Badge color="gray">—</Badge>
-                    }
-                  </td>
+    <div role="tabpanel" aria-label="Entrenamientos">
+      <Card style={{ padding: 32 }}>
+        <SectionTitle>Últimos entrenamientos ({trainings.length})</SectionTitle>
+        {trainings.length === 0
+          ? <p style={{ fontSize: 14, padding: '40px 0', textAlign: 'center', color: 'var(--text-3)' }}>Sin entrenamientos registrados</p>
+          : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', fontSize: 14, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                  {['Fecha','Entrenamiento','Duración','FC media','Calorías','Estado'].map(h => (
+                    <th key={h} scope="col" style={{ padding: '12px 16px 12px 0', textAlign: 'left', fontSize: 12, fontWeight: 500, color: 'var(--text-3)' }}>{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Card>
+              </thead>
+              <tbody>
+                {trainings.map((e, i) => (
+                  <tr key={e.id ?? i} style={{ borderBottom: i < trainings.length - 1 ? '1px solid var(--line)' : 'none' }}>
+                    <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-1)' }}>
+                      {e.fecha ? new Date(e.fecha).toLocaleDateString('es-ES') : '—'}
+                    </td>
+                    <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-2)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {e.nombre ?? e.idEntrenamiento ?? '—'}
+                    </td>
+                    <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-1)' }}>
+                      {e.duracion != null ? `${e.duracion} min` : '—'}
+                    </td>
+                    <td style={{ padding: '14px 16px 14px 0' }}>
+                      {e.fcMedia != null
+                        ? <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--red)' }}><Heart size={12} aria-hidden="true" />{e.fcMedia}</span>
+                        : '—'}
+                    </td>
+                    <td style={{ padding: '14px 16px 14px 0', color: 'var(--text-2)' }}>
+                      {e.calorias != null ? `${e.calorias} kcal` : '—'}
+                    </td>
+                    <td style={{ padding: '14px 0' }}>
+                      {e.completado != null
+                        ? e.completado
+                          ? <Badge color="green">Completado</Badge>
+                          : <Badge color="red">Interrumpido</Badge>
+                        : <Badge color="gray">—</Badge>
+                      }
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
   )
 }
 
@@ -557,16 +605,18 @@ function TabPlanes({ clienteId }) {
   }, [clienteId])
 
   if (loading) return <LoadingCard />
-  if (error) return <ErrorCard msg={error} />
+  if (error) return <ErrorCard msg="Error cargando planes" />
 
   if (planes.length === 0) return (
-    <Card style={{ padding: 48, textAlign: 'center' }}>
-      <p style={{ color: 'var(--text-3)', fontSize: 14 }}>Sin planes asignados</p>
-    </Card>
+    <div role="tabpanel" aria-label="Planes asignados">
+      <Card style={{ padding: 48, textAlign: 'center' }}>
+        <p style={{ color: 'var(--text-3)', fontSize: 14 }}>Sin planes asignados</p>
+      </Card>
+    </div>
   )
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div role="tabpanel" aria-label="Planes asignados" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {planes.map((p, i) => {
         const pct = p.sesionesTotal > 0
           ? Math.round((p.sesionesCompletadas / p.sesionesTotal) * 100)
@@ -610,11 +660,10 @@ function TabPlanes({ clienteId }) {
   )
 }
 
-// ── Placeholder ───────────────────────────────────────────────────────────────
 function TabPlaceholder({ icon: Icon, msg }) {
   return (
     <Card style={{ padding: '64px 32px', textAlign: 'center' }}>
-      <Icon size={28} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }} />
+      <Icon size={28} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }} aria-hidden="true" />
       <p style={{ fontSize: 14, color: 'var(--text-3)' }}>{msg}</p>
     </Card>
   )
@@ -622,8 +671,8 @@ function TabPlaceholder({ icon: Icon, msg }) {
 
 function LoadingCard() {
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '80px 0' }}>
-      <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} />
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '80px 0' }} role="status" aria-label="Cargando datos">
+      <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
     </div>
   )
 }
@@ -631,7 +680,7 @@ function LoadingCard() {
 function ErrorCard({ msg }) {
   return (
     <Card style={{ padding: 48, textAlign: 'center' }}>
-      <p style={{ fontSize: 14, color: 'var(--red)' }}>Error: {msg}</p>
+      <p role="alert" style={{ fontSize: 14, color: 'var(--red)' }}>{msg}</p>
     </Card>
   )
 }

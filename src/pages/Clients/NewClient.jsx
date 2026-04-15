@@ -51,7 +51,7 @@ export default function NewClient() {
       setSaved(true)
       setTimeout(() => navigate('/clientes'), 1500)
     } catch (err) {
-      setError('Error al crear cliente: ' + err.message)
+      setError('Error al crear el cliente. Inténtalo de nuevo')
     } finally {
       setSaving(false)
     }

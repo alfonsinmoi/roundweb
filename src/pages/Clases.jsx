@@ -2,85 +2,84 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Loader2, Users, Clock, Plus, Pencil, Trash2 } from 'lucide-react'
 import { Card, Badge, Btn } from '../components/UI'
+import ConfirmDialog from '../components/ConfirmDialog'
+import Modal from '../components/Modal'
+import { useToast } from '../components/Toast'
 import { getSalas, saveSala, removeSala } from '../utils/api'
+import { colorFromName } from '../utils/colors'
+import { formatHora, formatDuration } from '../utils/formatters'
 
 const diasSemana = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
-function colorFromName(name = '') {
-  const colors = ['var(--green)','#4361EE','#22C55E','#F59E0B','#A855F7','#06B6D4','#EC4899']
-  let hash = 0
-  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) & 0xffffffff
-  return colors[Math.abs(hash) % colors.length]
-}
-
-function formatHora(dateStr) {
-  if (!dateStr) return '—'
-  const d = new Date(dateStr)
-  if (isNaN(d)) return '—'
-  return d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return ''
-  const min = Math.round(seconds / 60)
-  return `${min} min`
-}
-
 export default function Clases() {
   const navigate = useNavigate()
+  const toast = useToast()
   const [semanaOffset, setSemanaOffset] = useState(0)
   const [salas, setSalas] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [vista, setVista] = useState('semana')
 
+  // Modal/dialog states (replaces window.prompt/confirm/alert)
+  const [formModal, setFormModal] = useState({ open: false, sala: null })
+  const [formData, setFormData] = useState({ nombre: '', aforo: '10', idEspejo: '' })
+  const [confirmBaja, setConfirmBaja] = useState({ open: false, sala: null })
+
   const fetchSalas = () => {
     setLoading(true)
     getSalas()
       .then(data => setSalas(data.filter(s => s.enabled)))
-      .catch(err => setError(err.message))
+      .catch(() => setError('Error cargando clases'))
       .finally(() => setLoading(false))
   }
 
   useEffect(() => { fetchSalas() }, [])
 
-  const handleAlta = async () => {
-    const nombre = window.prompt('Nombre de la nueva clase:')
-    if (!nombre?.trim()) return
-    const aforo = window.prompt('Aforo máximo:', '10')
-    const idEspejo = window.prompt('ID Espejo (opcional):')
+  const openAlta = () => {
+    setFormData({ nombre: '', aforo: '10', idEspejo: '' })
+    setFormModal({ open: true, sala: null })
+  }
+
+  const openModificar = (sala) => {
+    setFormData({
+      nombre: sala.name || sala.nameTraining || '',
+      aforo: String(sala.aforo || ''),
+      idEspejo: String(sala.idEspejo ?? ''),
+    })
+    setFormModal({ open: true, sala })
+  }
+
+  const handleSaveForm = async () => {
+    const { sala } = formModal
+    const { nombre, aforo, idEspejo } = formData
+    if (!nombre.trim()) { toast.warning('El nombre es obligatorio'); return }
+
     try {
-      await saveSala({ name: nombre.trim(), aforo: Number(aforo) || 10, enabled: true, idEspejo: idEspejo ? Number(idEspejo) : undefined })
-      alert('Clase creada correctamente')
+      if (sala) {
+        await saveSala({ ...sala, name: nombre.trim(), aforo: Number(aforo) || sala.aforo, idEspejo: idEspejo ? Number(idEspejo) : sala.idEspejo })
+        toast.success('Clase modificada')
+      } else {
+        await saveSala({ name: nombre.trim(), aforo: Number(aforo) || 10, enabled: true, idEspejo: idEspejo ? Number(idEspejo) : undefined })
+        toast.success('Clase creada correctamente')
+      }
+      setFormModal({ open: false, sala: null })
       fetchSalas()
-    } catch (err) {
-      alert('Error al crear: ' + err.message)
+    } catch {
+      toast.error(sala ? 'Error al modificar la clase' : 'Error al crear la clase')
     }
   }
 
-  const handleModificar = async (sala) => {
-    const nuevoNombre = window.prompt('Nombre de la clase:', sala.name || sala.nameTraining || '')
-    if (nuevoNombre === null) return
-    const nuevoAforo = window.prompt('Aforo:', String(sala.aforo || ''))
-    const idEspejo = window.prompt('ID Espejo:', String(sala.idEspejo ?? ''))
-    try {
-      await saveSala({ ...sala, name: nuevoNombre, aforo: Number(nuevoAforo) || sala.aforo, idEspejo: idEspejo ? Number(idEspejo) : sala.idEspejo })
-      alert('Clase modificada')
-      fetchSalas()
-    } catch (err) {
-      alert('Error al modificar: ' + err.message)
-    }
-  }
-
-  const handleBaja = async (sala) => {
-    if (!window.confirm(`¿Dar de baja la clase "${sala.name || sala.nameTraining}"?`)) return
+  const handleBaja = async () => {
+    const { sala } = confirmBaja
+    if (!sala) return
     try {
       await removeSala(sala.id)
       setSalas(prev => prev.filter(s => s.id !== sala.id))
-      alert('Clase eliminada')
-    } catch (err) {
-      alert('Error al eliminar: ' + err.message)
+      toast.success('Clase eliminada')
+    } catch {
+      toast.error('Error al eliminar la clase')
     }
+    setConfirmBaja({ open: false, sala: null })
   }
 
   const hoy = new Date()
@@ -164,7 +163,7 @@ export default function Clases() {
               </button>
             ))}
           </div>
-          <Btn variant="primary" size="md" onClick={handleAlta}><Plus size={15} /> Alta clase</Btn>
+          <Btn variant="primary" size="md" onClick={openAlta}><Plus size={15} aria-hidden="true" /> Alta clase</Btn>
         </div>
       </div>
 
@@ -281,13 +280,13 @@ export default function Clases() {
 
                   {/* Action buttons */}
                   <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                    <button title="Modificar" onClick={() => handleModificar(s)}
+                    <button title="Modificar" onClick={() => openModificar(s)}
                             style={{ padding: 10, borderRadius: 10, cursor: 'pointer', background: 'var(--bg-3)', border: '1px solid var(--line)', color: 'var(--text-2)', transition: 'all 0.1s' }}
                             onMouseEnter={e => { e.currentTarget.style.color = 'var(--green)'; e.currentTarget.style.borderColor = 'var(--green)' }}
                             onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-2)'; e.currentTarget.style.borderColor = 'var(--line)' }}>
                       <Pencil size={15} />
                     </button>
-                    <button title="Dar de baja" onClick={() => handleBaja(s)}
+                    <button title="Dar de baja" onClick={() => setConfirmBaja({ open: true, sala: s })}
                             style={{ padding: 10, borderRadius: 10, cursor: 'pointer', background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.16)', color: 'var(--red)', transition: 'all 0.1s' }}
                             onMouseEnter={e => e.currentTarget.style.background = 'rgba(248,113,113,0.12)'}
                             onMouseLeave={e => e.currentTarget.style.background = 'rgba(248,113,113,0.06)'}>
@@ -300,6 +299,47 @@ export default function Clases() {
           })}
         </div>
       )}
+
+      {/* Modal: Alta / Modificar clase (replaces window.prompt) */}
+      <Modal open={formModal.open} onClose={() => setFormModal({ open: false, sala: null })}
+             title={formModal.sala ? 'Modificar clase' : 'Nueva clase'}
+             subtitle={formModal.sala ? (formModal.sala.name || formModal.sala.nameTraining) : undefined}
+             maxWidth={480}>
+        <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div>
+            <label htmlFor="clase-nombre" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>Nombre de la clase *</label>
+            <input id="clase-nombre" type="text" value={formData.nombre} onChange={e => setFormData(f => ({ ...f, nombre: e.target.value }))}
+                   className="form-input"
+                   style={{ width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)', transition: 'border-color 0.15s' }} />
+          </div>
+          <div>
+            <label htmlFor="clase-aforo" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>Aforo máximo</label>
+            <input id="clase-aforo" type="number" min="1" value={formData.aforo} onChange={e => setFormData(f => ({ ...f, aforo: e.target.value }))}
+                   className="form-input"
+                   style={{ width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)', transition: 'border-color 0.15s' }} />
+          </div>
+          <div>
+            <label htmlFor="clase-espejo" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>ID Espejo (opcional)</label>
+            <input id="clase-espejo" type="text" value={formData.idEspejo} onChange={e => setFormData(f => ({ ...f, idEspejo: e.target.value }))}
+                   className="form-input"
+                   style={{ width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14, background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)', transition: 'border-color 0.15s' }} />
+          </div>
+        </div>
+        <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" size="md" onClick={() => setFormModal({ open: false, sala: null })}>Cancelar</Btn>
+          <Btn variant="primary" size="md" onClick={handleSaveForm}>{formModal.sala ? 'Guardar' : 'Crear clase'}</Btn>
+        </div>
+      </Modal>
+
+      {/* Confirm: Dar de baja */}
+      <ConfirmDialog
+        open={confirmBaja.open}
+        title="Dar de baja clase"
+        message={`¿Dar de baja la clase "${confirmBaja.sala?.name || confirmBaja.sala?.nameTraining || ''}"?`}
+        confirmText="Dar de baja"
+        onConfirm={handleBaja}
+        onCancel={() => setConfirmBaja({ open: false, sala: null })}
+      />
     </div>
   )
 }

@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 
+const MAX_PASSWORD_LENGTH = 128
+
 export default function Login() {
   const { login } = useAuth()
   const [email, setEmail] = useState('')
@@ -14,6 +16,8 @@ export default function Login() {
     e.preventDefault()
     setError('')
     if (!email.trim() || !password.trim()) { setError('Introduce email y contraseña'); return }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError('Introduce un email válido'); return }
+    if (password.length > MAX_PASSWORD_LENGTH) { setError(`La contraseña no puede tener más de ${MAX_PASSWORD_LENGTH} caracteres`); return }
     setLoading(true)
     const result = await login(email.trim(), password)
     setLoading(false)
@@ -26,7 +30,7 @@ export default function Login() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: '#060608',
+      background: 'var(--bg-0)',
       padding: '40px 24px',
     }}>
 
@@ -41,10 +45,10 @@ export default function Login() {
             width: 72,
             height: 72,
             borderRadius: 20,
-            background: 'linear-gradient(135deg, #2DD4A8, #1A9A7A)',
+            background: 'var(--gradient-primary)',
             marginBottom: 32,
           }}>
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="#fff" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="#fff" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
             </svg>
           </div>
@@ -53,7 +57,7 @@ export default function Login() {
             fontFamily: 'Outfit, sans-serif',
             fontSize: 44,
             fontWeight: 700,
-            color: '#F4F4F6',
+            color: 'var(--text-0)',
             letterSpacing: '-0.02em',
             marginBottom: 12,
           }}>
@@ -62,7 +66,7 @@ export default function Login() {
 
           <p style={{
             fontSize: 16,
-            color: '#6B6B78',
+            color: 'var(--text-2)',
             lineHeight: 1.6,
           }}>
             Gestión integral para tu centro fitness
@@ -71,8 +75,8 @@ export default function Login() {
 
         {/* Form card */}
         <div style={{
-          background: '#0E0F13',
-          border: '1px solid rgba(255,255,255,0.06)',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line)',
           borderRadius: 24,
           padding: '48px 40px',
         }}>
@@ -81,69 +85,68 @@ export default function Login() {
 
             {/* Email */}
             <div style={{ marginBottom: 28 }}>
-              <label style={{
+              <label htmlFor="login-email" style={{
                 display: 'block',
                 fontSize: 14,
                 fontWeight: 500,
-                color: '#9090A0',
+                color: 'var(--text-2)',
                 marginBottom: 12,
               }}>
                 Email
               </label>
-              <input type="email" autoComplete="email" value={email}
+              <input id="login-email" type="email" autoComplete="email" value={email}
                      onChange={e => setEmail(e.target.value)}
                      placeholder="tu@email.com"
+                     maxLength={254}
+                     className="form-input"
                      style={{
                        width: '100%',
                        padding: '16px 20px',
                        borderRadius: 16,
                        fontSize: 16,
-                       background: '#16171C',
-                       border: '1px solid rgba(255,255,255,0.08)',
-                       color: '#F4F4F6',
-                       outline: 'none',
+                       background: 'var(--bg-2)',
+                       border: '1px solid var(--line)',
+                       color: 'var(--text-0)',
                        transition: 'border-color 0.2s',
-                     }}
-                     onFocus={e => e.target.style.borderColor = '#2DD4A8'}
-                     onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'} />
+                     }} />
             </div>
 
             {/* Password */}
             <div style={{ marginBottom: 36 }}>
-              <label style={{
+              <label htmlFor="login-password" style={{
                 display: 'block',
                 fontSize: 14,
                 fontWeight: 500,
-                color: '#9090A0',
+                color: 'var(--text-2)',
                 marginBottom: 12,
               }}>
                 Contraseña
               </label>
               <div style={{ position: 'relative' }}>
-                <input type={showPass ? 'text' : 'password'} autoComplete="current-password"
+                <input id="login-password" type={showPass ? 'text' : 'password'} autoComplete="current-password"
                        value={password} onChange={e => setPassword(e.target.value)}
                        placeholder="Tu contraseña"
+                       maxLength={MAX_PASSWORD_LENGTH}
+                       className="form-input"
                        style={{
                          width: '100%',
                          padding: '16px 56px 16px 20px',
                          borderRadius: 16,
                          fontSize: 16,
-                         background: '#16171C',
-                         border: '1px solid rgba(255,255,255,0.08)',
-                         color: '#F4F4F6',
-                         outline: 'none',
+                         background: 'var(--bg-2)',
+                         border: '1px solid var(--line)',
+                         color: 'var(--text-0)',
                          transition: 'border-color 0.2s',
-                       }}
-                       onFocus={e => e.target.style.borderColor = '#2DD4A8'}
-                       onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.08)'} />
+                       }} />
                 <button type="button" onClick={() => setShowPass(v => !v)}
+                        aria-label={showPass ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                         style={{
                           position: 'absolute',
                           right: 20,
                           top: '50%',
                           transform: 'translateY(-50%)',
                           cursor: 'pointer',
-                          color: '#555',
+                          color: 'var(--text-3)',
                           background: 'none',
                           border: 'none',
                           padding: 4,
@@ -155,12 +158,12 @@ export default function Login() {
 
             {/* Error */}
             {error && (
-              <div style={{
+              <div role="alert" style={{
                 marginBottom: 28,
                 padding: '16px 20px',
                 borderRadius: 16,
                 fontSize: 14,
-                color: '#F87171',
+                color: 'var(--red)',
                 background: 'rgba(248,113,133,0.06)',
                 border: '1px solid rgba(248,113,133,0.12)',
               }}>
@@ -170,6 +173,7 @@ export default function Login() {
 
             {/* Submit */}
             <button type="submit" disabled={loading}
+                    className="btn"
                     style={{
                       width: '100%',
                       padding: '18px 24px',
@@ -182,15 +186,13 @@ export default function Login() {
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: 10,
-                      background: 'linear-gradient(135deg, #2DD4A8, #1A9A7A)',
+                      background: 'var(--gradient-primary)',
                       color: '#fff',
                       border: 'none',
                       opacity: loading ? 0.6 : 1,
                       transition: 'opacity 0.2s, transform 0.2s',
-                    }}
-                    onMouseEnter={e => { if (!loading) e.currentTarget.style.transform = 'translateY(-2px)' }}
-                    onMouseLeave={e => e.currentTarget.style.transform = 'none'}>
-              {loading ? <><Loader2 size={20} className="animate-spin" /> Accediendo...</> : 'Iniciar sesión'}
+                    }}>
+              {loading ? <><Loader2 size={20} className="animate-spin" aria-hidden="true" /> Accediendo...</> : 'Iniciar sesión'}
             </button>
 
           </form>
@@ -199,7 +201,7 @@ export default function Login() {
         <p style={{
           textAlign: 'center',
           fontSize: 13,
-          color: '#3E3E48',
+          color: 'var(--text-3)',
           marginTop: 40,
         }}>
           Usa tus credenciales de WiemsPro

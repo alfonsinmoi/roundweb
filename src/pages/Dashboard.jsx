@@ -3,12 +3,7 @@ import { Users, CalendarDays, TrendingUp, Activity, Loader2, ArrowUpRight, Clock
 import { Card, StatCard, Avatar, ProgressBar } from '../components/UI'
 import { useNavigate } from 'react-router-dom'
 import { getClientes, getSalas } from '../utils/api'
-
-function hueFromName(name = '') {
-  const c = ['#2DD4A8','#5B9CF6','#A78BFA','#FBBF24','#FB923C','#FB7185']
-  let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) & 0xffffffff
-  return c[Math.abs(h) % c.length]
-}
+import { colorFromName } from '../utils/colors'
 
 export default function Dashboard() {
   const nav = useNavigate()
@@ -75,7 +70,7 @@ export default function Dashboard() {
           ) : (
             <div className="space-y-3">
               {salasHoy.map(s => {
-                const color = hueFromName(s.nameTraining || s.name)
+                const color = colorFromName(s.nameTraining || s.name)
                 const inscritos = s.users?.length ?? 0
                 const hora = s.dateStart ? new Date(s.dateStart).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : ''
                 return (
