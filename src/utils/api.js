@@ -37,6 +37,17 @@ export async function apiGet(path) {
   return data
 }
 
+// For endpoints that return raw JSON without { mensaje: "OK" } wrapper (e.g. ERP)
+export async function apiGetRaw(path) {
+  const { token, manager } = getSession()
+  const res = await fetch(`${BASE}/${path}`, {
+    method: 'GET',
+    headers: authHeaders(token, manager),
+  })
+  if (!res.ok) throw new Error(`Error ${res.status}`)
+  return res.json()
+}
+
 // Remove null/undefined keys from object (like NooFitPro's NullValueHandling.Ignore)
 function stripNulls(obj) {
   if (Array.isArray(obj)) return obj.map(stripNulls)
@@ -61,22 +72,37 @@ export async function apiPost(path, body = {}, extraHeaders = {}) {
   return data
 }
 
+// ── In-memory cache ──────────────────────────────────────────────────────────
+const _cache = {}
+const CACHE_TTL = 60_000 // 1 minuto
+
+function cached(key, fetcher) {
+  const entry = _cache[key]
+  if (entry && Date.now() - entry.ts < CACHE_TTL) return Promise.resolve(entry.data)
+  return fetcher().then(data => { _cache[key] = { data, ts: Date.now() }; return data })
+}
+
+export function invalidateCache(key) {
+  if (key) delete _cache[key]
+  else Object.keys(_cache).forEach(k => delete _cache[k])
+}
+
 // Named endpoint helpers
 
 export const getClientes = () =>
-  apiGet('api/dispositivos/getClienteSimple').then(d => d.clientes ?? [])
+  cached('clientes', () => apiGet('api/dispositivos/getClienteSimple').then(d => d.clientes ?? []))
 
 export const getEntrenadores = () =>
-  apiGet('api/dispositivos/getTrainersByManager').then(d => d.entrenadores ?? [])
+  cached('entrenadores', () => apiGet('api/dispositivos/getTrainersByManager').then(d => d.entrenadores ?? []))
 
 export const getEjercicios = () =>
-  apiGet('api/dispositivos/getEjercicios').then(d => d.ejercicios ?? [])
+  cached('ejercicios', () => apiGet('api/dispositivos/getEjercicios').then(d => d.ejercicios ?? []))
 
 export const getPlanesEntrenamiento = () =>
-  apiGet('api/dispositivos/getPlanesEntrenamientosEasy').then(d => d.planesEntrenamiento ?? [])
+  cached('planes', () => apiGet('api/dispositivos/getPlanesEntrenamientosEasy').then(d => d.planesEntrenamiento ?? []))
 
 export const getActividades = () =>
-  apiGet('api/dispositivos/getActividades').then(d => d.actividades ?? [])
+  cached('actividades', () => apiGet('api/dispositivos/getActividades').then(d => d.actividades ?? []))
 
 export const getCuotas = () =>
   apiGet('api/dispositivos/getCuotas').then(d => d.cuotas ?? [])
@@ -95,19 +121,20 @@ export const getSensores = () => {
   }
 }
 
-export const getSalas = () => {
-  try {
-    const raw = sessionStorage.getItem('round_session')
-    const session = raw ? JSON.parse(raw) : {}
-    const managerId = session.entrenador?.managerId ?? session.manager ?? ''
-    return apiPost('api/dispositivos/getSalasByManager', { idManager: managerId }).then(d => d.salas ?? [])
-  } catch {
-    return Promise.resolve([])
-  }
-}
+export const getSalas = () =>
+  cached('salas', () => {
+    try {
+      const raw = sessionStorage.getItem('round_session')
+      const session = raw ? JSON.parse(raw) : {}
+      const managerId = session.entrenador?.managerId ?? session.manager ?? ''
+      return apiPost('api/dispositivos/getSalasByManager', { idManager: managerId }).then(d => d.salas ?? [])
+    } catch {
+      return Promise.resolve([])
+    }
+  })
 
 export const postClientes = (clienteList) =>
-  apiPost('api/dispositivos/clientePlusv2', clienteList.map(c => ({ ...c, toSend: true })))
+  apiPost('api/dispositivos/clientePlusv2', clienteList.map(c => ({ ...c, toSend: true }))).then(r => { invalidateCache('clientes'); return r })
 
 export const saveSala = (sala) =>
   apiPost('api/dispositivos/saveSala', sala).then(d => d.sala ?? null)
@@ -135,6 +162,16 @@ export const getTrainingsUser = (idCliente) =>
 
 export const getPlanesCliente = (idCliente) =>
   apiPost('api/dispositivos/getPlanesEntrenamientosCliente', { id: idCliente }, { initialId: '0' }).then(d => d.planesEntrenamientoCliente ?? [])
+
+// ERP
+export const getERPConfiguracion = () =>
+  cached('erp-config', () => apiGetRaw('api/erp/configuracion'))
+
+export const getERPDatosCliente = (idCliente) =>
+  apiGetRaw(`api/erp/datos/${idCliente}`)
+
+export const postERPDatosCliente = (idCliente, campos) =>
+  apiPost(`api/erp/datos/${idCliente}`, { campos })
 
 /**
  * Step 1: POST account/loginEasy

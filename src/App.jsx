@@ -14,6 +14,7 @@ import Entrenamientos from './pages/Entrenamientos'
 import Ejercicios from './pages/Ejercicios'
 import Dispositivos from './pages/Dispositivos'
 import Listados from './pages/Listados'
+import InformeAsistencia from './pages/InformeAsistencia'
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth()
@@ -50,6 +51,7 @@ function AppRoutes() {
         <Route path="/ejercicios"     element={<Ejercicios />} />
         <Route path="/dispositivos"   element={<Dispositivos />} />
         <Route path="/listados"       element={<Listados />} />
+        <Route path="/informe-asistencia" element={<InformeAsistencia />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

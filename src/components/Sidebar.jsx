@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, CalendarDays, Activity, UserCheck,
-  Dumbbell, Zap, Cpu, BarChart3, LogOut
+  Dumbbell, Zap, Cpu, BarChart3, ClipboardCheck, LogOut
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -15,6 +15,7 @@ const items = [
   { to: '/ejercicios',     icon: Zap,              label: 'Ejercicios' },
   { to: '/dispositivos',   icon: Cpu,              label: 'Dispositivos' },
   { to: '/listados',       icon: BarChart3,        label: 'Listados' },
+  { to: '/informe-asistencia', icon: ClipboardCheck, label: 'Informe Asistencia' },
 ]
 
 export default function Sidebar() {
