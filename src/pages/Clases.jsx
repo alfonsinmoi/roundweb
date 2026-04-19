@@ -5,7 +5,7 @@ import { Card, Badge, Btn } from '../components/UI'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
-import { getSalas, saveSala, removeSala } from '../utils/api'
+import { getSalasByRange, saveSala, removeSala } from '../utils/api'
 import { colorFromName } from '../utils/colors'
 import { formatHora, formatDuration } from '../utils/formatters'
 
@@ -25,15 +25,24 @@ export default function Clases() {
   const [formData, setFormData] = useState({ nombre: '', aforo: '10', idEspejo: '' })
   const [confirmBaja, setConfirmBaja] = useState({ open: false, sala: null })
 
+  // Compute week start (Monday) based on offset — matches NooFitPro SalasSemana pattern
+  const hoy = new Date()
+  const inicioSemana = new Date(hoy)
+  inicioSemana.setHours(0, 0, 0, 0)
+  inicioSemana.setDate(hoy.getDate() - hoy.getDay() + 1 + semanaOffset * 7)
+  const finSemana = new Date(inicioSemana)
+  finSemana.setDate(inicioSemana.getDate() + 7)
+
   const fetchSalas = () => {
     setLoading(true)
-    getSalas()
-      .then(data => setSalas(data.filter(s => s.enabled)))
+    getSalasByRange(inicioSemana, finSemana)
+      .then(data => setSalas(data))
       .catch(() => setError('Error cargando clases'))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetchSalas() }, [])
+  // Reload when week changes — matches NooFitPro CambiarSemana → ReloadSalasCommand
+  useEffect(() => { fetchSalas() }, [semanaOffset])
 
   const openAlta = () => {
     setFormData({ nombre: '', aforo: '10', idEspejo: '' })
@@ -82,9 +91,6 @@ export default function Clases() {
     setConfirmBaja({ open: false, sala: null })
   }
 
-  const hoy = new Date()
-  const inicioSemana = new Date(hoy)
-  inicioSemana.setDate(hoy.getDate() - hoy.getDay() + 1 + semanaOffset * 7)
   const diasSemanaArr = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(inicioSemana)
     d.setDate(inicioSemana.getDate() + i)

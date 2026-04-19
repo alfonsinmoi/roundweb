@@ -185,6 +185,30 @@ export const getSalas = () =>
     }
   })
 
+/**
+ * Get salas within a date range — matches NooFitPro's GetListSalasByRange.
+ * Body format: { fechaDesde: "yyyy-MM-ddTHH:mm:sszzz", fechaHasta: "yyyy-MM-ddTHH:mm:sszzz" }
+ */
+function isoWithOffset(date) {
+  const pad = (n) => String(Math.abs(n)).padStart(2, '0')
+  const tz = -date.getTimezoneOffset()
+  const sign = tz >= 0 ? '+' : '-'
+  const tzH = pad(Math.floor(Math.abs(tz) / 60))
+  const tzM = pad(Math.abs(tz) % 60)
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${tzH}:${tzM}`
+}
+
+export const getSalasByRange = (fechaDesde, fechaHasta) => {
+  const key = `salas-range:${fechaDesde.toISOString().slice(0, 10)}:${fechaHasta.toISOString().slice(0, 10)}`
+  return cached(key, () =>
+    apiPost('api/dispositivos/getSalasByManagerByRange', {
+      fechaDesde: isoWithOffset(fechaDesde),
+      fechaHasta: isoWithOffset(fechaHasta),
+    }).then(d => (d.salas ?? []).filter(s => s.enabled === true))
+  )
+}
+
 export const postClientes = (clienteList) =>
   apiPost('api/dispositivos/clientePlusv2', clienteList.map(c => ({ ...c, toSend: true }))).then(r => { invalidateCache('clientes'); return r })
 
