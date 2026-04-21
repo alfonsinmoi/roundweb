@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   Loader2, Filter, RotateCcw, CheckCircle2, XCircle,
-  UserMinus, ChevronDown, ChevronUp, Users, CalendarDays, AlertTriangle
+  UserMinus, ChevronDown, ChevronUp, Users, CalendarDays, AlertTriangle, X
 } from 'lucide-react'
 import { Card, Badge, Btn, Avatar } from '../components/UI'
 import ConfirmDialog from '../components/ConfirmDialog'
+import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
-import { getSalas, getUsuariosBySala, updateUsuarioSala, userRemoveSala } from '../utils/api'
+import { getSalas, getClientes, getUsuariosBySala, updateUsuarioSala, userRemoveSala } from '../utils/api'
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -62,6 +63,24 @@ export default function InformeAsistencia() {
 
   const [tab, setTab] = useState('reincidentes')
   const [expandedSalas, setExpandedSalas] = useState(new Set())
+  const [clienteDetalle, setClienteDetalle] = useState(null)
+  const [clientMap, setClientMap] = useState({})
+
+  useEffect(() => {
+    getClientes().then(list => {
+      const map = {}
+      list.forEach(c => { map[String(c.id)] = c })
+      setClientMap(map)
+    }).catch(() => {})
+  }, [])
+
+  const clientName = (idClient) => {
+    const c = clientMap[String(idClient)]
+    if (!c) return null
+    const nombre   = c.nombre   || c.name    || ''
+    const apellidos = c.apellidos || c.surname || ''
+    return [nombre, apellidos].filter(Boolean).join(' ') || null
+  }
 
   // ── Fetch all salas ───────────────────────────────────────────────────────
   const fetchSalas = async () => {
@@ -108,17 +127,19 @@ export default function InformeAsistencia() {
     setLoadingUsuarios(prev => ({ ...prev, [salaId]: false }))
   }
 
-  // ── Preload upcoming salas ────────────────────────────────────────────────
+  // ── Preload: all past salas (for reincidentes) + upcoming (for pendientes) ──
   useEffect(() => {
     if (salas.length === 0) return
-    const ahora = new Date()
-    const en7dias = addDays(ahora, DEFAULT_DAYS_FORWARD)
-    const proximas = salas
-      .filter(s => s.dateStart && new Date(s.dateStart) >= ahora && new Date(s.dateStart) <= en7dias)
-      .sort((a, b) => new Date(a.dateStart) - new Date(b.dateStart))
+    const ahora = Date.now()
+    const pastSalas = filteredSalas.filter(s => s.dateStart && new Date(s.dateStart).getTime() < ahora)
+    const upcomingSalas = filteredSalas
+      .filter(s => {
+        const t = new Date(s.dateStart).getTime()
+        return s.dateStart && t >= ahora && t <= addDays(new Date(), DEFAULT_DAYS_FORWARD).getTime()
+      })
       .slice(0, PRELOAD_MAX)
-    proximas.forEach(s => loadUsuarios(s.id))
-  }, [salas])
+    ;[...pastSalas, ...upcomingSalas].forEach(s => loadUsuarios(s.id))
+  }, [salas, desde, hasta, claseFilter])
 
   // ── Computed data ─────────────────────────────────────────────────────────
 
@@ -126,25 +147,42 @@ export default function InformeAsistencia() {
     return filteredSalas.flatMap(s => (usuariosPorSala[s.id] ?? []).map(u => ({ ...u, sala: s })))
   }, [filteredSalas, usuariosPorSala])
 
-  const totalReservas = allUsers.length
-  const totalVerificados = allUsers.filter(u => u.verify).length
+  // KPIs only count past classes — future reservations aren't no-shows yet
+  const pastUsers = useMemo(() => {
+    const ahora = Date.now()
+    return allUsers.filter(u => new Date(u.sala.dateStart).getTime() <= ahora)
+  }, [allUsers])
+
+  const totalReservas = pastUsers.length
+  const totalVerificados = pastUsers.filter(u => u.verify).length
   const totalNoShows = totalReservas - totalVerificados
   const pctAsistencia = totalReservas > 0 ? Math.round((totalVerificados / totalReservas) * 100) : 0
 
   const reincidentes = useMemo(() => {
+    const ahora = Date.now()
+    const semana = 7 * 24 * 60 * 60 * 1000
+    const mes = 30 * 24 * 60 * 60 * 1000
     const map = {}
     allUsers.forEach(u => {
+      const t = new Date(u.sala.dateStart).getTime()
+      if (t > ahora) return
       if (!map[u.idClient]) {
-        map[u.idClient] = { idClient: u.idClient, nameClient: u.nameClient, pictureClient: u.pictureClient, total: 0, noShows: 0, asistencias: 0 }
+        map[u.idClient] = { idClient: u.idClient, pictureClient: u.pictureClient, total: 0, noShows: 0, asistencias: 0, noShowsSemana: 0, noShowsMes: 0, lastNoShow: 0 }
       }
-      map[u.idClient].total++
-      if (u.verify) map[u.idClient].asistencias++
-      else map[u.idClient].noShows++
+      const entry = map[u.idClient]
+      entry.total++
+      if (u.verify) {
+        entry.asistencias++
+      } else {
+        entry.noShows++
+        if (t > entry.lastNoShow) entry.lastNoShow = t
+        if (ahora - t <= semana) entry.noShowsSemana++
+        if (ahora - t <= mes)   entry.noShowsMes++
+      }
     })
     return Object.values(map)
       .filter(u => u.noShows > 0)
-      .sort((a, b) => b.noShows - a.noShows || (b.noShows / b.total) - (a.noShows / a.total))
-      .slice(0, TOP_REINCIDENTES)
+      .sort((a, b) => b.lastNoShow - a.lastNoShow) // most recent absence first
   }, [allUsers])
 
   const salasConDatos = useMemo(() => {
@@ -310,34 +348,48 @@ export default function InformeAsistencia() {
       {tab === 'reincidentes' && (
         <div role="tabpanel" aria-label="Reincidentes">
           <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 16 }}>
-            Top {TOP_REINCIDENTES} clientes con más no-shows
+            {reincidentes.length} cliente{reincidentes.length !== 1 ? 's' : ''} con faltas · ordenados por falta más reciente
           </p>
-          {reincidentes.length === 0 ? (
+          {Object.values(loadingUsuarios).some(Boolean) && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>
+              <Loader2 size={13} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
+              Cargando datos de asistencia…
+            </div>
+          )}
+          {reincidentes.length === 0 && !Object.values(loadingUsuarios).some(Boolean) ? (
             <Card style={{ padding: 48, textAlign: 'center' }}>
-              <p style={{ fontSize: 14, color: 'var(--text-3)' }}>No hay datos de no-shows en el rango seleccionado</p>
+              <p style={{ fontSize: 14, color: 'var(--text-3)' }}>No hay faltas de asistencia en el rango seleccionado</p>
             </Card>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {reincidentes.map(u => {
                 const pctNoShow = Math.round((u.noShows / u.total) * 100)
                 return (
-                  <Card key={u.idClient} style={{ padding: 20 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                      <Avatar nombre={u.nameClient || '?'} size={44} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 600, color: 'var(--text-0)' }}>
-                          {u.nameClient || `Cliente #${u.idClient}`}
-                        </p>
-                        <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
-                          {u.noShows} no-shows de {u.total} reservas · {u.asistencias} asistencias
-                        </p>
-                      </div>
-                      <div style={{
-                        padding: '8px 16px', borderRadius: 12,
-                        fontSize: 14, fontWeight: 700, fontFamily: 'Outfit',
-                        color: '#fff', background: severityColor(pctNoShow),
-                      }}>
-                        {pctNoShow}%
+                  <Card key={u.idClient} style={{ padding: '12px 16px', cursor: 'pointer' }}
+                        onClick={() => setClienteDetalle(u)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <Avatar nombre={clientName(u.idClient) || '?'} size={36} />
+                      <p style={{ flex: 1, minWidth: 0, fontFamily: 'Outfit', fontSize: 14, fontWeight: 600, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {clientName(u.idClient) || `Cliente #${u.idClient}`}
+                      </p>
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                        {[
+                          { val: u.noShows,        label: 'total',   color: 'var(--red)' },
+                          { val: u.noShowsSemana,   label: 'semana',  color: u.noShowsSemana > 0 ? 'var(--amber)' : 'var(--text-3)' },
+                          { val: u.noShowsMes,      label: 'mes',     color: u.noShowsMes > 0 ? 'var(--amber)' : 'var(--text-3)' },
+                        ].map(({ val, label, color }) => (
+                          <div key={label} style={{ textAlign: 'center', minWidth: 52, padding: '4px 8px', borderRadius: 10, background: 'var(--bg-3)' }}>
+                            <p style={{ fontFamily: 'Outfit', fontSize: 18, fontWeight: 700, color, lineHeight: 1 }}>{val}</p>
+                            <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginTop: 2 }}>{label}</p>
+                          </div>
+                        ))}
+                        <div style={{
+                          minWidth: 48, padding: '4px 8px', borderRadius: 10, textAlign: 'center',
+                          background: severityColor(pctNoShow),
+                        }}>
+                          <p style={{ fontFamily: 'Outfit', fontSize: 18, fontWeight: 700, color: '#fff', lineHeight: 1 }}>{pctNoShow}%</p>
+                          <p style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.9)', marginTop: 2 }}>ratio</p>
+                        </div>
                       </div>
                     </div>
                   </Card>
@@ -475,6 +527,49 @@ export default function InformeAsistencia() {
           ))}
         </div>
       )}
+
+      {/* Modal: clases no asistidas del cliente */}
+      {clienteDetalle && (() => {
+        const noShows = allUsers
+          .filter(u => u.idClient === clienteDetalle.idClient && !u.verify)
+          .sort((a, b) => new Date(a.sala.dateStart) - new Date(b.sala.dateStart))
+        return (
+          <Modal open onClose={() => setClienteDetalle(null)}
+                 title={clientName(clienteDetalle.idClient) || `Cliente #${clienteDetalle.idClient}`}
+                 subtitle={`${noShows.length} clase${noShows.length !== 1 ? 's' : ''} sin asistir`}
+                 maxWidth={520}>
+            <div style={{ overflowY: 'auto', maxHeight: '60vh', padding: '8px 32px 28px' }}>
+              {noShows.length === 0 ? (
+                <p style={{ textAlign: 'center', padding: 40, fontSize: 13, color: 'var(--text-3)' }}>Sin no-shows</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {noShows.map(u => (
+                    <div key={u.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 14,
+                      padding: '12px 16px', borderRadius: 14,
+                      background: 'var(--bg-3)', border: '1px solid var(--line)',
+                    }}>
+                      <XCircle size={16} style={{ color: 'var(--red)', flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>
+                          {u.sala.name || u.sala.nameTraining}
+                        </p>
+                        <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                          {fmtDateES(u.sala.dateStart)} · {fmtHora(u.sala.dateStart)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ padding: '16px 32px', borderTop: '1px solid var(--line)' }}>
+              <Btn variant="secondary" size="md" onClick={() => setClienteDetalle(null)}
+                   style={{ width: '100%', justifyContent: 'center' }}>Cerrar</Btn>
+            </div>
+          </Modal>
+        )
+      })()}
 
       {/* Confirm dialog — replaces window.confirm */}
       <ConfirmDialog

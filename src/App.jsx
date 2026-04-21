@@ -21,6 +21,7 @@ const Ejercicios = lazy(() => import('./pages/Ejercicios'))
 const Dispositivos = lazy(() => import('./pages/Dispositivos'))
 const Listados = lazy(() => import('./pages/Listados'))
 const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
+const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -67,7 +68,8 @@ function AppRoutes() {
           <Route path="/ejercicios"     element={<Ejercicios />} />
           <Route path="/dispositivos"   element={<Dispositivos />} />
           <Route path="/listados"       element={<Listados />} />
-          <Route path="/informe-asistencia" element={<InformeAsistencia />} />
+          <Route path="/informe-asistencia"   element={<InformeAsistencia />} />
+          <Route path="/clases-modificacion" element={<ClasesModificacion />} />
         </Route>
 
         <Route path="*" element={<RequireAuth><NotFound /></RequireAuth>} />

@@ -179,18 +179,31 @@ export const getSalas = () =>
       const raw = sessionStorage.getItem('round_session')
       const session = raw ? JSON.parse(raw) : {}
       const managerId = session.entrenador?.managerId ?? session.manager ?? ''
-      return apiPost('api/dispositivos/getSalasByManager', { idManager: managerId }).then(d => d.salas ?? [])
+      return apiPost('api/dispositivos/getSalasByManager', { idManager: managerId }, { initialId: '0' }).then(d => d.salas ?? [])
     } catch {
       return Promise.resolve([])
     }
   })
 
-/**
- * Get salas within a date range — matches NooFitPro's GetListSalasByRange.
- * Body format: { fechaDesde: "yyyy-MM-ddTHH:mm:sszzz", fechaHasta: "yyyy-MM-ddTHH:mm:sszzz" }
- */
+export const getSalasRango = (fechaDesde, fechaHasta) =>
+  cached(`salas-${fechaDesde}-${fechaHasta}`, () => {
+    try {
+      const raw = sessionStorage.getItem('round_session')
+      const session = raw ? JSON.parse(raw) : {}
+      const managerId = session.entrenador?.managerId ?? session.manager ?? ''
+      return apiPost(
+        'api/dispositivos/getSalasByManager',
+        { idManager: managerId, fechaDesde, fechaHasta },
+        { initialId: '0' },
+      ).then(d => d.salas ?? [])
+    } catch {
+      return Promise.resolve([])
+    }
+  })
+
+// Endpoint específico para rango de fechas con histórico
 function isoWithOffset(date) {
-  const pad = (n) => String(Math.abs(n)).padStart(2, '0')
+  const pad = n => String(Math.abs(n)).padStart(2, '0')
   const tz = -date.getTimezoneOffset()
   const sign = tz >= 0 ? '+' : '-'
   const tzH = pad(Math.floor(Math.abs(tz) / 60))
@@ -205,8 +218,14 @@ export const getSalasByRange = (fechaDesde, fechaHasta) => {
     apiPost('api/dispositivos/getSalasByManagerByRange', {
       fechaDesde: isoWithOffset(fechaDesde),
       fechaHasta: isoWithOffset(fechaHasta),
-    }).then(d => (d.salas ?? []).filter(s => s.enabled === true))
+    }).then(d => (d.salas ?? []).filter(s => s.enabled !== false))
   )
+}
+
+export function invalidateSalasCache() {
+  for (const key of [..._cache.keys()]) {
+    if (key === 'salas' || key.startsWith('salas-') || key.startsWith('salas-range:')) _cache.delete(key)
+  }
 }
 
 export const postClientes = (clienteList) =>
@@ -238,6 +257,10 @@ export const getTrainingsUser = (idCliente) =>
 
 export const getPlanesCliente = (idCliente) =>
   apiPost('api/dispositivos/getPlanesEntrenamientosCliente', { id: idCliente }, { initialId: '0' }).then(d => d.planesEntrenamientoCliente ?? [])
+
+export const getClasesCliente = (idCliente) =>
+  apiPost('api/dispositivos/getReservasByUser', { id: idCliente }, { initialId: '0' })
+    .then(d => d.clases ?? d.reservas ?? [])
 
 // ERP
 export const getERPConfiguracion = () =>

@@ -8,6 +8,7 @@ import ErrorBoundary from './ErrorBoundary'
 export default function Layout() {
   const { pathname } = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg-0)' }}>
@@ -19,7 +20,11 @@ export default function Layout() {
 
       {/* Sidebar */}
       <div className="sidebar-container" data-open={sidebarOpen || undefined}>
-        <Sidebar onNavigate={() => setSidebarOpen(false)} />
+        <Sidebar
+          onNavigate={() => setSidebarOpen(false)}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+        />
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, overflow: 'hidden' }}>
@@ -27,7 +32,6 @@ export default function Layout() {
         <main style={{ flex: 1, overflowY: 'auto', padding: 'clamp(20px, 4vw, 48px)' }} key={pathname}>
           <div className="anim-enter" style={{ maxWidth: 1200 }}>
             <Breadcrumbs />
-            {/* Per-route error boundary — crash in one page doesn't break navigation */}
             <ErrorBoundary key={pathname}>
               <Outlet />
             </ErrorBoundary>

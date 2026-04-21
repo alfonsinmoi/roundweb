@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useDeferredValue } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { Plus, Search, Archive, Loader2, Send } from 'lucide-react'
 import { Badge, Avatar, Btn, EmptyState } from '../../components/UI'
 import ERPModal from '../../components/ERPModal'
@@ -15,8 +15,6 @@ export default function ClientList() {
   const [clientes, setClientes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  // ERP
   const [erpConfig, setErpConfig] = useState(null)
   const [erpCliente, setErpCliente] = useState(null)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -35,9 +33,11 @@ export default function ClientList() {
 
   const tieneERP = erpConfig && erpConfig.campos?.length > 0
 
+  const clientFullName = c => `${c.nombre || c.name || ''} ${c.apellidos || c.surname || ''}`.trim()
+
   const filtered = useMemo(() => clientes.filter(c => {
     const q = deferredSearch.toLowerCase()
-    const match = `${c.name} ${c.surname} ${c.email}`.toLowerCase().includes(q)
+    const match = `${clientFullName(c)} ${c.email}`.toLowerCase().includes(q)
     if (!match) return false
     if (filtro === 'activos') return c.enabled !== false
     if (filtro === 'archivados') return c.enabled === false
@@ -56,6 +56,9 @@ export default function ClientList() {
     </div>
   )
 
+  const visible = filtered.slice(0, visibleCount)
+  const cols = tieneERP ? '2fr 2fr 120px 1fr 1fr auto' : '2fr 2fr 120px 1fr 1fr'
+
   return (
     <div>
       {/* Toolbar */}
@@ -63,18 +66,19 @@ export default function ClientList() {
         <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
           <Search size={18} style={{ position: 'absolute', left: 18, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} aria-hidden="true" />
           <input type="search" placeholder="Buscar cliente..."
-                 value={search} onChange={e => setSearch(e.target.value)}
+                 value={search}
+                 onChange={e => { setSearch(e.target.value); setVisibleCount(PAGE_SIZE) }}
                  aria-label="Buscar cliente"
                  style={{
                    width: '100%', padding: '16px 20px 16px 50px', borderRadius: 16, fontSize: 15,
                    background: 'var(--bg-2)', border: '1px solid var(--line)', color: 'var(--text-0)',
-                   outline: 'none', transition: 'border-color 0.15s',
+                   outline: 'none',
                  }} />
         </div>
 
         <div role="group" aria-label="Filtrar clientes" style={{ display: 'flex', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line)' }}>
           {[['activos','Activos'],['archivados','Archivados'],['todos','Todos']].map(([v, l]) => (
-            <button key={v} onClick={() => setFiltro(v)}
+            <button key={v} onClick={() => { setFiltro(v); setVisibleCount(PAGE_SIZE) }}
                     aria-pressed={filtro === v}
                     style={{
                       padding: '14px 22px', fontSize: 14, fontWeight: 500, cursor: 'pointer', border: 'none',
@@ -92,89 +96,87 @@ export default function ClientList() {
         </Btn>
       </div>
 
-      <p style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 24 }} aria-live="polite">
+      <p style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 20 }} aria-live="polite">
         {filtered.length} cliente{filtered.length !== 1 ? 's' : ''}
       </p>
 
-      {/* Client grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(360px, 100%), 1fr))', gap: 16 }}>
-        {filtered.slice(0, visibleCount).map(c => (
-          <Link key={c.id} to={`/clientes/${c.id}`}
-               aria-label={`${c.name} ${c.surname}`}
-               className="interactive-row"
-               style={{
-                 display: 'block', textDecoration: 'none', color: 'inherit',
-                 background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20,
-                 padding: 28, cursor: 'pointer', transition: 'background 0.12s',
-               }}>
+      {filtered.length === 0 ? (
+        <EmptyState title="No se encontraron clientes"
+                    description={deferredSearch ? 'Prueba con otros términos de búsqueda' : undefined} />
+      ) : (
+        <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20, overflow: 'hidden' }}>
+          {/* Header */}
+          <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 0, padding: '12px 24px', background: 'var(--bg-3)', borderBottom: '1px solid var(--line)' }}>
+            {['Cliente', 'Email', 'Estado', 'Teléfono', 'DNI', ...(tieneERP ? [''] : [])].map((h, i) => (
+              <span key={i} style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>{h}</span>
+            ))}
+          </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
-              <Avatar nombre={`${c.name} ${c.surname}`} size={52} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontFamily: 'Outfit', fontSize: 16, fontWeight: 600, color: 'var(--text-0)', marginBottom: 4 }}>
-                  {c.name} {c.surname}
-                </p>
-                <p style={{ fontSize: 13, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                   title={c.email}>
-                  {c.email}
-                </p>
+          {/* Rows */}
+          {visible.map((c, i) => (
+            <div key={c.id}
+                 role="button"
+                 tabIndex={0}
+                 onClick={() => navigate(`/clientes/${c.id}`)}
+                 onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && navigate(`/clientes/${c.id}`)}
+                 aria-label={`Ver perfil de ${c.name} ${c.surname}`}
+                 className="interactive-row"
+                 style={{
+                   display: 'grid', gridTemplateColumns: cols, alignItems: 'center',
+                   padding: '14px 24px', cursor: 'pointer',
+                   borderBottom: i < visible.length - 1 ? '1px solid var(--line)' : 'none',
+                   transition: 'background 0.1s',
+                 }}>
+
+              {/* Cliente */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingRight: 16, minWidth: 0 }}>
+                <Avatar nombre={clientFullName(c)} size={36} imgUrl={c.imgUrl} />
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ fontFamily: 'Outfit', fontSize: 14, fontWeight: 600, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {clientFullName(c)}
+                  </p>
+                  {c.idEspejo != null && (
+                    <p style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'monospace' }}>#{c.idEspejo}</p>
+                  )}
+                </div>
               </div>
-              {c.enabled === false
-                ? <Badge color="gray"><Archive size={11} aria-hidden="true" /> Archivado</Badge>
-                : <Badge color="green">Activo</Badge>
-              }
-            </div>
 
-            <div style={{ borderTop: '1px solid var(--line)', paddingTop: 16 }}>
-              {c.objective && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 16, marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-3)', flexShrink: 0 }}>Objetivo</span>
-                  <span style={{ fontSize: 13, color: 'var(--text-1)', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        title={c.objective}>{c.objective}</span>
-                </div>
-              )}
-              {c.cellPhone && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-3)' }}>Teléfono</span>
-                  <span style={{ fontSize: 13, color: 'var(--text-1)' }}>{c.cellPhone}</span>
-                </div>
-              )}
-              {c.dni && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-3)' }}>DNI</span>
-                  <span style={{ fontSize: 13, color: 'var(--text-1)' }}>{c.dni}</span>
-                </div>
-              )}
-              {c.idEspejo != null && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-3)' }}>ID Espejo</span>
-                  <span style={{ fontSize: 13, color: 'var(--text-2)', fontFamily: 'monospace' }}>{c.idEspejo}</span>
-                </div>
-              )}
-              {!c.objective && !c.cellPhone && !c.dni && c.idEspejo == null && (
-                <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Sin datos adicionales</p>
-              )}
-            </div>
+              {/* Email */}
+              <p style={{ fontSize: 13, color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 16 }} title={c.email}>
+                {c.email || '—'}
+              </p>
 
-            {/* ERP button */}
-            {tieneERP && (
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
-                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setErpCliente(c) }}
+              {/* Estado */}
+              <div>
+                {c.enabled === false
+                  ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Archivado</Badge>
+                  : <Badge color="green">Activo</Badge>
+                }
+              </div>
+
+              {/* Teléfono */}
+              <p style={{ fontSize: 13, color: 'var(--text-2)' }}>{c.cellPhone || '—'}</p>
+
+              {/* DNI */}
+              <p style={{ fontSize: 13, color: 'var(--text-2)' }}>{c.dni || '—'}</p>
+
+              {/* ERP */}
+              {tieneERP && (
+                <button onClick={e => { e.stopPropagation(); setErpCliente(c) }}
                         aria-label={`Enviar ERP para ${c.name} ${c.surname}`}
                         style={{
-                          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                          padding: '12px 18px', borderRadius: 12, fontSize: 13, fontWeight: 500,
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 500,
                           cursor: 'pointer', border: '1px solid var(--blue-border)',
                           background: 'var(--blue-bg)', color: 'var(--blue)', transition: 'all 0.1s',
-                          justifyContent: 'center',
                         }}>
-                  <Send size={14} aria-hidden="true" /> Enviar ERP
+                  <Send size={12} aria-hidden="true" /> ERP
                 </button>
-              </div>
-            )}
-          </Link>
-        ))}
-      </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {visibleCount < filtered.length && (
         <div style={{ textAlign: 'center', marginTop: 24 }}>
@@ -184,12 +186,6 @@ export default function ClientList() {
         </div>
       )}
 
-      {filtered.length === 0 && (
-        <EmptyState title="No se encontraron clientes"
-                    description={deferredSearch ? 'Prueba con otros términos de búsqueda' : undefined} />
-      )}
-
-      {/* ERP Modal — extracted component */}
       {erpCliente && (
         <ERPModal cliente={erpCliente} erpConfig={erpConfig} onClose={() => setErpCliente(null)} />
       )}
