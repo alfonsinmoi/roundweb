@@ -16,7 +16,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import {
   getClientes, postClientes, desvinculaCliente as apiDesvincular,
   getClasesCliente, getTrainingsUser, getTrainingsFromSalas, getERPDatosCliente,
-  getERPConfiguraciones, postERPDatosCliente, loginEasy,
+  postERPDatosCliente, loginEasy,
   getSalasByRange, getUsuariosBySala,
 } from '../../utils/api'
 
@@ -384,7 +384,7 @@ export default function ClientProfile() {
       {tab === 'personal' && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
       {tab === 'clases'   && <TabClases clienteId={cliente.id} />}
       {tab === 'analisis' && <TabAnalisis cliente={cliente} />}
-      {tab === 'erp'      && <TabERP clienteId={cliente.id} />}
+      {tab === 'erp'      && <TabERP clienteId={cliente.id} cliente={cliente} />}
 
       {/* Dialogs */}
       <ConfirmDialog
@@ -1152,11 +1152,50 @@ function TabAnalisis({ cliente }) {
 }
 
 // ── Tab: Datos ERP ─────────────────────────────────────────────────────────────
-function tipoFromCampoKey(key) {
+// Definición canónica de los 10 campos que espera el MCP / GestPlus.
+// Esto es la fuente de verdad mientras el backend `GET /api/erp/configuracion`
+// no devuelva esta misma lista. Los nombres internos coinciden EXACTAMENTE con
+// los que espera el webhook (snake_case, sin renombrar).
+const MCP_CAMPOS = [
+  { nombreCampo: 'dni',                 nombreAMostrar: 'DNI / NIE',                  tipo: 'string',   formato: 'dni',       obligatorio: true,  orden: 1 },
+  { nombreCampo: 'movil',               nombreAMostrar: 'Móvil',                      tipo: 'string',   formato: 'telefono',  obligatorio: true,  orden: 2 },
+  { nombreCampo: 'curso',               nombreAMostrar: 'Curso / Tipo de cuota',      tipo: 'string',   formato: 'texto',     obligatorio: true,  orden: 3 },
+  { nombreCampo: 'precio_curso',        nombreAMostrar: 'Precio del curso (€/mes)',   tipo: 'decimal',  formato: 'moneda',    obligatorio: true,  orden: 4 },
+  { nombreCampo: 'fecha_alta',          nombreAMostrar: 'Fecha de alta',              tipo: 'datetime', formato: 'fecha',     obligatorio: true,  orden: 5, defaultHoy: true },
+  { nombreCampo: 'tipo_pago',           nombreAMostrar: 'Tipo de pago',               tipo: 'string',   formato: 'select',    obligatorio: true,  orden: 6,
+    opciones: ['Banco', 'Caja'] },
+  { nombreCampo: 'iban',                nombreAMostrar: 'IBAN',                       tipo: 'string',   formato: 'iban',      obligatorio: false, orden: 7,
+    obligatorioSi: { campo: 'tipo_pago', valor: 'Banco' } },
+  { nombreCampo: 'forma_primera_cuota', nombreAMostrar: 'Forma de la primera cuota',  tipo: 'string',   formato: 'select',    obligatorio: true,  orden: 8,
+    opciones: ['Efectivo', 'Tarjeta'] },
+  { nombreCampo: 'periodo_pago',        nombreAMostrar: 'Periodo de pago',            tipo: 'string',   formato: 'select',    obligatorio: true,  orden: 9,
+    opciones: ['Mensual', 'Trimestral', 'Semestral'] },
+  { nombreCampo: 'tipo_descuento',      nombreAMostrar: 'Tipo de descuento',          tipo: 'string',   formato: 'select',    obligatorio: false, orden: 10,
+    opciones: ['Sin descuento', 'Familiar', 'Estudiante', 'Pensionista'] },
+]
+
+function tipoFromCampo(campo, key) {
+  if (campo?.tipo) return campo.tipo
   for (const t of ['datetime', 'decimal', 'number', 'string', 'bool']) {
-    if (key.startsWith(t)) return t
+    if (typeof key === 'string' && key.startsWith(t)) return t
   }
   return 'string'
+}
+
+function esObligatorio(campo, fuente) {
+  if (campo.obligatorio) return true
+  if (campo.obligatorioSi) {
+    const ref = fuente?.[campo.obligatorioSi.campo]
+    return ref === campo.obligatorioSi.valor
+  }
+  return false
+}
+
+function todayISO() {
+  const d = new Date()
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${d.getFullYear()}-${mm}-${dd}`
 }
 
 function formatValueDisplay(key, val) {
@@ -1169,10 +1208,69 @@ function formatValueDisplay(key, val) {
   return String(val)
 }
 
-function TabERP({ clienteId }) {
+// Mapea género NoofitPro (M=Masculino, F=Femenino) → MCP/GestPlus (H=Hombre, M=Mujer)
+function genderToMCP(g) {
+  if (g === 'F' || g === 'f') return 'M'
+  return 'H'
+}
+
+// Convierte fecha ISO/timestamp a "dd/MM/yyyy" (formato que espera GestPlus para fecha_nacimiento)
+function fechaNacimientoToMCP(birthdate) {
+  if (!birthdate) return ''
+  const d = typeof birthdate === 'number' ? new Date(birthdate) : new Date(String(birthdate))
+  if (isNaN(d)) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${dd}/${mm}/${d.getFullYear()}`
+}
+
+// Dispara webhook al MCP (fire-and-forget, best-effort)
+function dispararWebhookERP(cliente, formValues) {
+  const payload = {
+    // 6 campos desde la BD NoofitPro
+    id_cliente:          cliente.id,
+    nombre:              cliente.name ?? '',
+    apellidos:           cliente.surname ?? '',
+    email:               cliente.email ?? '',
+    sexo:                genderToMCP(cliente.gender),
+    fecha_nacimiento:    fechaNacimientoToMCP(cliente.birthdate),
+    // 10 campos del formulario ERP
+    dni:                 formValues.dni ?? '',
+    movil:               formValues.movil ?? '',
+    curso:               formValues.curso ?? '',
+    precio_curso:        formValues.precio_curso != null ? String(formValues.precio_curso) : '',
+    fecha_alta:          formValues.fecha_alta ?? '',
+    tipo_pago:           formValues.tipo_pago ?? '',
+    iban:                formValues.iban ?? '',
+    forma_primera_cuota: formValues.forma_primera_cuota ?? '',
+    periodo_pago:        formValues.periodo_pago ?? '',
+    tipo_descuento:      formValues.tipo_descuento ?? '',
+  }
+  // Fire-and-forget: no esperamos la respuesta para no bloquear la UI
+  fetch('/api/erp-webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true, // por si el usuario navega antes de que termine
+  })
+    .then(r => {
+      if (r.status !== 202) {
+        // eslint-disable-next-line no-console
+        console.warn('[Webhook ERP] respuesta inesperada', r.status)
+      }
+    })
+    .catch(err => {
+      // eslint-disable-next-line no-console
+      console.error('[Webhook ERP] error de red', err)
+    })
+}
+
+function TabERP({ clienteId, cliente }) {
   const toast = useToast()
 
-  const [campos,  setCampos]  = useState([])    // todos los campos definidos en Config.ERP
+  // Lista canónica de campos (fuente de verdad para el envío al MCP)
+  const campos = MCP_CAMPOS
+
   const [values,  setValues]  = useState({})    // { nombreCampo: valor } persistidos
   const [draft,   setDraft]   = useState({})    // copia editable
   const [editing, setEditing] = useState(false)
@@ -1187,20 +1285,10 @@ function TabERP({ clienteId }) {
   useEffect(() => {
     async function load() {
       try {
-        const rawCfg = await getERPConfiguraciones().catch(() => null)
-        const configs = rawCfg ? (Array.isArray(rawCfg) ? rawCfg : [rawCfg]) : []
-
-        const allCampos = []
-        for (const cfg of configs) {
-          const lista = Array.isArray(cfg.campos) ? cfg.campos : []
-          allCampos.push(...lista)
-        }
-        allCampos.sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0))
-
         const d = await getERPDatosCliente(clienteId).catch(() => null)
         const datosIniciales = d?.campos ?? {}
-
-        setCampos(allCampos)
+        // Pre-rellenar fecha_alta con hoy si no hay valor guardado
+        if (!datosIniciales.fecha_alta) datosIniciales.fecha_alta = todayISO()
         setValues(datosIniciales)
       } catch {
         setError('Error cargando datos ERP')
@@ -1236,10 +1324,13 @@ function TabERP({ clienteId }) {
     return payload
   }
 
-  function checkObligatorios(payload) {
+  function checkObligatorios(payload, fuente) {
     return campos
-      .filter(c => c.obligatorio)
-      .filter(c => payload[c.nombreCampo ?? c.nombre] === undefined)
+      .filter(c => esObligatorio(c, fuente))
+      .filter(c => {
+        const v = payload[c.nombreCampo ?? c.nombre]
+        return v === undefined || v === null || v === ''
+      })
   }
 
   async function handleSave() {
@@ -1262,13 +1353,16 @@ function TabERP({ clienteId }) {
     setSending(true)
     try {
       const payload = buildPayload(values)
-      const faltan = checkObligatorios(payload)
+      const faltan = checkObligatorios(payload, values)
       if (faltan.length > 0) {
-        toast.error(`Faltan campos obligatorios: ${faltan.map(c => c.nombreAMostrar ?? c.nombreCampo).join(', ')}`)
+        const lista = faltan.map(c => c.nombreAMostrar ?? c.nombreCampo).join(', ')
+        toast.error(`No se puede enviar: faltan campos obligatorios → ${lista}`)
         setSending(false)
         return
       }
       await postERPDatosCliente(clienteId, payload)
+      // Disparar webhook al MCP — fire-and-forget, no bloquea la UI
+      dispararWebhookERP(cliente, payload)
       toast.success('Datos enviados al ERP correctamente')
       setSent(true)
       setUnlocked(false)
@@ -1287,6 +1381,16 @@ function TabERP({ clienteId }) {
 
   if (loading) return <LoadingCard />
   if (error) return <ErrorCard msg={error} />
+
+  // Lista de obligatorios sin rellenar (sobre values en lectura, sobre draft en edición)
+  const fuente = editing ? draft : values
+  const faltanObligatorios = campos
+    .filter(c => esObligatorio(c, fuente))
+    .filter(c => {
+      const k = c.nombreCampo ?? c.nombre
+      const v = fuente[k]
+      return v === undefined || v === null || v === ''
+    })
 
   return (
     <div role="tabpanel" aria-label="Datos ERP">
@@ -1315,7 +1419,10 @@ function TabERP({ clienteId }) {
                 <Btn variant="secondary" size="sm" onClick={startEdit} disabled={campos.length === 0}>
                   <Pencil size={14} aria-hidden="true" /> Editar campos
                 </Btn>
-                <Btn variant="primary" size="sm" onClick={handleSendClick} disabled={sending || campos.length === 0}>
+                <Btn variant="primary" size="sm"
+                     onClick={handleSendClick}
+                     disabled={sending || campos.length === 0 || faltanObligatorios.length > 0}
+                     title={faltanObligatorios.length > 0 ? 'Rellena los campos obligatorios antes de enviar' : undefined}>
                   {sending
                     ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
                     : (sent && !unlocked) ? <Lock size={14} aria-hidden="true" /> : <Send size={14} aria-hidden="true" />}
@@ -1348,6 +1455,21 @@ function TabERP({ clienteId }) {
           </div>
         )}
 
+        {/* Banner de obligatorios sin rellenar */}
+        {faltanObligatorios.length > 0 && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 12, marginBottom: 16,
+            background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
+            fontSize: 13, color: 'var(--red)', display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <AlertCircle size={13} aria-hidden="true" />
+            <span>
+              {editing ? 'Faltan' : 'Antes de enviar, rellena'} los obligatorios:&nbsp;
+              <strong>{faltanObligatorios.map(c => c.nombreAMostrar ?? c.nombreCampo).join(', ')}</strong>
+            </span>
+          </div>
+        )}
+
         {campos.length === 0 ? (
           <p style={{ fontSize: 13, color: 'var(--text-3)', padding: '20px 0' }}>
             No hay campos definidos. Añade definiciones en <strong>Config. ERP</strong> (menú lateral) y vuelve aquí para rellenar los valores de este cliente.
@@ -1355,18 +1477,37 @@ function TabERP({ clienteId }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {campos.map(campo => {
-              const key   = campo.nombreCampo ?? campo.nombre ?? campo.id ?? String(campo)
-              const tipo  = tipoFromCampoKey(key)
-              const label = campo.nombreAMostrar ?? campo.nombre ?? key
-              const val   = (editing ? draft[key] : values[key]) ?? ''
+              const key       = campo.nombreCampo ?? campo.nombre ?? campo.id ?? String(campo)
+              const tipo      = tipoFromCampo(campo, key)
+              const label     = campo.nombreAMostrar ?? campo.nombre ?? key
+              const val       = (editing ? draft[key] : values[key]) ?? ''
+              const obligNow  = esObligatorio(campo, fuente)
+              const isSelect  = campo.formato === 'select'
 
               let valueEl
               if (!editing) {
                 const display = formatValueDisplay(key, values[key])
+                const empty   = display === '—'
+                const missing = empty && obligNow
                 valueEl = (
-                  <span style={{ fontSize: 13, color: display === '—' ? 'var(--text-3)' : 'var(--text-1)' }}>
-                    {display}
+                  <span style={{
+                    fontSize: 13,
+                    fontWeight: missing ? 600 : 400,
+                    color: missing ? 'var(--red)' : empty ? 'var(--text-3)' : 'var(--text-1)',
+                  }}>
+                    {missing ? '⚠ falta' : display}
                   </span>
+                )
+              } else if (isSelect) {
+                valueEl = (
+                  <select value={val} onChange={e => setDraftValue(key, e.target.value)}
+                          className="form-input"
+                          style={{ ...inputStyleERP(), cursor: 'pointer' }}>
+                    <option value="">— Selecciona —</option>
+                    {(campo.opciones ?? []).map(op => (
+                      <option key={op} value={op}>{op}</option>
+                    ))}
+                  </select>
                 )
               } else if (tipo === 'bool') {
                 valueEl = (
@@ -1409,7 +1550,7 @@ function TabERP({ clienteId }) {
                 valueEl = (
                   <input type="text" value={val}
                          onChange={e => setDraftValue(key, e.target.value)}
-                         placeholder={campo.formato ? `Formato: ${campo.formato}` : ''}
+                         placeholder={campo.formato && campo.formato !== 'texto' ? `Formato: ${campo.formato}` : ''}
                          className="form-input"
                          style={inputStyleERP()} />
                 )
@@ -1422,8 +1563,10 @@ function TabERP({ clienteId }) {
                 }}>
                   <dt style={{ fontSize: 13, color: 'var(--text-3)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
                     {label}
-                    {campo.obligatorio && <span style={{ color: 'var(--red)' }} aria-label="obligatorio">*</span>}
-                    {campo.formato && <span style={{ fontSize: 11, color: 'var(--text-3)' }}>({campo.formato})</span>}
+                    {obligNow && <span style={{ color: 'var(--red)' }} aria-label="obligatorio">*</span>}
+                    {campo.formato && campo.formato !== 'texto' && campo.formato !== 'select' && (
+                      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>({campo.formato})</span>
+                    )}
                   </dt>
                   <dd style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'right' }}>
                     {valueEl}

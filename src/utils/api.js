@@ -114,6 +114,38 @@ export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } =
   return data
 }
 
+// Variante que NO filtra por mensaje — devuelve la respuesta completa para
+// poder leer el error real del backend en el caller.
+export async function apiPostRaw(path, body = {}, extraHeaders = {}) {
+  const { token, manager } = getSession()
+  const res = await fetch(`${BASE}/${path}`, {
+    method: 'POST',
+    headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json', ...extraHeaders },
+    body: JSON.stringify(stripNulls(body)),
+  })
+  let body_text = ''
+  try { body_text = await res.text() } catch {}
+  let data = null
+  try { data = JSON.parse(body_text) } catch {}
+  return { status: res.status, ok: res.ok, data, text: body_text }
+}
+
+// HTTP DELETE arbitrario (con o sin body)
+export async function apiDeleteRaw(path, body = null) {
+  const { token, manager } = getSession()
+  const init = {
+    method: 'DELETE',
+    headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json' },
+  }
+  if (body) init.body = JSON.stringify(stripNulls(body))
+  const res = await fetch(`${BASE}/${path}`, init)
+  let body_text = ''
+  try { body_text = await res.text() } catch {}
+  let data = null
+  try { data = JSON.parse(body_text) } catch {}
+  return { status: res.status, ok: res.ok, data, text: body_text }
+}
+
 // ── In-memory cache with Map for O(1) eviction ─────────────────────────────
 const _cache = new Map()
 

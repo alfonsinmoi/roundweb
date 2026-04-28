@@ -1,9 +1,26 @@
 import { useState, useEffect, useRef } from 'react'
-import { Database, Plus, Pencil, Trash2, RefreshCw, Check, X, AlertCircle, Save, Lock, Unlock, Eye, EyeOff } from 'lucide-react'
-import { postERPConfiguracion, postERPConfiguracionCampos, apiGetRaw } from '../utils/api'
+import { Database, Plus, Pencil, Trash2, RefreshCw, Check, X, AlertCircle, Save, Lock, Unlock, Eye, EyeOff, Download } from 'lucide-react'
+import { postERPConfiguracion, postERPConfiguracionCampos, apiGetRaw, apiPostRaw, apiDeleteRaw } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
+
+// ─── Plantilla MCP / GestPlus ─────────────────────────────────────────────────
+// Los 10 campos canónicos que espera el webhook del MCP. Se usan al pulsar
+// "Importar campos MCP" en cualquier configuración (sustituyendo los actuales).
+const MCP_CAMPOS_PLANTILLA = [
+  { nombreCampo: 'dni',                 nombreAMostrar: 'DNI / NIE',                 formato: 'dni',      obligatorio: true,  orden: 1,  valorPorDefecto: null },
+  { nombreCampo: 'movil',               nombreAMostrar: 'Móvil',                     formato: 'telefono', obligatorio: true,  orden: 2,  valorPorDefecto: null },
+  { nombreCampo: 'curso',               nombreAMostrar: 'Curso / Tipo de cuota',     formato: 'texto',    obligatorio: true,  orden: 3,  valorPorDefecto: null },
+  { nombreCampo: 'precio_curso',        nombreAMostrar: 'Precio del curso (€/mes)',  formato: 'moneda',   obligatorio: true,  orden: 4,  valorPorDefecto: null },
+  { nombreCampo: 'fecha_alta',          nombreAMostrar: 'Fecha de alta',             formato: 'fecha',    obligatorio: true,  orden: 5,  valorPorDefecto: null },
+  { nombreCampo: 'tipo_pago',           nombreAMostrar: 'Tipo de pago',              formato: 'texto',    obligatorio: true,  orden: 6,  valorPorDefecto: null },
+  { nombreCampo: 'iban',                nombreAMostrar: 'IBAN',                      formato: 'iban',     obligatorio: false, orden: 7,  valorPorDefecto: null },
+  { nombreCampo: 'forma_primera_cuota', nombreAMostrar: 'Forma de la primera cuota', formato: 'texto',    obligatorio: true,  orden: 8,  valorPorDefecto: null },
+  { nombreCampo: 'periodo_pago',        nombreAMostrar: 'Periodo de pago',           formato: 'texto',    obligatorio: true,  orden: 9,  valorPorDefecto: null },
+  { nombreCampo: 'tipo_descuento',      nombreAMostrar: 'Tipo de descuento',         formato: 'texto',    obligatorio: false, orden: 10, valorPorDefecto: null },
+]
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 const TIPOS = [
@@ -173,13 +190,13 @@ function CampoModal({ cfg, camposExistentes, campoEditar, onClose, onSaved }) {
     setError('')
     try {
       const body = {
-        idConfiguracion:  idConfiguracionERP,
+        idConfiguracionERP: idConfiguracionERP,
         nombreCampo,
-        nombreAMostrar:   nombreAMostrar.trim(),
-        formato:          formato || null,
+        nombreAMostrar:     nombreAMostrar.trim(),
+        formato:            formato || null,
         obligatorio,
         orden,
-        valorPorDefecto:  valorDefault || null,
+        valorPorDefecto:    valorDefault || null,
       }
       await postERPConfiguracionCampos(body)
       onSaved()
@@ -464,6 +481,9 @@ export default function ERPConfiguracion() {
   const [modal,      setModal]      = useState(null)      // { cfg, campoEditar? }
   const [unlocked,   setUnlocked]   = useState(() => sessionStorage.getItem('erp_unlocked') === '1')
   const [pwdGate,    setPwdGate]    = useState(null)      // callback to run after unlock
+  const [confirmDlg, setConfirmDlg] = useState(null)      // { title, message, confirmText, variant, onConfirm }
+  const [infoDlg,    setInfoDlg]    = useState(null)      // { title, message }
+  const [showLegacy, setShowLegacy] = useState(false)     // mostrar campos legacy no borrables
 
   function lock() {
     sessionStorage.removeItem('erp_unlocked')
@@ -499,14 +519,139 @@ export default function ERPConfiguracion() {
   function closeModal()        { setModal(null) }
   function onSaved()           { closeModal(); load() }
 
-  async function handleDelete(cfg, campo) {
-    withAuth(async () => {
-      if (!confirm(`¿Eliminar el campo "${campoLabel(campo)}"?`)) return
+  function isOkResponse(r) {
+    if (!r.ok) return false
+    return r.data?.mensaje === 'OK' || r.data?.nombreCampo != null || r.data?.id != null || r.text === ''
+  }
+
+  // Comprueba en el backend si el campo sigue existiendo
+  async function campoSigueExistiendo(idConfig, key) {
+    const raw = await apiGetRaw('api/erp/configuracion').catch(() => null)
+    const configs = extractConfigs(raw)
+    const cfg = configs.find(c => String(c.id ?? c.idConfiguracion ?? '') === String(idConfig))
+    const lista = Array.isArray(cfg?.campos) ? cfg.campos : []
+    return lista.some(c => campoKey(c) === key)
+  }
+
+  // Intenta TODOS los formatos/métodos de borrado y verifica con un GET si realmente
+  // se borró. Devuelve siempre el log completo para diagnóstico.
+  async function tryDeleteCampo(idConfig, campo) {
+    const key = campoKey(campo)
+    const log = []
+
+    const tryReq = async (label, fn) => {
       try {
-        const restantes = (cfg.campos ?? []).filter(c => campoKey(c) !== campoKey(campo))
-        await postERPConfiguracionCampos({ idConfiguracion: cfgId(cfg), campos: restantes })
-        load()
-      } catch { /* silencioso */ }
+        const r = await fn()
+        const httpOk = isOkResponse(r)
+        log.push(`${httpOk ? '✓' : '✗'} ${label} → HTTP ${r.status} / ${r.data?.mensaje ?? r.text?.slice(0, 100) ?? '(sin body)'}`)
+        if (httpOk) {
+          // Verificar con un GET que el campo ya no existe
+          const sigue = await campoSigueExistiendo(idConfig, key)
+          if (!sigue) {
+            log.push(`  ↳ verificado: borrado correctamente`)
+            return true
+          } else {
+            log.push(`  ↳ ⚠ servidor respondió OK pero el campo sigue existiendo`)
+          }
+        }
+      } catch (e) {
+        log.push(`✗ ${label} → exc: ${e?.message ?? 'desconocido'}`)
+      }
+      return false
+    }
+
+    // 1) HTTP DELETE
+    if (await tryReq(`DELETE /${idConfig}/${key}`, () => apiDeleteRaw(`api/erp/erpconfiguracioncampo/${idConfig}/${key}`))) return { ok: true, log: log.join('\n') }
+    if (await tryReq(`DELETE /${key}`, () => apiDeleteRaw(`api/erp/erpconfiguracioncampo/${key}`))) return { ok: true, log: log.join('\n') }
+    if (await tryReq(`DELETE body`, () => apiDeleteRaw('api/erp/erpconfiguracioncampo', { idConfiguracionERP: idConfig, nombreCampo: key }))) return { ok: true, log: log.join('\n') }
+    if (campo.id != null) {
+      if (await tryReq(`DELETE /id/${campo.id}`, () => apiDeleteRaw(`api/erp/erpconfiguracioncampo/${campo.id}`))) return { ok: true, log: log.join('\n') }
+    }
+
+    // 2) POST con todos los campos + flag de borrado
+    const fullBody = {
+      idConfiguracionERP: idConfig,
+      nombreCampo:        key,
+      nombreAMostrar:     campo.nombreAMostrar ?? key,
+      formato:            campo.formato ?? '',
+      obligatorio:        campo.obligatorio ?? false,
+      orden:              campo.orden ?? 0,
+    }
+    for (const flag of ['toDelete', 'delete', 'eliminar', 'borrar', 'deleted']) {
+      if (await tryReq(`POST full + ${flag}:true`, () =>
+        apiPostRaw('api/erp/erpconfiguracioncampo', { ...fullBody, [flag]: true }))) return { ok: true, log: log.join('\n') }
+    }
+
+    // 3) Subpaths /delete /borrar
+    for (const sub of ['delete', 'borrar', 'eliminar', 'remove']) {
+      if (await tryReq(`POST /${sub}`, () =>
+        apiPostRaw(`api/erp/erpconfiguracioncampo/${sub}`, { idConfiguracionERP: idConfig, nombreCampo: key }))) return { ok: true, log: log.join('\n') }
+    }
+
+    // 4) Endpoints alternativos
+    if (await tryReq(`POST /erpconfiguracioncampo/delete body`, () =>
+      apiPostRaw('api/erp/erpconfiguracioncampo/delete', fullBody))) return { ok: true, log: log.join('\n') }
+
+    return { ok: false, error: log.join('\n') }
+  }
+
+  async function handleDelete(cfg, campo) {
+    withAuth(() => {
+      setConfirmDlg({
+        title: 'Eliminar campo',
+        message: `¿Eliminar el campo "${campoLabel(campo)}"?`,
+        confirmText: 'Eliminar',
+        variant: 'danger',
+        onConfirm: async () => {
+          setConfirmDlg(null)
+          const r = await tryDeleteCampo(cfgId(cfg), campo)
+          if (!r.ok) {
+            setInfoDlg({ title: `No se pudo borrar "${campoLabel(campo)}"`, message: r.error })
+            return
+          }
+          // Verificado en el GET, recargar
+          load()
+          setInfoDlg({ title: `Borrado "${campoLabel(campo)}"`, message: r.log })
+        },
+      })
+    })
+  }
+
+  function handleImportMCP(cfg) {
+    withAuth(() => {
+      setConfirmDlg({
+        title: 'Importar campos MCP',
+        message:
+          'Se crearán los 10 campos estándar del MCP / GestPlus en esta configuración. ' +
+          'Si ya existen, se sobrescribirán. Los campos antiguos que tengas no se tocan ' +
+          '(el backend de Wiemspro no permite borrarlos desde la API; quedarán ocultos en esta vista).',
+        confirmText: 'Importar',
+        variant: 'primary',
+        onConfirm: async () => {
+          setConfirmDlg(null)
+          const idConfig = cfgId(cfg)
+          const errCrear = []
+          for (const campo of MCP_CAMPOS_PLANTILLA) {
+            const r = await apiPostRaw('api/erp/erpconfiguracioncampo', {
+              idConfiguracionERP: idConfig,
+              nombreCampo:        campo.nombreCampo,
+              nombreAMostrar:     campo.nombreAMostrar,
+              formato:            campo.formato,
+              obligatorio:        campo.obligatorio,
+              orden:              campo.orden,
+            })
+            if (!isOkResponse(r)) {
+              errCrear.push(`${campo.nombreCampo} → HTTP ${r.status} / ${r.data?.mensaje ?? r.text?.slice(0, 120)}`)
+            }
+          }
+          load()
+          if (errCrear.length > 0) {
+            setInfoDlg({ title: 'Importación parcial', message: `Fallaron ${errCrear.length}/${MCP_CAMPOS_PLANTILLA.length} campo(s):\n${errCrear.join('\n')}` })
+          } else {
+            setInfoDlg({ title: 'Importación completada', message: 'Los 10 campos del MCP se han creado / actualizado correctamente.' })
+          }
+        },
+      })
     })
   }
 
@@ -581,11 +726,38 @@ export default function ERPConfiguracion() {
         </div>
       )}
 
+      {/* Aviso sobre limitación del backend */}
+      {!loading && !error && configs.length > 0 && (() => {
+        const mcpKeys = new Set(MCP_CAMPOS_PLANTILLA.map(c => c.nombreCampo))
+        const totalLegacy = configs.reduce((acc, cfg) => acc + (cfg.campos ?? []).filter(c => !mcpKeys.has(campoKey(c))).length, 0)
+        if (totalLegacy === 0) return null
+        return (
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10,
+            padding: '12px 16px', marginBottom: 16, borderRadius: 12,
+            background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)',
+          }}>
+            <AlertCircle size={16} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
+            <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.5 }}>
+              Hay {totalLegacy} campo(s) antiguo(s) que el backend de Wiemspro no permite borrar desde la API
+              (solo expone crear/modificar). Los he ocultado por defecto para que no estorben.{' '}
+              <button onClick={() => setShowLegacy(s => !s)}
+                      style={{ background: 'none', border: 'none', color: 'var(--amber)', cursor: 'pointer', fontWeight: 600, padding: 0, textDecoration: 'underline' }}>
+                {showLegacy ? 'Ocultarlos' : 'Mostrarlos'}
+              </button>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Tarjetas de configuración */}
       {!loading && !error && configs.map(cfg => {
         const id     = cfgId(cfg)
         const nombre = cfg.nombre ?? cfg.name ?? `Configuración ${id}`
-        const campos = Array.isArray(cfg.campos) ? [...cfg.campos].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0)) : []
+        const mcpKeys      = new Set(MCP_CAMPOS_PLANTILLA.map(c => c.nombreCampo))
+        const todosCampos  = Array.isArray(cfg.campos) ? [...cfg.campos].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0)) : []
+        const campos       = showLegacy ? todosCampos : todosCampos.filter(c => mcpKeys.has(campoKey(c)))
+        const ocultos      = todosCampos.length - campos.length
 
         return (
           <div key={id} style={{
@@ -606,19 +778,39 @@ export default function ERPConfiguracion() {
                 }}>
                   {campos.length} campo{campos.length !== 1 ? 's' : ''}
                 </span>
+                {ocultos > 0 && !showLegacy && (
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                    +{ocultos} oculto{ocultos !== 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
               {unlocked && (
-                <button
-                  onClick={() => openAdd(cfg)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '8px 16px', borderRadius: 10,
-                    background: 'var(--green)', color: '#fff',
-                    border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                  }}
-                >
-                  <Plus size={14} /> Añadir campo
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={() => handleImportMCP(cfg)}
+                    title="Sustituir los campos actuales por los 10 estándar del MCP / GestPlus"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '8px 14px', borderRadius: 10,
+                      background: 'rgba(59,130,246,0.1)', color: '#3b82f6',
+                      border: '1px solid rgba(59,130,246,0.3)',
+                      fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    <Download size={14} /> Importar campos MCP
+                  </button>
+                  <button
+                    onClick={() => openAdd(cfg)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '8px 16px', borderRadius: 10,
+                      background: 'var(--green)', color: '#fff',
+                      border: 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    <Plus size={14} /> Añadir campo
+                  </button>
+                </div>
               )}
             </div>
 
@@ -673,6 +865,54 @@ export default function ERPConfiguracion() {
           onUnlocked={onUnlocked}
           onClose={() => setPwdGate(null)}
         />
+      )}
+
+      {/* Confirm dialog (reemplaza confirm() nativo) */}
+      <ConfirmDialog
+        open={!!confirmDlg}
+        title={confirmDlg?.title}
+        message={confirmDlg?.message}
+        confirmText={confirmDlg?.confirmText}
+        variant={confirmDlg?.variant}
+        onConfirm={() => confirmDlg?.onConfirm?.()}
+        onCancel={() => setConfirmDlg(null)}
+      />
+
+      {/* Info dialog (reemplaza alert() nativo) */}
+      {infoDlg && (
+        <div onClick={e => { if (e.target === e.currentTarget) setInfoDlg(null) }}
+             style={{
+               position: 'fixed', inset: 0, zIndex: 700,
+               background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+               display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+             }}>
+          <div style={{
+            background: 'var(--bg-1)', borderRadius: 16, width: '100%', maxWidth: 560,
+            boxShadow: '0 24px 80px rgba(0,0,0,0.45)', overflow: 'hidden',
+          }}>
+            <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)',
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-0)', margin: 0 }}>
+                {infoDlg.title}
+              </h3>
+              <button onClick={() => setInfoDlg(null)} style={iconBtn()}>
+                <X size={14} />
+              </button>
+            </div>
+            <pre style={{
+              margin: 0, padding: '16px 22px', maxHeight: '60vh', overflow: 'auto',
+              fontSize: 12, lineHeight: 1.5, color: 'var(--text-1)', whiteSpace: 'pre-wrap',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            }}>{infoDlg.message}</pre>
+            <div style={{ padding: '14px 22px', borderTop: '1px solid var(--line)',
+                          display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={() => setInfoDlg(null)} style={{
+                padding: '8px 18px', borderRadius: 10, border: 'none',
+                background: 'var(--green)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>Cerrar</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
