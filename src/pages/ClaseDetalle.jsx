@@ -2,14 +2,17 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Users, Clock, CheckCircle2, XCircle, UserPlus,
-  UserMinus, Loader2, Search
+  UserMinus, Loader2, Search, CalendarCheck, X,
 } from 'lucide-react'
 import { Card, Badge, Btn, Avatar } from '../components/UI'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { useToast } from '../components/Toast'
 import { formatHora, formatFecha } from '../utils/formatters'
-import { getSalas, getUsuariosBySala, updateUsuarioSala, userJoinSalas, userRemoveSala, getClientes } from '../utils/api'
+import {
+  getSalas, getUsuariosBySala, updateUsuarioSala, userJoinSalas, userRemoveSala, getClientes,
+  getTrainingsUser, getTrainingsFromSalas,
+} from '../utils/api'
 
 export default function ClaseDetalle() {
   const { id } = useParams()
@@ -30,20 +33,62 @@ export default function ClaseDetalle() {
   // Para confirmar eliminación
   const [confirmRemove, setConfirmRemove] = useState(null)
 
+  // Foto ampliada inline (10x10 cm al lado del cliente)
+  const [fotoAmpliada, setFotoAmpliada] = useState(null) // userId
+
+  // Popup con últimas clases del cliente
+  const [ultimasClases, setUltimasClases] = useState(null) // { idClient, nombre, apellidos, imgUrl, trainings, loading }
+
   const fetchData = async () => {
     try {
-      const [salasData, usuariosData] = await Promise.all([
+      const [salasData, usuariosData, clientesData] = await Promise.all([
         getSalas(),
         getUsuariosBySala(Number(id)),
+        getClientes().catch(() => []),
       ])
       const found = salasData.find(s => String(s.id) === String(id))
       if (!found) { setError('No se pudo cargar la información solicitada'); return }
+      // Enriquecer cada usuario con nombre/apellidos reales del cliente
+      const clientMap = new Map(clientesData.map(c => [String(c.id), c]))
+      const usuariosEnriquecidos = usuariosData.map(u => {
+        const c = clientMap.get(String(u.idClient))
+        const fallback = (u.nameClient || '').trim().split(/\s+/)
+        return {
+          ...u,
+          nombre:    c?.name    ?? fallback[0] ?? '',
+          apellidos: c?.surname ?? fallback.slice(1).join(' ') ?? '',
+          imgUrl:    c?.imgUrl || u.pictureClient || '',
+        }
+      })
       setSala(found)
-      setUsuarios(usuariosData)
+      setUsuarios(usuariosEnriquecidos)
+      setClientes(clientesData)
     } catch {
       setError('No se pudo cargar la información. Inténtalo de nuevo más tarde.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleVerUltimasClases = async (u) => {
+    setUltimasClases({ idClient: u.idClient, nombre: u.nombre, apellidos: u.apellidos, imgUrl: u.imgUrl, trainings: null, loading: true })
+    try {
+      let data = await getTrainingsUser(u.idClient).catch(() => [])
+      if (!data || data.length === 0) {
+        data = await getTrainingsFromSalas(u.idClient, { dias: 180 }).catch(() => [])
+      }
+      const sorted = [...(data ?? [])]
+        .map(t => ({ ...t, _fecha: new Date(t.dateStart ?? t.fecha ?? t.date ?? 0) }))
+        .filter(t => !isNaN(t._fecha))
+        .sort((a, b) => b._fecha - a._fecha)
+        .slice(0, 12)
+      setUltimasClases(prev => prev && prev.idClient === u.idClient
+        ? { ...prev, trainings: sorted, loading: false }
+        : prev)
+    } catch {
+      setUltimasClases(prev => prev && prev.idClient === u.idClient
+        ? { ...prev, trainings: [], loading: false }
+        : prev)
     }
   }
 
@@ -76,19 +121,8 @@ export default function ClaseDetalle() {
     }
   }
 
-  const handleOpenInscribir = async () => {
+  const handleOpenInscribir = () => {
     setShowInscribir(true)
-    if (clientes.length === 0) {
-      setLoadingClientes(true)
-      try {
-        const data = await getClientes()
-        setClientes(data.filter(c => c.enabled !== false))
-      } catch {
-        // silently handled — empty list shown
-      } finally {
-        setLoadingClientes(false)
-      }
-    }
   }
 
   const handleInscribirCliente = async (cliente) => {
@@ -124,6 +158,7 @@ export default function ClaseDetalle() {
   const idsInscritos = new Set(usuarios.map(u => u.idClient))
 
   const clientesFiltrados = clientes
+    .filter(c => c.enabled !== false)
     .filter(c => !idsInscritos.has(c.id))
     .filter(c => {
       if (!clientSearch) return true
@@ -215,17 +250,74 @@ export default function ClaseDetalle() {
         </Card>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {usuarios.map(u => (
+          {usuarios.map(u => {
+            const ampliada = fotoAmpliada === u.id
+            const nombreCompleto = `${u.nombre} ${u.apellidos}`.trim() || `Cliente #${u.idClient}`
+            return (
             <Card key={u.id} style={{ padding: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
 
-                {/* Avatar + info */}
-                <Avatar nombre={u.nameClient || '?'} size={44} />
+                {/* Avatar clicable — al hacer click se amplía a 10x10 cm al lado del cliente */}
+                <button onClick={() => setFotoAmpliada(ampliada ? null : u.id)}
+                        aria-label={ampliada ? `Reducir foto de ${nombreCompleto}` : `Ampliar foto de ${nombreCompleto}`}
+                        style={{
+                          background: 'none', border: 'none', padding: 0, cursor: 'pointer', flexShrink: 0,
+                          borderRadius: 14, transition: 'transform 0.2s ease',
+                        }}>
+                  <Avatar nombre={nombreCompleto} size={44} imgUrl={u.imgUrl} />
+                </button>
+
+                {/* Foto ampliada inline 10x10 cm */}
+                {ampliada && (
+                  <div style={{
+                    width: '10cm', height: '10cm', flexShrink: 0,
+                    borderRadius: 16, overflow: 'hidden',
+                    border: '1px solid var(--line)', background: 'var(--bg-3)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    position: 'relative',
+                  }}>
+                    {u.imgUrl ? (
+                      <img src={u.imgUrl} alt={nombreCompleto}
+                           style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <span style={{ fontSize: 14, color: 'var(--text-3)' }}>Sin foto</span>
+                    )}
+                    <button onClick={() => setFotoAmpliada(null)}
+                            aria-label="Cerrar foto ampliada"
+                            style={{
+                              position: 'absolute', top: 8, right: 8,
+                              width: 32, height: 32, borderRadius: 10,
+                              background: 'rgba(0,0,0,0.55)', color: '#fff',
+                              border: 'none', cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }}>
+                      <X size={16} aria-hidden="true" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Info — nombre clicable para ver últimas clases */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 600, color: 'var(--text-0)' }}>
-                    {u.nameClient || `Cliente #${u.idClient}`}
-                  </p>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                  <button onClick={() => handleVerUltimasClases(u)}
+                          aria-label={`Ver últimas clases de ${nombreCompleto}`}
+                          className="nav-link"
+                          style={{
+                            display: 'flex', alignItems: 'baseline', gap: 6,
+                            background: 'none', border: 'none', padding: 0,
+                            fontFamily: 'Outfit', fontSize: 15, fontWeight: 600,
+                            color: 'var(--text-0)', cursor: 'pointer', textAlign: 'left',
+                            maxWidth: '100%',
+                          }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {u.nombre || `Cliente #${u.idClient}`}
+                    </span>
+                    {u.apellidos && (
+                      <span style={{ fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {u.apellidos}
+                      </span>
+                    )}
+                  </button>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
                     {u.verify
                       ? <Badge color="green"><CheckCircle2 size={10} aria-hidden="true" /> Asistió</Badge>
                       : <Badge color="gray"><XCircle size={10} aria-hidden="true" /> Sin confirmar</Badge>
@@ -265,7 +357,7 @@ export default function ClaseDetalle() {
                 </div>
               </div>
             </Card>
-          ))}
+          )})}
         </div>
       )}
 
@@ -329,7 +421,7 @@ export default function ClaseDetalle() {
                           background: 'transparent', border: '1px solid transparent',
                           textAlign: 'left', width: '100%',
                         }}>
-                  <Avatar nombre={`${c.name} ${c.surname}`} size={38} />
+                  <Avatar nombre={`${c.name} ${c.surname}`} size={38} imgUrl={c.imgUrl} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>{c.name} {c.surname}</p>
                     <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{c.email}</p>
@@ -353,6 +445,65 @@ export default function ClaseDetalle() {
         <div style={{ padding: '16px 32px', borderTop: '1px solid var(--line)' }}>
           <Btn variant="secondary" size="md" onClick={() => { setShowInscribir(false); setClientSearch('') }}
                style={{ width: '100%', justifyContent: 'center' }}>
+            Cerrar
+          </Btn>
+        </div>
+      </Modal>
+
+      {/* Popup: Últimas clases del cliente */}
+      <Modal open={!!ultimasClases}
+             onClose={() => setUltimasClases(null)}
+             title={ultimasClases ? `${ultimasClases.nombre} ${ultimasClases.apellidos}`.trim() : ''}
+             subtitle="Últimas clases realizadas"
+             maxWidth={560}>
+        <div style={{ padding: '20px 28px 28px' }}>
+          {ultimasClases?.loading && (
+            <div style={{ padding: '40px 0', textAlign: 'center' }}>
+              <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} aria-label="Cargando clases" />
+            </div>
+          )}
+          {ultimasClases && !ultimasClases.loading && ultimasClases.trainings?.length === 0 && (
+            <div style={{ padding: '40px 0', textAlign: 'center' }}>
+              <CalendarCheck size={26} style={{ color: 'var(--text-3)', margin: '0 auto 10px' }} aria-hidden="true" />
+              <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Sin clases registradas</p>
+            </div>
+          )}
+          {ultimasClases && !ultimasClases.loading && ultimasClases.trainings?.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {ultimasClases.trainings.map((t, i) => {
+                const f = t._fecha
+                const nombre = t.nameTraining || t.name || t.nombre || '—'
+                const dur = t.duration ?? t.durationTraining ?? null
+                return (
+                  <div key={t.id ?? i} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+                    padding: '10px 14px', borderRadius: 10,
+                    background: 'var(--bg-3)', border: '1px solid var(--line)',
+                  }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {nombre}
+                      </p>
+                      <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+                        {f.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        {dur != null && ` · ${dur} min`}
+                      </p>
+                    </div>
+                    {t.verify === true && <Badge color="green"><CheckCircle2 size={10} aria-hidden="true" /> Asistió</Badge>}
+                    {t.verify === false && <Badge color="gray"><XCircle size={10} aria-hidden="true" /></Badge>}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        <div style={{ padding: '12px 28px 20px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+          {ultimasClases && (
+            <Btn variant="secondary" size="sm" onClick={() => { navigate(`/clientes/${ultimasClases.idClient}`); setUltimasClases(null) }}>
+              Ver perfil completo
+            </Btn>
+          )}
+          <Btn variant="primary" size="sm" onClick={() => setUltimasClases(null)} style={{ marginLeft: 'auto' }}>
             Cerrar
           </Btn>
         </div>

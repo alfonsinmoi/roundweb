@@ -17,8 +17,8 @@ export default function NotFound() {
       <p style={{ fontSize: 14, color: 'var(--text-3)', maxWidth: 360, marginBottom: 32 }}>
         La página que buscas no existe o ha sido movida.
       </p>
-      <Btn onClick={() => navigate('/dashboard')}>
-        <Home size={16} /> Ir al Dashboard
+      <Btn onClick={() => navigate('/clientes')}>
+        <Home size={16} /> Ir a Clientes
       </Btn>
     </div>
   )

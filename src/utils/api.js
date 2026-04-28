@@ -139,10 +139,65 @@ export function invalidateCache(key) {
   else _cache.clear()
 }
 
+// Peek síncrono a la caché (stale-while-revalidate): devuelve el dato en caché
+// aunque esté caducado. Útil para pintar al instante mientras se refresca en
+// segundo plano. Retorna null si nunca se ha cacheado.
+export function peekCache(key) {
+  const entry = _cache.get(key)
+  return entry ? entry.data : null
+}
+
+// ── Persistencia en sessionStorage (sobrevive a F5) ────────────────────────
+// Para endpoints grandes y costosos: persisimos el payload + timestamp.
+// En la próxima sesión seguirá vivo; lo usamos para pintar al instante.
+const PERSIST_KEY = (key) => `round:cache:${key}`
+const PERSIST_MAX_AGE = 30 * 60_000 // 30 min — más allá preferimos refetch
+
+export function peekPersistedCache(key) {
+  // 1) cache en memoria (caliente) → devuélvelo
+  const mem = peekCache(key)
+  if (mem != null) return mem
+  // 2) sessionStorage (sobrevive a F5)
+  try {
+    const raw = sessionStorage.getItem(PERSIST_KEY(key))
+    if (!raw) return null
+    const { data, ts } = JSON.parse(raw)
+    if (!data || typeof ts !== 'number') return null
+    if (Date.now() - ts > PERSIST_MAX_AGE) return null
+    // Rehidratar cache en memoria para próximas lecturas
+    _cache.set(key, { data, ts })
+    return data
+  } catch { return null }
+}
+
+export function setPersistedCache(key, data) {
+  try {
+    sessionStorage.setItem(PERSIST_KEY(key), JSON.stringify({ data, ts: Date.now() }))
+  } catch { /* quota o serialización — ignoramos */ }
+}
+
+export function clearPersistedCache(key) {
+  try {
+    if (key) sessionStorage.removeItem(PERSIST_KEY(key))
+    else {
+      for (const k of Object.keys(sessionStorage)) {
+        if (k.startsWith('round:cache:')) sessionStorage.removeItem(k)
+      }
+    }
+  } catch { /* no-op */ }
+}
+
 // ── Named endpoint helpers ──────────────────────────────────────────────────
 
 export const getClientes = () =>
-  cached('clientes', () => apiGet('api/dispositivos/getClienteSimple').then(d => d.clientes ?? []))
+  cached('clientes', () =>
+    apiGet('api/dispositivos/getClienteSimple').then(d => {
+      const list = d.clientes ?? []
+      // Persistimos para pintado instantáneo en recargas posteriores (F5)
+      setPersistedCache('clientes', list)
+      return list
+    })
+  )
 
 export const getEntrenadores = () =>
   cached('entrenadores', () => apiGet('api/dispositivos/getTrainersByManager').then(d => d.entrenadores ?? []))
@@ -229,7 +284,11 @@ export function invalidateSalasCache() {
 }
 
 export const postClientes = (clienteList) =>
-  apiPost('api/dispositivos/clientePlusv2', clienteList.map(c => ({ ...c, toSend: true }))).then(r => { invalidateCache('clientes'); return r })
+  apiPost('api/dispositivos/clientePlusv2', clienteList.map(c => ({ ...c, toSend: true }))).then(r => {
+    invalidateCache('clientes')
+    clearPersistedCache('clientes')
+    return r
+  })
 
 export const saveSala = (sala) =>
   apiPost('api/dispositivos/saveSala', sala).then(d => d.sala ?? null)
@@ -255,6 +314,34 @@ export const desvinculaCliente = (idCliente) =>
 export const getTrainingsUser = (idCliente) =>
   apiPost('api/dispositivos/getTrainingsUser', { id: idCliente }, { initialId: '0' }).then(d => d.trainings ?? [])
 
+/**
+ * Derive training history from salas (classes) the client attended.
+ * Uses getSalasByRange + getUsuariosBySala. Returns an array of "training-like"
+ * entries with { id, dateStart, name, duration, verify }.
+ */
+export const getTrainingsFromSalas = async (idCliente, { dias = 365 } = {}) => {
+  const hasta = new Date()
+  const desde = new Date(); desde.setDate(desde.getDate() - dias)
+  const salas = await getSalasByRange(desde, hasta)
+  const results = await Promise.all(
+    salas.map(s => getUsuariosBySala(s.id).then(us => ({ s, us })).catch(() => ({ s, us: [] })))
+  )
+  const trainings = []
+  results.forEach(({ s, us }) => {
+    const u = us.find(x => x.idClient === idCliente)
+    if (!u) return
+    trainings.push({
+      id: s.id,
+      dateStart: s.dateStart,
+      name: s.nameTraining || s.name,
+      duration: s.duration ?? s.tiempo ?? null,
+      verify: !!u.verify,
+      sala: s,
+    })
+  })
+  return trainings
+}
+
 export const getPlanesCliente = (idCliente) =>
   apiPost('api/dispositivos/getPlanesEntrenamientosCliente', { id: idCliente }, { initialId: '0' }).then(d => d.planesEntrenamientoCliente ?? [])
 
@@ -263,8 +350,37 @@ export const getClasesCliente = (idCliente) =>
     .then(d => d.clases ?? d.reservas ?? [])
 
 // ERP
-export const getERPConfiguracion = () =>
-  cached('erp-config', () => apiGetRaw('api/erp/configuracion'))
+export const getERPConfiguraciones = () =>
+  cached('erp-configs', () =>
+    apiGetRaw('api/erp/configuracion').then(d => {
+      if (!d) return []
+      if (Array.isArray(d)) return d
+      // Forma { id, nombre, campos: [...] } → envolver en array
+      if ((d.id !== undefined || d.idConfiguracion !== undefined) && d.campos !== undefined) return [d]
+      return d.configuraciones ?? d.data ?? []
+    })
+  )
+
+export const getERPConfiguracionDetalle = (idConfiguracion) =>
+  cached(`erp-config-${idConfiguracion}`, () =>
+    apiGetRaw(`api/erp/erpconfiguracion/${idConfiguracion}`)
+  )
+
+export const getERPConfiguracionCampos = (idConfiguracion) =>
+  cached(`erp-campos-${idConfiguracion}`, () =>
+    apiGetRaw(`api/erp/erpconfiguracioncampo/${idConfiguracion}`).then(d => {
+      if (Array.isArray(d)) return d
+      return d?.campos ?? d?.data ?? []
+    })
+  )
+
+// Guarda la configuración seleccionada por el gestor
+export const postERPConfiguracion = (body) =>
+  apiPost('api/erp/erpconfiguracion', body)
+
+// Guarda los campos seleccionados por el gestor para una configuración
+export const postERPConfiguracionCampos = (body) =>
+  apiPost('api/erp/erpconfiguracioncampo', body)
 
 export const getERPDatosCliente = (idCliente) =>
   apiGetRaw(`api/erp/datos/${idCliente}`)

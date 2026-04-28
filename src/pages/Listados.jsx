@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Users, Dumbbell, Activity, Loader2, CalendarDays, ChevronDown } from 'lucide-react'
-import { Card, Badge, Table, SectionTitle } from '../components/UI'
+import { Card, Badge, Table, SectionTitle, Avatar } from '../components/UI'
 import { useToast } from '../components/Toast'
 import { getClientes, getEjercicios, getActividades, getEntrenadores, getSalasByRange } from '../utils/api'
 import { tipoLabel, tipoColor } from '../utils/colors'
@@ -262,7 +262,12 @@ function ListadoClientes({ data, titulo }) {
       <Table
         ariaLabel={titulo}
         columns={[
-          { key: 'name', label: 'Nombre', render: (v, row) => fullName(row) },
+          { key: 'name', label: 'Nombre', render: (v, row) => (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Avatar nombre={fullName(row)} size={28} imgUrl={row.imgUrl} />
+              <span>{fullName(row)}</span>
+            </div>
+          ) },
           { key: 'email', label: 'Email' },
           { key: 'cellPhone', label: 'Teléfono', render: v => v || '—' },
           { key: 'objective', label: 'Objetivo', render: v => <span className="truncate max-w-40 block">{v || '—'}</span> },

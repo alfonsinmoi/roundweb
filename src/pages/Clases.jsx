@@ -251,47 +251,65 @@ export default function Clases() {
 
   return (
     <div>
-      {/* ── Toolbar ── */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+      {/* ── Toolbar (sticky, compact) ── */}
+      <div style={{
+        position: 'sticky', top: 0, zIndex: 50,
+        isolation: 'isolate',
+        background: 'var(--bg-0)',
+        // Extend horizontally to cover the full content width (incl. the
+        // horizontal page padding) so cards scrolling beneath are fully
+        // hidden behind the opaque background.
+        marginLeft: 'calc(-1 * clamp(20px, 4vw, 48px))',
+        marginRight: 'calc(-1 * clamp(20px, 4vw, 48px))',
+        paddingLeft: 'clamp(20px, 4vw, 48px)',
+        paddingRight: 'clamp(20px, 4vw, 48px)',
+        paddingTop: 12,
+        paddingBottom: 10,
+        marginBottom: 12,
+        borderBottom: '1px solid var(--line)',
+        // Soft shadow emphasises separation from scrolled content underneath.
+        boxShadow: '0 4px 10px -6px rgba(0,0,0,0.25)',
+        display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8,
+      }}>
 
         {/* Day arrows */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <NavBtn onClick={() => moveDay(-1)} title="Día anterior"><ChevronLeft size={16} /></NavBtn>
-          <div style={{ minWidth: 170, textAlign: 'center' }}>
-            <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-0)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <NavBtn onClick={() => moveDay(-1)} title="Día anterior"><ChevronLeft size={14} /></NavBtn>
+          <div style={{ minWidth: 150, textAlign: 'center' }}>
+            <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)' }}>
               {dias3[0].toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}
               {' — '}
               {dias3[2].toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}
             </p>
           </div>
-          <NavBtn onClick={() => moveDay(1)} title="Día siguiente"><ChevronRight size={16} /></NavBtn>
+          <NavBtn onClick={() => moveDay(1)} title="Día siguiente"><ChevronRight size={14} /></NavBtn>
         </div>
 
         {/* Week arrows */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
           <NavBtn onClick={() => moveWeek(-1)} title="Semana anterior" small>
-            <ChevronLeft size={13} /><ChevronLeft size={13} style={{ marginLeft: -5 }} />
+            <ChevronLeft size={12} /><ChevronLeft size={12} style={{ marginLeft: -5 }} />
           </NavBtn>
-          <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '0 4px', userSelect: 'none' }}>sem</span>
+          <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '0 3px', userSelect: 'none' }}>sem</span>
           <NavBtn onClick={() => moveWeek(1)} title="Semana siguiente" small>
-            <ChevronRight size={13} /><ChevronRight size={13} style={{ marginLeft: -5 }} />
+            <ChevronRight size={12} /><ChevronRight size={12} style={{ marginLeft: -5 }} />
           </NavBtn>
         </div>
 
         {!isToday && (
           <button onClick={goToday}
-                  style={{ padding: '8px 16px', borderRadius: 10, fontSize: 13, cursor: 'pointer', color: 'var(--green)', background: 'rgba(45,212,168,0.1)', border: 'none', fontWeight: 500 }}>
+                  style={{ padding: '6px 12px', borderRadius: 9, fontSize: 12, cursor: 'pointer', color: 'var(--green)', background: 'rgba(45,212,168,0.1)', border: 'none', fontWeight: 500 }}>
             Hoy
           </button>
         )}
 
-        <div style={{ width: 1, height: 24, background: 'var(--line)', flexShrink: 0 }} />
+        <div style={{ width: 1, height: 22, background: 'var(--line)', flexShrink: 0 }} />
 
         {/* Activity filter */}
         {actividadesConClases.length > 0 && (
           <select value={filtroAct} onChange={e => setFiltroAct(e.target.value)}
                   style={{
-                    padding: '10px 16px', borderRadius: 12, fontSize: 13, cursor: 'pointer',
+                    padding: '7px 12px', borderRadius: 10, fontSize: 12, cursor: 'pointer',
                     background: 'var(--bg-2)', border: '1px solid var(--line)', color: 'var(--text-1)',
                     fontFamily: 'inherit',
                   }}>
@@ -306,11 +324,11 @@ export default function Clases() {
         <button onClick={() => setOrden(o => o === 'hora' ? 'actividad' : 'hora')}
                 title={`Ordenar por ${orden === 'hora' ? 'actividad' : 'hora'}`}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '10px 16px', borderRadius: 12, fontSize: 13, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '7px 12px', borderRadius: 10, fontSize: 12, cursor: 'pointer',
                   background: 'var(--bg-2)', border: '1px solid var(--line)', color: 'var(--text-2)', fontFamily: 'inherit',
                 }}>
-          <ArrowUpDown size={14} aria-hidden="true" />
+          <ArrowUpDown size={13} aria-hidden="true" />
           {orden === 'hora' ? 'Por hora' : 'Por actividad'}
         </button>
       </div>
@@ -326,36 +344,36 @@ export default function Clases() {
             const clases = salasPorDia(dia)
             return (
               <div key={diaStr}>
-                {/* Day header */}
+                {/* Day header — compact */}
                 <div style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  paddingBottom: 12, marginBottom: 12,
+                  paddingBottom: 6, marginBottom: 8,
                   borderBottom: `2px solid ${esHoy ? 'var(--green)' : 'var(--line)'}`,
                 }}>
-                  <div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
+                    <p style={{ fontFamily: 'Outfit', fontSize: 20, fontWeight: 700, color: esHoy ? 'var(--green)' : 'var(--text-0)', lineHeight: 1 }}>
+                      {dia.getDate()}
+                    </p>
                     <p style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: esHoy ? 'var(--green)' : 'var(--text-3)' }}>
                       {DIAS[dia.getDay()]}
                     </p>
-                    <p style={{ fontFamily: 'Outfit', fontSize: 24, fontWeight: 700, color: esHoy ? 'var(--green)' : 'var(--text-0)', lineHeight: 1.1, marginTop: 2 }}>
-                      {dia.getDate()}
-                    </p>
-                    <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 1 }}>
-                      {dia.toLocaleDateString('es-ES', { month: 'long' })}
+                    <p style={{ fontSize: 11, color: 'var(--text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {dia.toLocaleDateString('es-ES', { month: 'short' })}
                     </p>
                   </div>
                   <button onClick={openAlta} title="Nueva clase"
                           style={{
-                            width: 30, height: 30, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            width: 26, height: 26, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                             cursor: 'pointer', background: 'var(--bg-3)', border: '1px solid var(--line)', color: 'var(--text-3)',
                           }}>
-                    <Plus size={14} aria-hidden="true" />
+                    <Plus size={13} aria-hidden="true" />
                   </button>
                 </div>
 
-                {/* Class cards */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {/* Class cards — compact */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {clases.length === 0 && (
-                    <p style={{ textAlign: 'center', fontSize: 12, padding: '24px 0', color: 'var(--text-3)' }}>Sin clases</p>
+                    <p style={{ textAlign: 'center', fontSize: 12, padding: '16px 0', color: 'var(--text-3)' }}>Sin clases</p>
                   )}
                   {clases.map(s => {
                     const isSelected = selSala?.id === s.id
@@ -366,27 +384,27 @@ export default function Clases() {
                     return (
                       <div key={s.id} onClick={() => handleSelect(s)}
                            style={{
-                             borderRadius: 12, padding: '12px 14px', cursor: 'pointer',
+                             borderRadius: 10, padding: '8px 10px', cursor: 'pointer',
                              background: cardColor,
                              borderLeft: `3px solid ${isSelected ? cardText : cardText + '66'}`,
                              outline: isSelected ? `2px solid ${cardText}` : 'none',
                              opacity: isSelected ? 1 : 0.92,
                              transition: 'all 0.12s',
                            }}>
-                        <p style={{ fontSize: 20, fontWeight: 700, color: cardText, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <p style={{ fontSize: 15, fontWeight: 700, color: cardText, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}>
                           {s.name || s.nameTraining}
                         </p>
                         {s.nameTraining && s.name && s.name !== s.nameTraining && (
-                          <p style={{ fontSize: 13, fontWeight: 500, color: cardText + 'aa', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <p style={{ fontSize: 11, fontWeight: 500, color: cardText + 'aa', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {s.nameTraining}
                           </p>
                         )}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 13, color: cardText + 'cc' }}>
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <Clock size={13} aria-hidden="true" /> {formatHora(s.dateStart)}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 12, color: cardText + 'cc' }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <Clock size={12} aria-hidden="true" /> {formatHora(s.dateStart)}
                           </span>
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <Users size={13} aria-hidden="true" />
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <Users size={12} aria-hidden="true" />
                             {inscritos}/{s.aforo || '∞'}
                           </span>
                         </div>
@@ -399,7 +417,7 @@ export default function Clases() {
           })}
         </div>
 
-        {/* Right panel — sticky so it's always visible regardless of scroll position */}
+        {/* Right panel — sticky below the toolbar */}
         {selSala && (
           <div key={selSala.id} style={{
             width: 360, flexShrink: 0,
@@ -407,7 +425,7 @@ export default function Clases() {
             borderLeft: '1px solid var(--line)',
             borderRadius: 0,
             position: 'sticky',
-            top: 0,
+            top: 52,
             alignSelf: 'flex-start',
           }}>
             <PanelClase
@@ -517,7 +535,7 @@ export default function Clases() {
                         disabled={!!actionLoading}
                         className="interactive-row"
                         style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 14, cursor: 'pointer', background: 'transparent', border: '1px solid transparent', textAlign: 'left', width: '100%' }}>
-                  <Avatar nombre={`${c.name} ${c.surname}`} size={38} />
+                  <Avatar nombre={`${c.name} ${c.surname}`} size={38} imgUrl={c.imgUrl} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>{c.name} {c.surname}</p>
                     <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{c.email}</p>
@@ -551,8 +569,8 @@ function NavBtn({ children, onClick, title, small }) {
     <button onClick={onClick} title={title}
             style={{
               display: 'flex', alignItems: 'center',
-              padding: small ? '8px 10px' : '10px 12px',
-              borderRadius: 12, cursor: 'pointer',
+              padding: small ? '6px 7px' : '7px 9px',
+              borderRadius: 10, cursor: 'pointer',
               background: 'var(--bg-2)', border: '1px solid var(--line)',
               color: 'var(--text-3)', transition: 'color 0.1s',
             }}
@@ -569,35 +587,10 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
   const inscritos  = usuarios.length
   const asistieron = usuarios.filter(u => u.verify).length
   const qrValue    = String(sala.idEspejo ?? sala.id)
+  const [fotoPreview, setFotoPreview] = useState(null)  // { imgUrl, nombre }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* QR de asistencia — visible 15 min antes hasta fin de clase */}
-      {isActive && (
-        <div style={{
-          padding: '24px 20px 20px',
-          background: 'var(--bg-3)',
-          borderTop: `3px solid ${col}`,
-          borderBottom: '1px solid var(--line)',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <QrCode size={14} style={{ color: col }} aria-hidden="true" />
-            <p style={{ fontSize: 12, fontWeight: 600, color: col, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Código QR asistencia
-            </p>
-          </div>
-          <div style={{
-            background: '#fff', padding: 16, borderRadius: 16,
-            boxShadow: `0 0 0 4px ${col}30, 0 8px 32px rgba(0,0,0,0.12)`,
-          }}>
-            <QRCodeSVG value={qrValue} size={240} level="M" />
-          </div>
-          <p style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', lineHeight: 1.4 }}>
-            Escanea con <strong>mynoofit</strong> para marcar asistencia
-          </p>
-        </div>
-      )}
 
       {/* Header */}
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid var(--line)', ...(!isActive && { borderTop: `3px solid ${col}` }) }}>
@@ -715,7 +708,12 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
                 background: u.verify ? 'rgba(45,212,168,0.06)' : 'var(--bg-3)',
                 border: `1px solid ${u.verify ? 'rgba(45,212,168,0.2)' : 'var(--line)'}`,
               }}>
-                <Avatar nombre={u.nameClient || '?'} size={34} />
+                <button onClick={() => setFotoPreview({ imgUrl: u.pictureClient, nombre: u.nameClient || `#${u.idClient}` })}
+                        title="Ampliar foto"
+                        aria-label={`Ampliar foto de ${u.nameClient || 'cliente'}`}
+                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', flexShrink: 0 }}>
+                  <Avatar nombre={u.nameClient || '?'} size={34} imgUrl={u.pictureClient} />
+                </button>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {u.nameClient || `#${u.idClient}`}
@@ -750,6 +748,39 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
           </div>
         )}
       </div>
+
+      {/* Overlay: foto ampliada 5×4 cm */}
+      {fotoPreview && (
+        <div onClick={() => setFotoPreview(null)}
+             role="dialog" aria-modal="true" aria-label={`Foto de ${fotoPreview.nombre}`}
+             style={{
+               position: 'fixed', inset: 0, zIndex: 1000,
+               background: 'rgba(0,0,0,0.75)',
+               display: 'flex', alignItems: 'center', justifyContent: 'center',
+               cursor: 'zoom-out',
+             }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+            {fotoPreview.imgUrl ? (
+              <img src={fotoPreview.imgUrl} alt={fotoPreview.nombre}
+                   style={{ width: '5cm', height: '4cm', objectFit: 'cover',
+                            borderRadius: 12, border: '2px solid var(--line)', background: 'var(--bg-3)' }} />
+            ) : (
+              <div style={{
+                width: '5cm', height: '4cm',
+                borderRadius: 12, border: '2px solid var(--line)', background: 'var(--bg-3)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--text-3)', fontSize: 14,
+              }}>
+                Sin foto
+              </div>
+            )}
+            <p style={{ color: '#fff', fontFamily: 'Outfit', fontSize: 14, fontWeight: 600 }}>
+              {fotoPreview.nombre}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

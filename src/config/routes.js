@@ -1,24 +1,17 @@
 import {
-  LayoutDashboard, Users, CalendarDays, UserCheck,
-  Dumbbell, Zap, Cpu, BarChart3, ClipboardCheck,
-  Activity, Settings, CalendarCog,
+  LayoutDashboard, Users, ClipboardCheck, Layers, Database,
 } from 'lucide-react'
 
 export const navItems = [
   { to: '/dashboard',          icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/clientes',           icon: Users,           label: 'Clientes' },
-  { to: '/clases',             icon: CalendarDays,    label: 'Clases' },
-  { to: '/listados',           icon: BarChart3,       label: 'Listados' },
   { to: '/informe-asistencia', icon: ClipboardCheck,  label: 'Informe Asistencia' },
+  { to: '/analisis-clusters',  icon: Layers,          label: 'Análisis patrones' },
 ]
 
-export const configItems = [
-  { to: '/clases-modificacion', icon: CalendarCog, label: 'Clases Modificación' },
-  { to: '/actividades',    icon: Activity,  label: 'Actividades' },
-  { to: '/monitores',      icon: UserCheck, label: 'Monitores' },
-  { to: '/entrenamientos', icon: Dumbbell,  label: 'Entrenamientos' },
-  { to: '/ejercicios',     icon: Zap,       label: 'Ejercicios' },
-  { to: '/dispositivos',   icon: Cpu,       label: 'Dispositivos' },
+// Items solo visibles cuando NO se está impersonando (solo para el gestor)
+export const managerItems = [
+  { to: '/erp-configuracion', icon: Database, label: 'Config. ERP' },
 ]
 
-export { Settings as ConfigIcon }
+export const configItems = []

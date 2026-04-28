@@ -37,7 +37,7 @@ export default function Monitores() {
         {items.map(mon => (
           <Card key={mon.id} style={{ padding: 28 }}>
             <div className="flex items-start gap-3 mb-4">
-              <Avatar nombre={`${mon.nombre} ${mon.apellidos}`} size={48} />
+              <Avatar nombre={`${mon.nombre} ${mon.apellidos}`} size={48} imgUrl={mon.imgUrl} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-start justify-between">
                   <div>

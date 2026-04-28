@@ -181,15 +181,17 @@ export function SectionTitle({ children, action }) {
   )
 }
 
-// Validate imgUrl: only render if it looks like a safe HTTPS URL
+// Validate imgUrl: rechazar solo esquemas peligrosos; aceptar todo lo demás
+// (incluyendo rutas relativas sin "/" inicial, p.e. "wp-content/uploads/foo.jpg")
 function isSafeImageUrl(url) {
   if (!url || typeof url !== 'string') return false
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === 'https:'
-  } catch {
-    return false
-  }
+  const trimmed = url.trim()
+  if (!trimmed) return false
+  // Bloquear esquemas peligrosos
+  const lower = trimmed.toLowerCase()
+  const dangerous = ['javascript:', 'vbscript:', 'file:', 'data:text/html']
+  if (dangerous.some(d => lower.startsWith(d))) return false
+  return true
 }
 
 export function Avatar({ nombre, size = 44, imgUrl }) {

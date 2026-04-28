@@ -22,6 +22,8 @@ const Dispositivos = lazy(() => import('./pages/Dispositivos'))
 const Listados = lazy(() => import('./pages/Listados'))
 const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
 const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
+const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
+const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -53,9 +55,10 @@ function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
-        <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login />} />
+        <Route path="/login" element={user ? <Navigate to="/clientes" replace /> : <Login />} />
 
         <Route element={<RequireAuth><Layout /></RequireAuth>}>
+          <Route index                  element={<Navigate to="/clientes" replace />} />
           <Route path="/dashboard"      element={<Dashboard />} />
           <Route path="/clientes"       element={<ClientList />} />
           <Route path="/clientes/nuevo" element={<NewClient />} />
@@ -69,6 +72,8 @@ function AppRoutes() {
           <Route path="/dispositivos"   element={<Dispositivos />} />
           <Route path="/listados"       element={<Listados />} />
           <Route path="/informe-asistencia"   element={<InformeAsistencia />} />
+          <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
+          <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
         </Route>
 

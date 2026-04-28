@@ -124,7 +124,7 @@ export default function Dashboard() {
                    style={{ transition: 'background 0.1s' }}
                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'}
                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                <Avatar nombre={`${c.name} ${c.surname}`} size={36} />
+                <Avatar nombre={`${c.name} ${c.surname}`} size={36} imgUrl={c.imgUrl} />
                 <div className="flex-1 min-w-0">
                   <p className="text-[13px] font-medium truncate" style={{ color: 'var(--text-0)' }}>
                     {c.name} {c.surname}
