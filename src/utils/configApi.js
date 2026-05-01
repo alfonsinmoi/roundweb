@@ -35,16 +35,20 @@ export const TIPOS_DESCUENTO = [
 // El "manager" es siempre quien hace login originalmente.
 // Si NO está impersonando: trainerId = null (vista global de plantillas)
 // Si SÍ está impersonando: trainerId = id del trainer actual
+//
+// NoofitPro a veces devuelve user.manager = false en lugar de un id (cuando un
+// trainer entra solo, sin manager parent). Por eso usamos `||` en lugar de `??`
+// para tratar false como ausente.
 export function getRoundIdentity(user) {
   if (!user) return { managerId: null, trainerId: null }
   if (user.originalSession) {
     return {
-      managerId: String(user.originalSession.manager ?? user.originalSession.id ?? ''),
-      trainerId: String(user.manager ?? user.id ?? ''),
+      managerId: String(user.originalSession.manager || user.originalSession.id || ''),
+      trainerId: String(user.manager || user.id || ''),
     }
   }
   return {
-    managerId: String(user.manager ?? user.id ?? ''),
+    managerId: String(user.manager || user.id || ''),
     trainerId: null,   // Manager directo: opera con plantillas
   }
 }
