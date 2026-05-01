@@ -132,9 +132,83 @@ Estado:        posted
 
 ---
 
+---
+
+## Sesión 2 — Módulo custom `round_facturacion` ✅
+
+### ✅ Módulo creado e instalado
+
+```
+odoo_modules/round_facturacion/
+├── __manifest__.py                          # depends: account, mail, account_payment_order,
+│                                            #          account_banking_mandate, sepa_direct_debit
+├── __init__.py
+├── models/
+│   ├── round_cuota_catalogo.py             # espejo catálogo NoofitPro
+│   ├── round_descuento_catalogo.py         # catálogo descuentos
+│   ├── round_subscription.py                # suscripción cliente (mail.thread)
+│   ├── round_modificacion_recibo.py        # modificaciones temporales
+│   ├── round_pasarela_config.py            # Redsys/Paycomet por trainer
+│   ├── round_log_webhook.py                # trazabilidad MCP
+│   └── res_partner.py                       # extensión: id_noofit, trainer_analytic_id
+├── views/                                   # 7 ficheros XML con tree+form+search
+├── security/                                # 2 grupos + ACLs
+└── data/
+```
+
+### ✅ Datos cargados tras instalación
+
+| Modelo | Filas |
+|---|---|
+| `round.cuota.catalogo` | 3 (RT 1D, I MYGYM, RT 2 dias) — vinculadas a sus productos Odoo |
+| `round.descuento.catalogo` | 4 (DESC_FAMILIA, DESC_EMPLEADO, DESC_BAJA_MED, PROMO_2026) |
+| `round.subscription` | 1 activa (TEST Juan García → cuota RT 1D, mensual, SEPA, mandato) |
+| `round.pasarela.config` | 0 (pendiente cuando se tengan credenciales reales) |
+| Cliente test extendido | trainer_analytic_id = "Round Málaga Centro", id_noofit = 1811337 |
+| Factura existente | INV/2026/00005 vinculada a la suscripción |
+
+### ⚠️ Ajustes durante la instalación
+
+| Problema | Solución |
+|---|---|
+| Faltaba dependencia `mail` en manifest (tracking en estado de subscription) | Añadida `'mail'` a `depends` |
+| Botón sin método `action_view_subscriptions` en cuota catálogo form | Eliminado del XML |
+| Admin `adminround` sin grupo `base.group_system` | Insertado vía SQL |
+| Password admin se reseteó tras restart | Reseteado vía Odoo Python shell con `env['res.users'].browse(2).password = ...` |
+
+### 🎯 Hitos cubiertos del plan POC
+
+| Tarea POC | Estado |
+|---|---|
+| 6. Desarrollar módulo `round_facturacion` (custom) | ✅ |
+
+### Acceso al módulo en la UI
+
+```
+Login en https://round.carajfam.com
+BD round_facturacion · adminround / RoundFact!2026
+
+Menú → Round Facturación
+├── Suscripciones
+├── Modificaciones
+└── Configuración
+    ├── Catálogo cuotas
+    ├── Catálogo descuentos
+    ├── Pasarelas de pago
+    └── Logs webhooks
+```
+
+También en la ficha de cualquier cliente: nueva pestaña **"Round Facturación"** con id_noofit, trainer asignado, estado y suscripciones.
+
+---
+
 ## 🚀 Próxima sesión
 
-### Sesión 2 — Módulo custom `round_facturacion`
+### Sesión 3 — MCP receiver (siguiente)
+
+- Endpoint REST que reciba `POST /eventos/{evento}` con auth token + HMAC
+- Conexión XML-RPC a Odoo
+- Procesa los 11 eventos de NoofitPro → Odoo (sección 4.1 del documento)
 
 Crear el módulo Odoo con los modelos descritos en sección 3.2 del documento de arquitectura:
 
