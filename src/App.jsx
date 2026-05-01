@@ -24,6 +24,7 @@ const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
 const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
 const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
+const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -71,9 +72,11 @@ function AppRoutes() {
           <Route path="/ejercicios"     element={<Ejercicios />} />
           <Route path="/dispositivos"   element={<Dispositivos />} />
           <Route path="/listados"       element={<Listados />} />
-          <Route path="/informe-asistencia"   element={<InformeAsistencia />} />
+          <Route path="/informe-asistencia"          element={<InformeAsistencia />} />
+          <Route path="/informe-asistencia/:tab"     element={<InformeAsistencia />} />
           <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
+          <Route path="/configuracion"       element={<Configuracion />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
         </Route>
 

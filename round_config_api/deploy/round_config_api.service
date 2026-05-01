@@ -1,0 +1,16 @@
+[Unit]
+Description=Round Configuracion API - backend de catálogos
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=odoo
+Group=odoo
+WorkingDirectory=/opt/round_config_api
+EnvironmentFile=/opt/round_config_api/.env
+ExecStart=/opt/round_config_api/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8095 --timeout 60 --access-logfile /var/log/round_config_api/access.log --error-logfile /var/log/round_config_api/error.log wsgi:application
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
