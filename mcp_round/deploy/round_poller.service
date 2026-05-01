@@ -1,0 +1,13 @@
+[Unit]
+Description=Round MCP poller - detecta cambios en Odoo y notifica a NoofitPro
+After=network.target round_mcp.service
+
+[Service]
+Type=oneshot
+User=odoo
+Group=odoo
+WorkingDirectory=/opt/round_mcp
+EnvironmentFile=/opt/round_mcp/.env
+ExecStart=/opt/round_mcp/venv/bin/python /opt/round_mcp/poll.py
+StandardOutput=append:/var/log/round_mcp/poller.log
+StandardError=append:/var/log/round_mcp/poller.log

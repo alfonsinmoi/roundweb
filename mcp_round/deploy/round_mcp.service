@@ -1,0 +1,17 @@
+[Unit]
+Description=Round MCP - webhook receiver NoofitPro to Odoo
+After=network.target odoo17.service
+Wants=odoo17.service
+
+[Service]
+Type=simple
+User=odoo
+Group=odoo
+WorkingDirectory=/opt/round_mcp
+EnvironmentFile=/opt/round_mcp/.env
+ExecStart=/opt/round_mcp/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8090 --timeout 60 --access-logfile /var/log/round_mcp/access.log --error-logfile /var/log/round_mcp/error.log wsgi:application
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

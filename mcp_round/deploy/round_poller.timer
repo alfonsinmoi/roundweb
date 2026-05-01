@@ -1,0 +1,11 @@
+[Unit]
+Description=Round MCP poller - timer cada 30 min
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Unit=round_poller.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
