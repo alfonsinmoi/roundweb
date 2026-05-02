@@ -36,19 +36,30 @@ export const TIPOS_DESCUENTO = [
 // Si NO está impersonando: trainerId = null (vista global de plantillas)
 // Si SÍ está impersonando: trainerId = id del trainer actual
 //
-// NoofitPro a veces devuelve user.manager = false en lugar de un id (cuando un
-// trainer entra solo, sin manager parent). Por eso usamos `||` en lugar de `??`
-// para tratar false como ausente.
+// NoofitPro a veces devuelve user.manager = false (boolean) o "false" (string)
+// cuando un trainer entra solo, sin manager parent. `||` no salta la string
+// "false" porque es truthy. Usamos un helper explícito.
+
+function isAbsent(v) {
+  return v == null || v === false || v === 0 ||
+         v === '' || v === 'false' || v === 'null' || v === '0' || v === 'undefined'
+}
+function pickId(...candidates) {
+  for (const c of candidates) if (!isAbsent(c)) return c
+  return ''
+}
+
 export function getRoundIdentity(user) {
   if (!user) return { managerId: null, trainerId: null }
   if (user.originalSession) {
+    const o = user.originalSession
     return {
-      managerId: String(user.originalSession.manager || user.originalSession.id || ''),
-      trainerId: String(user.manager || user.id || ''),
+      managerId: String(pickId(o.manager, o.id)),
+      trainerId: String(pickId(user.manager, user.id)),
     }
   }
   return {
-    managerId: String(user.manager || user.id || ''),
+    managerId: String(pickId(user.manager, user.id)),
     trainerId: null,   // Manager directo: opera con plantillas
   }
 }
@@ -89,6 +100,14 @@ export const descuentoCreate  = (identity, data) => _request('POST',  '/descuent
 export const descuentoUpdate  = (identity, id, data) => _request('PATCH', `/descuentos/${id}`, identity, data).then(d => d.descuento)
 export const descuentoDelete  = (identity, id) => _request('DELETE', `/descuentos/${id}`, identity)
 export const descuentoAdoptar = (identity, id) => _request('POST', `/descuentos/${id}/adoptar`, identity).then(d => d.descuento)
+
+// ── Asignaciones de descuento a clientes ─────────────────────────────────────
+export const asignacionesList   = (identity, descId) =>
+  _request('GET', `/descuentos/${descId}/asignaciones`, identity).then(d => d.asignaciones)
+export const asignacionCreate   = (identity, descId, body) =>
+  _request('POST', `/descuentos/${descId}/asignaciones`, identity, body)
+export const asignacionDelete   = (identity, descId, asigId) =>
+  _request('DELETE', `/descuentos/${descId}/asignaciones/${asigId}`, identity)
 
 // ── Modificaciones ──────────────────────────────────────────────────────────
 export const modificacionesList  = (identity) => _request('GET',   '/modificaciones', identity).then(d => d.modificaciones)

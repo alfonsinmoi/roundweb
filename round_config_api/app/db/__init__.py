@@ -35,6 +35,14 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='modificacion' AND column_name='odoo_id') THEN
     ALTER TABLE modificacion ADD COLUMN odoo_id INTEGER;
   END IF;
+  -- modificacion.cliente_idnoofit pasa a ser obligatorio (no nulo)
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='modificacion') THEN
+    BEGIN
+      ALTER TABLE modificacion ALTER COLUMN cliente_idnoofit SET NOT NULL;
+    EXCEPTION
+      WHEN others THEN NULL;  -- ya es NOT NULL o tiene rows con NULL → ignorar
+    END;
+  END IF;
 END $$;
 
 -- ─── CUOTAS ──────────────────────────────────────────────────────────────────
@@ -116,6 +124,27 @@ CREATE INDEX IF NOT EXISTS idx_mod_trainer ON modificacion(id_trainer);
 CREATE INDEX IF NOT EXISTS idx_mod_fechas  ON modificacion(fecha_desde, fecha_hasta);
 
 
+-- ─── ASIGNACIÓN DE DESCUENTOS A CLIENTES ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS descuento_asignacion (
+  id                       SERIAL PRIMARY KEY,
+  descuento_id             INTEGER NOT NULL REFERENCES descuento(id) ON DELETE CASCADE,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  fecha_desde              DATE,
+  fecha_hasta              DATE,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'activa'
+                                       CHECK (estado IN ('activa','pausada','cancelada')),
+  odoo_id                  INTEGER,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT desc_asig_unique UNIQUE (descuento_id, cliente_idnoofit)
+);
+CREATE INDEX IF NOT EXISTS idx_desc_asig_cliente  ON descuento_asignacion(cliente_idnoofit);
+CREATE INDEX IF NOT EXISTS idx_desc_asig_descuento ON descuento_asignacion(descuento_id);
+CREATE INDEX IF NOT EXISTS idx_desc_asig_trainer  ON descuento_asignacion(id_trainer);
+
+
 -- ─── TRIGGER updated_at ──────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION trg_set_updated_at() RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -124,12 +153,15 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS trg_cuota_upd        ON cuota;
 DROP TRIGGER IF EXISTS trg_descuento_upd    ON descuento;
 DROP TRIGGER IF EXISTS trg_modificacion_upd ON modificacion;
+DROP TRIGGER IF EXISTS trg_desc_asig_upd    ON descuento_asignacion;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_descuento_upd    BEFORE UPDATE ON descuento
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_modificacion_upd BEFORE UPDATE ON modificacion
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_desc_asig_upd    BEFORE UPDATE ON descuento_asignacion
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 

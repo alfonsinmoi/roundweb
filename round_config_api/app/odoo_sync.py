@@ -183,6 +183,48 @@ class OdooSync:
                              limit=1)
         return sub_ids[0] if sub_ids else None
 
+    def _find_subscriptions_active(self, cliente_idnoofit):
+        """Devuelve lista de IDs de TODAS las suscripciones activas del cliente."""
+        if not cliente_idnoofit:
+            return []
+        partner_ids = self._call('res.partner', 'search', [('id_noofit', '=', str(cliente_idnoofit))], limit=1)
+        if not partner_ids:
+            return []
+        return self._call('round.subscription', 'search',
+                          [('partner_id', '=', partner_ids[0]), ('estado', '=', 'activa')]) or []
+
+    # ── Asignaciones de descuento a cliente ──────────────────────────────────
+    # En Odoo no hay un objeto "asignación" — se modela añadiendo el descuento
+    # al campo many2many `descuentos_activos_ids` de cada suscripción del cliente.
+    def asignacion_apply(self, descuento_odoo_id, cliente_idnoofit):
+        """Añade el descuento (por su id en round.descuento.catalogo) a las
+        suscripciones activas del cliente."""
+        if not cfg.ODOO_SYNC_ENABLED or not descuento_odoo_id:
+            return None
+        sub_ids = self._find_subscriptions_active(cliente_idnoofit)
+        if not sub_ids:
+            log.info(f'asignacion_apply: cliente {cliente_idnoofit} sin suscripciones activas')
+            return None
+        # (4, id) = link many2many sin reemplazar el resto
+        for sub in sub_ids:
+            self._call('round.subscription', 'write', [sub],
+                       {'descuentos_activos_ids': [(4, descuento_odoo_id)]})
+        return sub_ids
+
+    def asignacion_revoke(self, descuento_odoo_id, cliente_idnoofit):
+        """Quita el descuento de las suscripciones del cliente (puede ya no estar activas)."""
+        if not cfg.ODOO_SYNC_ENABLED or not descuento_odoo_id:
+            return None
+        partner_ids = self._call('res.partner', 'search', [('id_noofit', '=', str(cliente_idnoofit))], limit=1)
+        if not partner_ids:
+            return None
+        sub_ids = self._call('round.subscription', 'search', [('partner_id', '=', partner_ids[0])]) or []
+        # (3, id) = unlink many2many sin borrar
+        for sub in sub_ids:
+            self._call('round.subscription', 'write', [sub],
+                       {'descuentos_activos_ids': [(3, descuento_odoo_id)]})
+        return sub_ids
+
 
 _singleton = None
 def get_sync():

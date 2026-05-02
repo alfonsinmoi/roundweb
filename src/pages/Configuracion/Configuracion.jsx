@@ -36,6 +36,7 @@ export default function Configuracion() {
           ? <>Editando configuración del trainer <strong style={{ color: 'var(--text-1)' }}>{user.email}</strong>. Lo que cambies aquí queda asignado a este trainer.</>
           : <>Editando <strong style={{ color: 'var(--text-1)' }}>plantillas de manager</strong>. Cada trainer puede adoptarlas o crear las suyas.</>
         }
+        {' '}<span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>v1.1</span>
       </p>
 
       {/* Sub-tabs */}
