@@ -1,7 +1,12 @@
-"""CRUD de cuotas + endpoint para adoptar plantilla."""
+"""CRUD de cuotas + endpoint para adoptar plantilla.
+
+Cada CREATE/UPDATE/DELETE se replica también en Odoo (round.cuota.catalogo)
+si CONFIG_ODOO_SYNC=1. Si Odoo está caído, sigue funcionando sólo con Postgres.
+"""
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required
 from ..db import get_conn
+from ..odoo_sync import get_sync
 from .. import config
 
 bp = Blueprint('cuotas', __name__)
@@ -11,7 +16,7 @@ SELECT_FIELDS = """
     precio_mensual, precio_bimensual, precio_trimestral,
     precio_semestral, precio_anual, matricula,
     formas_pago, periodicidades, actividades_idnoofit,
-    active, created_at, updated_at
+    active, odoo_id, created_at, updated_at
 """
 
 
@@ -103,6 +108,14 @@ def create_cuota():
                 d.get('actividades_idnoofit', []), d.get('active', True),
             ))
             row = cur.fetchone()
+
+    # Sync Odoo: solo plantillas de manager (las trainer-cuotas son derivadas)
+    if scope == 'plantilla_manager':
+        odoo_id = get_sync().cuota_create(row)
+        if odoo_id and isinstance(odoo_id, int):
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s RETURNING odoo_id", (odoo_id, row['id']))
+                row['odoo_id'] = odoo_id
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)}), 201
 
 
@@ -133,6 +146,17 @@ def update_cuota(cuota_id):
             row = cur.fetchone()
     if not row:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+    # Sync Odoo: si es plantilla y tiene odoo_id, actualizar; si no, crear
+    if row['scope'] == 'plantilla_manager':
+        if row.get('odoo_id'):
+            get_sync().cuota_update(row['odoo_id'], row)
+        else:
+            new_odoo_id = get_sync().cuota_create(row)
+            if new_odoo_id and isinstance(new_odoo_id, int):
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s", (new_odoo_id, row['id']))
+                row['odoo_id'] = new_odoo_id
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)})
 
 
@@ -141,8 +165,12 @@ def update_cuota(cuota_id):
 def delete_cuota(cuota_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT odoo_id, scope FROM cuota WHERE id=%s AND id_manager=%s", (cuota_id, g.id_manager))
+            r = cur.fetchone()
             cur.execute("DELETE FROM cuota WHERE id=%s AND id_manager=%s", (cuota_id, g.id_manager))
             n = cur.rowcount
+    if r and r.get('odoo_id') and r.get('scope') == 'plantilla_manager':
+        get_sync().cuota_delete(r['odoo_id'])
     return jsonify({'ok': True, 'deleted': n})
 
 

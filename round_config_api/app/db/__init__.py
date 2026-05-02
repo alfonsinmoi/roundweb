@@ -20,6 +20,23 @@ def get_conn():
 
 
 SCHEMA_SQL = """
+-- ─── Migrations idempotentes (alter table si las columnas no existen) ──
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='cuota')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='cuota' AND column_name='odoo_id') THEN
+    ALTER TABLE cuota ADD COLUMN odoo_id INTEGER;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='descuento')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='descuento' AND column_name='odoo_id') THEN
+    ALTER TABLE descuento ADD COLUMN odoo_id INTEGER;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='modificacion')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='modificacion' AND column_name='odoo_id') THEN
+    ALTER TABLE modificacion ADD COLUMN odoo_id INTEGER;
+  END IF;
+END $$;
+
 -- ─── CUOTAS ──────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS cuota (
   id                       SERIAL PRIMARY KEY,
@@ -39,6 +56,7 @@ CREATE TABLE IF NOT EXISTS cuota (
   periodicidades           TEXT[] DEFAULT ARRAY[]::TEXT[],
   actividades_idnoofit     INTEGER[] DEFAULT ARRAY[]::INTEGER[],
   active                   BOOLEAN NOT NULL DEFAULT TRUE,
+  odoo_id                  INTEGER,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT cuota_scope_trainer CHECK (
@@ -63,6 +81,7 @@ CREATE TABLE IF NOT EXISTS descuento (
   tipo                     VARCHAR(20) NOT NULL CHECK (tipo IN ('porcentaje','importe')),
   valor                    NUMERIC(10,2) NOT NULL,
   active                   BOOLEAN NOT NULL DEFAULT TRUE,
+  odoo_id                  INTEGER,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT desc_scope_trainer CHECK (
@@ -89,6 +108,7 @@ CREATE TABLE IF NOT EXISTS modificacion (
   razon                    TEXT,
   estado                   VARCHAR(20) NOT NULL DEFAULT 'activa'
                                        CHECK (estado IN ('activa','aplicada','cancelada')),
+  odoo_id                  INTEGER,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

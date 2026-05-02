@@ -2,12 +2,13 @@
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required
 from ..db import get_conn
+from ..odoo_sync import get_sync
 from .. import config
 
 bp = Blueprint('modificaciones', __name__)
 
 FIELDS = """id, id_manager, id_trainer, cliente_idnoofit, cuota_id, tipo, valor,
-            fecha_desde, fecha_hasta, razon, estado, created_at, updated_at"""
+            fecha_desde, fecha_hasta, razon, estado, odoo_id, created_at, updated_at"""
 
 
 def _row(r):
@@ -55,7 +56,13 @@ def create():
         """, (g.id_manager, id_trainer, d.get('cliente_idnoofit'), d.get('cuota_id'),
               d['tipo'], d.get('valor',0), d['fecha_desde'], d.get('fecha_hasta'),
               d.get('razon'), d.get('estado', 'activa')))
-        return jsonify({'ok': True, 'modificacion': _row(cur.fetchone())}), 201
+        row = cur.fetchone()
+    oid = get_sync().modificacion_create(row)
+    if oid and isinstance(oid, int):
+        with get_conn() as conn2, conn2.cursor() as cur2:
+            cur2.execute("UPDATE modificacion SET odoo_id=%s WHERE id=%s", (oid, row['id']))
+        row['odoo_id'] = oid
+    return jsonify({'ok': True, 'modificacion': _row(row)}), 201
 
 
 @bp.route('/<int:_id>', methods=['PUT','PATCH'])
@@ -77,6 +84,8 @@ def update(_id):
         r = cur.fetchone()
     if not r:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if r.get('odoo_id'):
+        get_sync().modificacion_update(r['odoo_id'], r)
     return jsonify({'ok': True, 'modificacion': _row(r)})
 
 
@@ -84,5 +93,10 @@ def update(_id):
 @auth_required
 def delete(_id):
     with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT odoo_id FROM modificacion WHERE id=%s AND id_manager=%s", (_id, g.id_manager))
+        r = cur.fetchone()
         cur.execute("DELETE FROM modificacion WHERE id=%s AND id_manager=%s", (_id, g.id_manager))
-        return jsonify({'ok': True, 'deleted': cur.rowcount})
+        n = cur.rowcount
+    if r and r.get('odoo_id'):
+        get_sync().modificacion_delete(r['odoo_id'])
+    return jsonify({'ok': True, 'deleted': n})
