@@ -6,9 +6,10 @@ from flask_cors import CORS
 
 from . import config
 from .db import init_schema
-from .routes.cuotas         import bp as bp_cuotas
-from .routes.descuentos     import bp as bp_descuentos
-from .routes.modificaciones import bp as bp_modificaciones
+from .routes.cuotas           import bp as bp_cuotas
+from .routes.descuentos       import bp as bp_descuentos
+from .routes.modificaciones   import bp as bp_modificaciones
+from .routes.cuotas_clientes  import bp as bp_cuotas_clientes
 
 
 def create_app():
@@ -52,5 +53,7 @@ def create_app():
         app.register_blueprint(bp_descuentos, name=f'descuentos{prefix}', url_prefix=prefix)
     for prefix in ('/modificaciones', '/api/config/modificaciones'):
         app.register_blueprint(bp_modificaciones, name=f'modificaciones{prefix}', url_prefix=prefix)
+    for prefix in ('/cuotas-clientes', '/api/cuotas'):
+        app.register_blueprint(bp_cuotas_clientes, name=f'cc{prefix}', url_prefix=prefix)
 
     return app
