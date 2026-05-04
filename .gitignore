@@ -10,3 +10,16 @@ dist/
 *.p12
 *.pfx
 *.cert
+
+# Entornos y caches locales (no van al repo)
+.claude/
+.playwright-mcp/
+.playwright-rt/
+__pycache__/
+*.pyc
+*.pyo
+
+# Builds y temporales
+build/
+*.log
+.vscode/

@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useDeferredValue } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Search, Archive, Loader2, Send, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
-import { Badge, Avatar, Btn, EmptyState } from '../../components/UI'
+import { Badge, Avatar, Btn, EmptyState, isSafeImageUrl, normalizeImageUrl } from '../../components/UI'
 import ERPModal from '../../components/ERPModal'
-import { getClientes, peekCache, peekPersistedCache, getERPConfiguraciones } from '../../utils/api'
+import { getClientes, peekCache, peekPersistedCache, getERPConfiguraciones, invalidateCache, clearPersistedCache } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
+import { useGympassMap } from '../../hooks/useGympassMap'
+import { getRoundIdentity, fechaBajaPorCliente } from '../../utils/configApi'
 
 const PAGE_SIZE = 15
 
@@ -35,15 +37,21 @@ function buildPageList(totalPages, current) {
 export default function ClientList() {
   const navigate = useNavigate()
   const { user }  = useAuth()
+  const identity  = useMemo(() => getRoundIdentity(user), [user])
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const [filtro, setFiltro] = useState('activos')
+  const [filtroGympass, setFiltroGympass] = useState(false)
   const [clientes, setClientes] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [erpCliente, setErpCliente] = useState(null)
   const [page, setPage] = useState(1)
-  const [fotoPreview, setFotoPreview] = useState(null) // { imgUrl, nombre }
+  const [fotoPreview, setFotoPreview] = useState(null) // { imgUrl, nombre, x, y }
+  const [fechasBaja, setFechasBaja] = useState({})    // { clienteId: fechaIso }
+  const [fotoFailed,  setFotoFailed]  = useState(false)
+  // Reset del fallo al cambiar de foto
+  useEffect(() => { setFotoFailed(false) }, [fotoPreview?.imgUrl])
 
   useEffect(() => {
     let active = true
@@ -65,31 +73,56 @@ export default function ClientList() {
     return () => { active = false }
   }, [])
 
+  // Recarga forzada (limpia caché + pide a NoofitPro). Útil tras alta/reactivación.
+  const reloadClientes = async () => {
+    try {
+      invalidateCache('clientes')
+      clearPersistedCache('clientes')
+      const cli = await getClientes()
+      setClientes(cli)
+    } catch {}
+  }
+
+  // Cargar fechas de baja (último cambio archivado) para mostrarlas junto al badge
+  useEffect(() => {
+    if (!identity?.managerId) return
+    fechaBajaPorCliente(identity)
+      .then(map => setFechasBaja(map || {}))
+      .catch(() => {})
+  }, [identity.managerId])
+
   // ERP activo si existe alguna configuración con al menos un campo definido
   const [tieneERP, setTieneERP] = useState(false)
+  const [erpConfig, setErpConfig] = useState(null)
   useEffect(() => {
     let active = true
     getERPConfiguraciones()
       .then(raw => {
         if (!active) return
         const configs = Array.isArray(raw) ? raw : (raw ? [raw] : [])
-        const has = configs.some(c => Array.isArray(c?.campos) && c.campos.length > 0)
-        setTieneERP(has)
+        const withFields = configs.find(c => Array.isArray(c?.campos) && c.campos.length > 0)
+        setTieneERP(!!withFields)
+        setErpConfig(withFields || null)
       })
-      .catch(() => { if (active) setTieneERP(false) })
+      .catch(() => { if (active) { setTieneERP(false); setErpConfig(null) } })
     return () => { active = false }
   }, [])
 
   const clientFullName = c => `${c.nombre || c.name || ''} ${c.apellidos || c.surname || ''}`.trim()
 
+  // Detección de cliente Gympass: tira de la BD propia del VPS (cliente_gympass)
+  // y como fallback usa el alias.
+  const { isGympass, getGympassId } = useGympassMap()
+
   const filtered = useMemo(() => clientes.filter(c => {
     const q = deferredSearch.toLowerCase()
-    const match = `${clientFullName(c)} ${c.email}`.toLowerCase().includes(q)
+    const match = `${clientFullName(c)} ${c.email} ${c.gympassId || ''} ${c.alias || ''}`.toLowerCase().includes(q)
     if (!match) return false
+    if (filtroGympass && !isGympass(c)) return false
     if (filtro === 'activos') return c.enabled !== false
     if (filtro === 'archivados') return c.enabled === false
     return true
-  }), [clientes, deferredSearch, filtro])
+  }), [clientes, deferredSearch, filtro, filtroGympass])
 
   // Paginación: calcular total y ajustar la página actual si el filtro la deja
   // fuera de rango (p.ej. estábamos en pág. 5 y el nuevo filtro sólo tiene 3).
@@ -112,7 +145,7 @@ export default function ClientList() {
 
   const startIdx = (page - 1) * PAGE_SIZE
   const visible = filtered.slice(startIdx, startIdx + PAGE_SIZE)
-  const cols = tieneERP ? '2fr 2fr 120px 1fr 1fr auto' : '2fr 2fr 120px 1fr 1fr'
+  const cols = tieneERP ? '2.4fr 1fr 2fr 120px 1fr 1fr auto' : '2.4fr 1fr 2fr 120px 1fr 1fr'
   const pageList = buildPageList(totalPages, page)
   const goPage = p => setPage(Math.min(totalPages, Math.max(1, p)))
 
@@ -164,6 +197,20 @@ export default function ClientList() {
             ))}
           </div>
 
+          <button onClick={() => { setFiltroGympass(g => !g); setPage(1) }}
+                  aria-pressed={filtroGympass}
+                  title={filtroGympass ? 'Mostrar todos' : 'Solo Gympass'}
+                  style={{
+                    padding: '8px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                    borderRadius: 10,
+                    background: filtroGympass ? 'rgba(167,139,250,0.18)' : 'var(--bg-2)',
+                    color: filtroGympass ? 'var(--violet)' : 'var(--text-2)',
+                    border: `1px solid ${filtroGympass ? 'rgba(167,139,250,0.35)' : 'var(--line)'}`,
+                    transition: 'all 0.1s', display: 'inline-flex', alignItems: 'center', gap: 6,
+                  }}>
+            Gympass
+          </button>
+
           <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
             <Plus size={15} aria-hidden="true" /> Nuevo cliente
           </Btn>
@@ -191,7 +238,7 @@ export default function ClientList() {
         <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 0, padding: '8px 20px', background: 'var(--bg-3)', borderBottom: '1px solid var(--line)' }}>
-            {['Cliente', 'Email', 'Estado', 'Teléfono', 'DNI', ...(tieneERP ? [''] : [])].map((h, i) => (
+            {['Cliente', 'Gympass', 'Email', 'Estado', 'Teléfono', 'DNI', ...(tieneERP ? [''] : [])].map((h, i) => (
               <span key={i} style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>{h}</span>
             ))}
           </div>
@@ -234,36 +281,85 @@ export default function ClientList() {
                   <Avatar nombre={clientFullName(c)} size={30} imgUrl={c.imgUrl} />
                 </button>
                 <div style={{ minWidth: 0 }}>
-                  <p style={{ fontFamily: 'Outfit', fontSize: 13, fontWeight: 600, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.2 }}>
+                  <p style={{ fontFamily: 'Outfit', fontSize: 16, fontWeight: 700, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.25 }}>
                     {clientFullName(c)}
                   </p>
                   {c.idEspejo != null && (
-                    <p style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'monospace' }}>#{c.idEspejo}</p>
+                    <p style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'monospace' }}>#{c.idEspejo}</p>
                   )}
                 </div>
               </div>
 
+              {/* Gympass */}
+              {isGympass(c) ? (
+                <div>
+                  <Badge color="purple" title={getGympassId(c) || c.alias || 'Gympass'}>Gympass</Badge>
+                </div>
+              ) : (
+                <p style={{ fontSize: 13, color: 'var(--text-3)' }}>—</p>
+              )}
+
               {/* Email */}
-              <p style={{ fontSize: 12, color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 12 }} title={c.email}>
+              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 12 }} title={c.email}>
                 {c.email || '—'}
               </p>
 
               {/* Estado */}
               <div>
-                {c.enabled === false
-                  ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Archivado</Badge>
-                  : <Badge color="green">Activo</Badge>
-                }
+                {c.enabled === false ? (() => {
+                  const motivo = typeof c.motivoArchivado === 'string'
+                    ? c.motivoArchivado.trim()
+                    : ''
+                  const fbIso = fechasBaja[c.id]
+                  let fbStr = ''
+                  if (fbIso) {
+                    try {
+                      const d = new Date(fbIso)
+                      fbStr = d.toLocaleDateString('es-ES',
+                        { day: 'numeric', month: 'short', year: 'numeric' })
+                    } catch {}
+                  }
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <Badge color="red"><Archive size={10} aria-hidden="true" /> Desactivo</Badge>
+                      {fbStr && (
+                        <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}
+                              title={`Detectado como archivado el ${fbStr}`}>
+                          baja: {fbStr}
+                        </span>
+                      )}
+                      {motivo && (
+                        <span style={{ fontSize: 10, color: 'var(--text-3)' }} title={motivo}>
+                          {motivo.length > 18 ? motivo.slice(0, 18) + '…' : motivo}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })() : (
+                  <Badge color="green">Activo</Badge>
+                )}
               </div>
 
               {/* Teléfono */}
-              <p style={{ fontSize: 12, color: 'var(--text-2)' }}>{c.cellPhone || '—'}</p>
+              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>{c.cellPhone || '—'}</p>
 
               {/* DNI */}
-              <p style={{ fontSize: 12, color: 'var(--text-2)' }}>{c.dni || '—'}</p>
+              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)', fontFamily: 'var(--font-mono)' }}>{c.dni || '—'}</p>
 
-              {/* ERP */}
-              {tieneERP && (
+              {/* ERP / Reactivar */}
+              {c.enabled === false && tieneERP ? (
+                <button onClick={e => { e.stopPropagation(); setErpCliente({ ...c, _recaptacion: true }) }}
+                        aria-label={`Reactivar y enviar ERP para ${c.name} ${c.surname}`}
+                        title="Reactivar cliente · abre datos ERP en edición y crea alta nueva en Odoo"
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 5,
+                          padding: '5px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600,
+                          cursor: 'pointer', border: '1px solid var(--green-border)',
+                          background: 'var(--green-bg)', color: 'var(--green)', transition: 'all 0.1s',
+                        }}>
+                  <Send size={11} aria-hidden="true" /> Reactivar
+                </button>
+              ) : tieneERP ? (
                 <button onClick={e => { e.stopPropagation(); setErpCliente(c) }}
                         aria-label={`Enviar ERP para ${c.name} ${c.surname}`}
                         style={{
@@ -274,7 +370,7 @@ export default function ClientList() {
                         }}>
                   <Send size={11} aria-hidden="true" /> ERP
                 </button>
-              )}
+              ) : null}
             </div>
           ))}
         </div>
@@ -319,7 +415,11 @@ export default function ClientList() {
       )}
 
       {erpCliente && (
-        <ERPModal cliente={erpCliente} erpConfig={erpConfig} onClose={() => setErpCliente(null)} />
+        <ERPModal cliente={erpCliente}
+                  erpConfig={erpConfig}
+                  recaptacion={!!erpCliente._recaptacion}
+                  onSaved={reloadClientes}
+                  onClose={() => setErpCliente(null)} />
       )}
 
       {/* Preview de foto ampliada 10x10 cm, anclada a la posición del click */}
@@ -355,12 +455,36 @@ export default function ClientList() {
               background: 'var(--bg-3)', border: '1px solid var(--line)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
-              {fotoPreview.imgUrl ? (
-                <img src={fotoPreview.imgUrl} alt={fotoPreview.nombre}
-                     style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : (
-                <span style={{ fontSize: 14, color: 'var(--text-3)' }}>Sin foto</span>
-              )}
+              {(() => {
+                const safe = isSafeImageUrl(fotoPreview.imgUrl)
+                const url  = safe ? normalizeImageUrl(fotoPreview.imgUrl) : null
+                if (!url || fotoFailed) {
+                  // Iniciales en grande como fallback
+                  const ini = fotoPreview.nombre?.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() || '?'
+                  return (
+                    <div role="img" aria-label={fotoPreview.nombre ?? ''}
+                         style={{
+                           width: '100%', height: '100%',
+                           display: 'flex', alignItems: 'center', justifyContent: 'center',
+                           background: 'var(--bg-2)',
+                           color: 'var(--text-2)',
+                           fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 64,
+                         }}>
+                      {ini}
+                    </div>
+                  )
+                }
+                return (
+                  <img src={url} alt=""
+                       aria-label={fotoPreview.nombre}
+                       onError={() => {
+                         // eslint-disable-next-line no-console
+                         console.warn('[fotoPreview] no se pudo cargar:', url, 'cliente:', fotoPreview.nombre)
+                         setFotoFailed(true)
+                       }}
+                       style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                )
+              })()}
             </div>
             <p style={{ fontFamily: 'Outfit', fontSize: 13, fontWeight: 600, color: 'var(--text-0)', textAlign: 'center', maxWidth: '10cm', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {fotoPreview.nombre}

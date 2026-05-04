@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
 /**
@@ -8,12 +9,19 @@ export default function Modal({ open, onClose, title, subtitle, children, maxWid
   const dialogRef = useRef(null)
   const prevFocusRef = useRef(null)
 
+  // Refs estables para que el useEffect NO se re-ejecute cuando estos
+  // callbacks/flags cambian de referencia en cada render del padre.
+  const onCloseRef = useRef(onClose)
+  const disabledRef = useRef(disabled)
+  useEffect(() => { onCloseRef.current = onClose })
+  useEffect(() => { disabledRef.current = disabled })
+
   useEffect(() => {
     if (!open) return
 
     prevFocusRef.current = document.activeElement
 
-    // Focus first focusable element in modal
+    // Focus first focusable element in modal (solo al montar)
     const timer = setTimeout(() => {
       const el = dialogRef.current?.querySelector('input, button, select, textarea, [tabindex]:not([tabindex="-1"])')
       el?.focus()
@@ -21,8 +29,8 @@ export default function Modal({ open, onClose, title, subtitle, children, maxWid
 
     // Trap focus within modal
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && !disabled) {
-        onClose()
+      if (e.key === 'Escape' && !disabledRef.current) {
+        onCloseRef.current?.()
         return
       }
       if (e.key !== 'Tab') return
@@ -45,11 +53,16 @@ export default function Modal({ open, onClose, title, subtitle, children, maxWid
       document.body.style.overflow = ''
       prevFocusRef.current?.focus()
     }
-  }, [open, onClose, disabled])
+    // ⚠ Solo depende de `open`. Los callbacks/disabled se leen del ref vivo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   if (!open) return null
 
-  return (
+  // Renderizar fuera del flujo del DOM (en document.body) para que `position: fixed`
+  // sea relativo al viewport y no se vea afectado por transform/filter de padres,
+  // ni por banners sticky / sidebars con stacking context propio.
+  return createPortal((
     <div role="dialog" aria-modal="true" aria-label={title}
          style={{
            position: 'fixed', inset: 0, zIndex: 1000,
@@ -63,6 +76,12 @@ export default function Modal({ open, onClose, title, subtitle, children, maxWid
              width: '100%', maxWidth, background: 'var(--bg-2)',
              border: '1px solid var(--line)', borderRadius: 24,
              display: 'flex', flexDirection: 'column',
+             // Altura: 90% del viewport con margen mínimo. Si el form es corto,
+             // el modal sigue siendo grande (con espacio en blanco abajo en el form),
+             // pero el botón Guardar/Cancelar SIEMPRE queda visible al fondo.
+             height: 'calc(100vh - 80px)',
+             maxHeight: 'calc(100vh - 80px)',
+             overflow: 'hidden',
            }}>
 
         {/* Header */}
@@ -85,9 +104,10 @@ export default function Modal({ open, onClose, title, subtitle, children, maxWid
           </button>
         </div>
 
-        {/* Content */}
+        {/* Content — el children debe definir su propio scroll si es largo
+             (ej. form en flex:1 overflow:auto, footer en flexShrink:0). */}
         {children}
       </div>
     </div>
-  )
+  ), document.body)
 }

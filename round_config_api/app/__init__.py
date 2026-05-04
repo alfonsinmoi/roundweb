@@ -10,6 +10,15 @@ from .routes.cuotas           import bp as bp_cuotas
 from .routes.descuentos       import bp as bp_descuentos
 from .routes.modificaciones   import bp as bp_modificaciones
 from .routes.cuotas_clientes  import bp as bp_cuotas_clientes
+from .routes.cliente_gympass  import bp as bp_cliente_gympass
+from .routes.pasarelas         import bp as bp_pasarelas
+from .routes.centros           import bp as bp_centros
+from .routes.crm               import bp as bp_crm
+from .routes.email_config      import bp as bp_email_config
+from .routes.email_templates   import bp as bp_email_templates
+from .routes.slots             import bp as bp_slots
+from .routes.clientes_log      import bp as bp_clientes_log
+from .routes.social            import bp as bp_social
 
 
 def create_app():
@@ -55,5 +64,29 @@ def create_app():
         app.register_blueprint(bp_modificaciones, name=f'modificaciones{prefix}', url_prefix=prefix)
     for prefix in ('/cuotas-clientes', '/api/cuotas'):
         app.register_blueprint(bp_cuotas_clientes, name=f'cc{prefix}', url_prefix=prefix)
+    for prefix in ('/cliente-gympass', '/api/config/cliente-gympass'):
+        app.register_blueprint(bp_cliente_gympass, name=f'cg{prefix}', url_prefix=prefix)
+    for prefix in ('/pasarelas', '/api/config/pasarelas'):
+        app.register_blueprint(bp_pasarelas, name=f'ps{prefix}', url_prefix=prefix)
+    for prefix in ('/centros', '/api/config/centros'):
+        app.register_blueprint(bp_centros, name=f'ce{prefix}', url_prefix=prefix)
+    for prefix in ('/crm', '/api/crm'):
+        app.register_blueprint(bp_crm, name=f'crm{prefix}', url_prefix=prefix)
+    for prefix in ('/email-config', '/api/config/email'):
+        app.register_blueprint(bp_email_config, name=f'em{prefix}', url_prefix=prefix)
+    for prefix in ('/email-templates', '/api/config/email-templates'):
+        app.register_blueprint(bp_email_templates, name=f'emt{prefix}', url_prefix=prefix)
+
+    # ── Reservas de prueba (rutas públicas, sin prefijo /api/config) ─────
+    # Las rutas internas del blueprint ya empiezan con /api/crm o /reserva
+    app.register_blueprint(bp_slots, name='slots_public', url_prefix='')
+
+    # ── Clientes log (cambios de estado activo↔archivado) ─────────────────
+    for prefix in ('/clientes', '/api/clientes'):
+        app.register_blueprint(bp_clientes_log, name=f'cli_log{prefix}', url_prefix=prefix)
+
+    # ── Redes sociales (cuentas Meta + agenda) ────────────────────────────
+    for prefix in ('/social', '/api/social'):
+        app.register_blueprint(bp_social, name=f'soc{prefix}', url_prefix=prefix)
 
     return app

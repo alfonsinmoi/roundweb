@@ -1,4 +1,5 @@
 // ─── Round Design System ───
+import { useState, useEffect } from 'react'
 
 export function Card({ children, className = '', style = {}, ...props }) {
   return (
@@ -183,26 +184,43 @@ export function SectionTitle({ children, action }) {
 
 // Validate imgUrl: rechazar solo esquemas peligrosos; aceptar todo lo demás
 // (incluyendo rutas relativas sin "/" inicial, p.e. "wp-content/uploads/foo.jpg")
-function isSafeImageUrl(url) {
+export function isSafeImageUrl(url) {
   if (!url || typeof url !== 'string') return false
   const trimmed = url.trim()
   if (!trimmed) return false
-  // Bloquear esquemas peligrosos
   const lower = trimmed.toLowerCase()
   const dangerous = ['javascript:', 'vbscript:', 'file:', 'data:text/html']
   if (dangerous.some(d => lower.startsWith(d))) return false
   return true
 }
 
+// Reescribe URLs de fotos para que pasen por el proxy nginx local:
+// - pro.wiemspro.com[:puerto]/wiemspro/...  →  /wiemspro/...   (relative, mismo origen)
+// - http:// → https:// si la página va por HTTPS (mixed-content)
+export function normalizeImageUrl(url) {
+  if (!url || typeof url !== 'string') return url
+  let u = url.trim()
+  // Reescribir host pro.wiemspro.com (con o sin puerto) a path relativo
+  u = u.replace(/^https?:\/\/pro\.wiemspro\.com(?::\d+)?\/wiemspro\//i, '/wiemspro/')
+  // http → https si estamos en HTTPS
+  if (typeof window !== 'undefined' && window.location?.protocol === 'https:' && u.startsWith('http://')) {
+    u = 'https://' + u.slice('http://'.length)
+  }
+  return u
+}
+
 export function Avatar({ nombre, size = 44, imgUrl }) {
   const initials = nombre?.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() ?? '?'
   const hues = ['#2DD4A8','#5B9CF6','#A78BFA','#FBBF24','#FB923C','#FB7185']
   const c = hues[(nombre?.charCodeAt(0) ?? 0) % hues.length]
-  if (isSafeImageUrl(imgUrl)) {
-    return <img src={imgUrl} alt={nombre ?? ''} style={{ width: size, height: size, borderRadius: 14, objectFit: 'cover', flexShrink: 0 }} />
-  }
-  return (
-    <div aria-hidden="true" style={{
+
+  // Si la imagen falla al cargar, caemos a las iniciales (no al alt del navegador)
+  const [imgFailed, setImgFailed] = useState(false)
+  // Reset si cambia la URL
+  useEffect(() => { setImgFailed(false) }, [imgUrl])
+
+  const fallback = (
+    <div aria-label={nombre ?? ''} role="img" style={{
       width: size, height: size, borderRadius: 14, flexShrink: 0,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: `color-mix(in srgb, ${c} 14%, var(--bg-3))`,
@@ -210,6 +228,21 @@ export function Avatar({ nombre, size = 44, imgUrl }) {
     }}>
       {initials}
     </div>
+  )
+
+  if (!isSafeImageUrl(imgUrl) || imgFailed) return fallback
+
+  const normalized = normalizeImageUrl(imgUrl)
+
+  return (
+    <img
+      src={normalized}
+      alt=""           /* sin alt-text para que no aparezca el nombre si falla la carga */
+      aria-label={nombre ?? ''}
+      onError={() => setImgFailed(true)}
+      loading="lazy"
+      style={{ width: size, height: size, borderRadius: 14, objectFit: 'cover', flexShrink: 0, background: 'var(--bg-3)' }}
+    />
   )
 }
 

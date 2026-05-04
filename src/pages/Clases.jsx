@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Loader2, Users, Clock, Plus, Pencil, Trash2,
   X, CheckCircle2, XCircle, UserPlus, UserMinus, Search, ArrowUpDown, QrCode,
 } from 'lucide-react'
-import { Card, Badge, Btn, Avatar } from '../components/UI'
+import { Card, Badge, Btn, Avatar, isSafeImageUrl, normalizeImageUrl } from '../components/UI'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
@@ -588,6 +588,8 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
   const asistieron = usuarios.filter(u => u.verify).length
   const qrValue    = String(sala.idEspejo ?? sala.id)
   const [fotoPreview, setFotoPreview] = useState(null)  // { imgUrl, nombre }
+  const [fotoFailed,  setFotoFailed]  = useState(false)
+  useEffect(() => { setFotoFailed(false) }, [fotoPreview?.imgUrl])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -761,20 +763,37 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
              }}>
           <div onClick={e => e.stopPropagation()}
                style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-            {fotoPreview.imgUrl ? (
-              <img src={fotoPreview.imgUrl} alt={fotoPreview.nombre}
-                   style={{ width: '5cm', height: '4cm', objectFit: 'cover',
-                            borderRadius: 12, border: '2px solid var(--line)', background: 'var(--bg-3)' }} />
-            ) : (
-              <div style={{
+            {(() => {
+              const safe = isSafeImageUrl(fotoPreview.imgUrl)
+              const url  = safe ? normalizeImageUrl(fotoPreview.imgUrl) : null
+              const baseStyle = {
                 width: '5cm', height: '4cm',
                 borderRadius: 12, border: '2px solid var(--line)', background: 'var(--bg-3)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: 'var(--text-3)', fontSize: 14,
-              }}>
-                Sin foto
-              </div>
-            )}
+              }
+              if (!url || fotoFailed) {
+                const ini = fotoPreview.nombre?.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase() || '?'
+                return (
+                  <div role="img" aria-label={fotoPreview.nombre ?? ''} style={{
+                    ...baseStyle,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 40,
+                    color: 'var(--text-2)',
+                  }}>
+                    {ini}
+                  </div>
+                )
+              }
+              return (
+                <img src={url} alt=""
+                     aria-label={fotoPreview.nombre}
+                     onError={() => {
+                       // eslint-disable-next-line no-console
+                       console.warn('[Clases fotoPreview] no se pudo cargar:', url, 'cliente:', fotoPreview.nombre)
+                       setFotoFailed(true)
+                     }}
+                     style={{ ...baseStyle, objectFit: 'cover' }} />
+              )
+            })()}
             <p style={{ color: '#fff', fontFamily: 'Outfit', fontSize: 14, fontWeight: 600 }}>
               {fotoPreview.nombre}
             </p>

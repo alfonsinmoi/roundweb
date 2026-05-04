@@ -221,10 +221,29 @@ export function clearPersistedCache(key) {
 
 // ── Named endpoint helpers ──────────────────────────────────────────────────
 
+// Normaliza la URL de la foto del cliente probando varios nombres de campo
+// que el backend ha usado en distintas versiones.
+function pickImgUrl(c) {
+  return (
+    c?.imgUrl ??
+    c?.urlImagen ??
+    c?.imagenUrl ??
+    c?.pictureUrl ??
+    c?.pictureClient ??
+    c?.picture ??
+    c?.fotoUrl ??
+    c?.foto ??
+    c?.photo ??
+    c?.imagen ??
+    c?.avatar ??
+    ''
+  ) || ''
+}
+
 export const getClientes = () =>
   cached('clientes', () =>
     apiGet('api/dispositivos/getClienteSimple').then(d => {
-      const list = d.clientes ?? []
+      const list = (d.clientes ?? []).map(c => ({ ...c, imgUrl: pickImgUrl(c) }))
       // Persistimos para pintado instantáneo en recargas posteriores (F5)
       setPersistedCache('clientes', list)
       return list

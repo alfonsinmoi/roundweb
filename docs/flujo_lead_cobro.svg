@@ -1,0 +1,355 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" font-family="Arial,sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/><stop offset="100%" stop-color="#F4F6F8"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#0E0F13" flood-opacity="0.10"/>
+    </filter>
+    
+      <marker id="arr_1A9A7A" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#1A9A7A"/>
+      </marker>
+      <marker id="arr_B45309" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#B45309"/>
+      </marker>
+      <marker id="arr_B91C1C" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#B91C1C"/>
+      </marker>
+      <marker id="arr_1E40AF" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#1E40AF"/>
+      </marker>
+      <marker id="arr_5C6066" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#5C6066"/>
+      </marker>
+  </defs>
+
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+
+  <!-- Título -->
+  <text x="800" y="40" text-anchor="middle" font-size="22" font-weight="700" fill="#0E0F13">Flujo lead → cliente activo · Captación, alta, cobro y recaptación</text>
+  <text x="800" y="62" text-anchor="middle" font-size="12" fill="#5C6066" font-style="italic">Estado de implementación · ✓ hecho · ~ parcial · ○ pendiente</text>
+
+  <!-- Actores (carriles) -->
+  
+  <rect x="20" y="90" width="1560" height="80" rx="14" fill="none" stroke="#5C6066" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="32" y="112" font-size="11" font-weight="700" fill="#5C6066" letter-spacing="2">LEAD / CLIENTE</text>
+  
+  <rect x="20" y="190" width="1560" height="130" rx="14" fill="none" stroke="#1E40AF" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="32" y="212" font-size="11" font-weight="700" fill="#1E40AF" letter-spacing="2">NOOFITPRO  ·  WEB TRAINER</text>
+  
+  <rect x="20" y="340" width="1560" height="130" rx="14" fill="none" stroke="#1A9A7A" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="32" y="362" font-size="11" font-weight="700" fill="#1A9A7A" letter-spacing="2">ROUND CONFIG API  ·  ORQUESTADOR</text>
+  
+  <rect x="20" y="490" width="1560" height="130" rx="14" fill="none" stroke="#714B67" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="32" y="512" font-size="11" font-weight="700" fill="#714B67" letter-spacing="2">ODOO 17  ·  ERP / CONTABILIDAD</text>
+  
+  <rect x="20" y="640" width="1560" height="110" rx="14" fill="none" stroke="#FB923C" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="32" y="662" font-size="11" font-weight="700" fill="#FB923C" letter-spacing="2">PAYCOMET  ·  PASARELA</text>
+  
+  <rect x="20" y="770" width="1560" height="110" rx="14" fill="none" stroke="#A78BFA" stroke-width="2" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="32" y="792" font-size="11" font-weight="700" fill="#A78BFA" letter-spacing="2">MYNOOFIT  ·  APP CLIENTE</text>
+
+  <!-- ════════ FLUJO 1 — NUEVO LEAD ════════ -->
+  <text x="120" y="84" font-size="13" font-weight="700" fill="#1A9A7A">FLUJO 1 · NUEVO LEAD</text>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="50" y="100" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    <circle cx="68" cy="118" r="13" fill="#1A9A7A"/>
+            <text x="68" y="122" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">1</text>
+    <text x="150" y="138" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Pide día gratis</text>
+    <text x="150" y="156" text-anchor="middle" font-size="11" fill="#5C6066">form WP /prueba-gratuita</text>
+    <text x="232" y="122" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="280" y="100" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    <circle cx="298" cy="118" r="13" fill="#1A9A7A"/>
+            <text x="298" y="122" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">2</text>
+    <text x="380" y="138" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Recibe email + reserva</text>
+    <text x="380" y="156" text-anchor="middle" font-size="11" fill="#5C6066">slot_reservado_lead</text>
+    <text x="462" y="122" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="510" y="100" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    <circle cx="528" cy="118" r="13" fill="#1A9A7A"/>
+            <text x="528" y="122" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">3</text>
+    <text x="610" y="138" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Escanea QR del trainer</text>
+    <text x="610" y="156" text-anchor="middle" font-size="11" fill="#5C6066">app Mynoofit</text>
+    <text x="692" y="122" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="280" y="200" width="220" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    <circle cx="298" cy="218" r="13" fill="#1A9A7A"/>
+            <text x="298" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">4</text>
+    <text x="390" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Banner "alta esperando"</text>
+    <text x="390" y="256" text-anchor="middle" font-size="11" fill="#5C6066">reutiliza Nuevos Clientes</text>
+    <text x="482" y="222" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="530" y="200" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    <circle cx="548" cy="218" r="13" fill="#1A9A7A"/>
+            <text x="548" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">5</text>
+    <text x="630" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Click → tab ERP perfil</text>
+    <text x="630" y="256" text-anchor="middle" font-size="11" fill="#5C6066">BannerNuevosClientes</text>
+    <text x="712" y="222" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="760" y="200" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    <circle cx="778" cy="218" r="13" fill="#1A9A7A"/>
+            <text x="778" y="222" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">6</text>
+    <text x="860" y="238" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Envía a ERP (DNI+IVA 21%)</text>
+    <text x="860" y="256" text-anchor="middle" font-size="11" fill="#5C6066">crear_alta_cliente</text>
+    <text x="942" y="222" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="50" y="350" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    
+    <text x="150" y="374" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Lead Odoo creado</text>
+    <text x="150" y="392" text-anchor="middle" font-size="11" fill="#5C6066">crm.lead Nuevo</text>
+    <text x="232" y="372" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="280" y="350" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    
+    <text x="380" y="374" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Cliente NoofitPro creado</text>
+    <text x="380" y="392" text-anchor="middle" font-size="11" fill="#5C6066">sin email Wiemspro</text>
+    <text x="462" y="372" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="760" y="350" width="200" height="60" rx="10" fill="#DBEAFE" stroke="#1E40AF" stroke-width="2"/>
+    <circle cx="778" cy="368" r="13" fill="#1E40AF"/>
+            <text x="778" y="372" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">7</text>
+    <text x="860" y="388" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Genera enlace cobro</text>
+    <text x="860" y="406" text-anchor="middle" font-size="11" fill="#5C6066">PayComet payment URL</text>
+    <text x="942" y="372" text-anchor="middle" font-size="14" font-weight="700" fill="#1E40AF">⏸</text>
+  </g>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="530" y="500" width="220" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    
+    <text x="640" y="524" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">res.partner (vat=DNI)</text>
+    <text x="640" y="542" text-anchor="middle" font-size="11" fill="#5C6066">upsert_partner — España</text>
+    <text x="732" y="522" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="760" y="500" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    
+    <text x="860" y="524" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Suscripción + cuota</text>
+    <text x="860" y="542" text-anchor="middle" font-size="11" fill="#5C6066">crear_subscription</text>
+    <text x="942" y="522" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="990" y="500" width="200" height="60" rx="10" fill="#E8F5F1" stroke="#1A9A7A" stroke-width="2"/>
+    
+    <text x="1090" y="524" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Recibo + cobro</text>
+    <text x="1090" y="542" text-anchor="middle" font-size="11" fill="#5C6066">crear_recibo_alta</text>
+    <text x="1172" y="522" text-anchor="middle" font-size="14" font-weight="700" fill="#1A9A7A">✓</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="1220" y="500" width="220" height="60" rx="10" fill="#FEF3C7" stroke="#B45309" stroke-width="2"/>
+    
+    <text x="1330" y="524" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Cierra lead → "Alta"</text>
+    <text x="1330" y="542" text-anchor="middle" font-size="11" fill="#5C6066">falta auto-trigger</text>
+    <text x="1422" y="522" text-anchor="middle" font-size="14" font-weight="700" fill="#B45309">~</text>
+  </g>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="760" y="650" width="200" height="60" rx="10" fill="#DBEAFE" stroke="#1E40AF" stroke-width="2"/>
+    <circle cx="778" cy="668" r="13" fill="#1E40AF"/>
+            <text x="778" y="672" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">8</text>
+    <text x="860" y="688" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Cobra tarjeta</text>
+    <text x="860" y="706" text-anchor="middle" font-size="11" fill="#5C6066">PayComet 3DS</text>
+    <text x="942" y="672" text-anchor="middle" font-size="14" font-weight="700" fill="#1E40AF">⏸</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="990" y="650" width="200" height="60" rx="10" fill="#DBEAFE" stroke="#1E40AF" stroke-width="2"/>
+    <circle cx="1008" cy="668" r="13" fill="#1E40AF"/>
+            <text x="1008" y="672" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">9</text>
+    <text x="1090" y="688" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Webhook → Odoo</text>
+    <text x="1090" y="706" text-anchor="middle" font-size="11" fill="#5C6066">estado pagado</text>
+    <text x="1172" y="672" text-anchor="middle" font-size="14" font-weight="700" fill="#1E40AF">⏸</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="1220" y="650" width="220" height="60" rx="10" fill="#FEF3C7" stroke="#B45309" stroke-width="2"/>
+    
+    <text x="1330" y="674" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Sync NoofitPro</text>
+    <text x="1330" y="692" text-anchor="middle" font-size="11" fill="#5C6066">cuota_cliente pagada</text>
+    <text x="1422" y="672" text-anchor="middle" font-size="14" font-weight="700" fill="#B45309">~</text>
+  </g>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="760" y="780" width="200" height="60" rx="10" fill="#DBEAFE" stroke="#1E40AF" stroke-width="2"/>
+    
+    <text x="860" y="804" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Recibe enlace pago</text>
+    <text x="860" y="822" text-anchor="middle" font-size="11" fill="#5C6066">push + email</text>
+    <text x="942" y="802" text-anchor="middle" font-size="14" font-weight="700" fill="#1E40AF">⏸</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="990" y="780" width="200" height="60" rx="10" fill="#DBEAFE" stroke="#1E40AF" stroke-width="2"/>
+    
+    <text x="1090" y="804" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Tokeniza tarjeta</text>
+    <text x="1090" y="822" text-anchor="middle" font-size="11" fill="#5C6066">PayComet vault</text>
+    <text x="1172" y="802" text-anchor="middle" font-size="14" font-weight="700" fill="#1E40AF">⏸</text>
+  </g>
+
+  <!-- Flechas flujo 1 -->
+  
+  <line x1="250" y1="130" x2="280" y2="130" stroke="#1A9A7A" stroke-width="2"  marker-end="url(#arr_1A9A7A)"/>
+  
+  
+  <line x1="480" y1="130" x2="510" y2="130" stroke="#1A9A7A" stroke-width="2"  marker-end="url(#arr_1A9A7A)"/>
+  
+  
+  <line x1="610" y1="160" x2="390" y2="200" stroke="#1E40AF" stroke-width="2"  marker-end="url(#arr_1E40AF)"/>
+  
+  
+  <line x1="500" y1="230" x2="530" y2="230" stroke="#1E40AF" stroke-width="2"  marker-end="url(#arr_1E40AF)"/>
+  
+  
+  <line x1="730" y1="230" x2="760" y2="230" stroke="#1E40AF" stroke-width="2"  marker-end="url(#arr_1E40AF)"/>
+  
+  
+  <line x1="860" y1="260" x2="860" y2="350" stroke="#1A9A7A" stroke-width="2"  marker-end="url(#arr_1A9A7A)"/>
+  
+  
+  <line x1="860" y1="410" x2="860" y2="500" stroke="#714B67" stroke-width="2"  marker-end="url(#arr_714B67)"/>
+  <text x="860" y="449" text-anchor="middle" font-size="10" fill="#714B67" font-style="italic">XML-RPC</text>
+  
+  <line x1="750" y1="530" x2="760" y2="530" stroke="#714B67" stroke-width="2"  marker-end="url(#arr_714B67)"/>
+  
+  
+  <line x1="960" y1="530" x2="990" y2="530" stroke="#714B67" stroke-width="2"  marker-end="url(#arr_714B67)"/>
+  
+  
+  <line x1="1190" y1="530" x2="1220" y2="530" stroke="#714B67" stroke-width="2"  marker-end="url(#arr_714B67)"/>
+  
+  
+  <line x1="860" y1="560" x2="860" y2="650" stroke="#FB923C" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr_FB923C)"/>
+  <text x="860" y="599" text-anchor="middle" font-size="10" fill="#FB923C" font-style="italic">create-payment</text>
+  
+  <line x1="860" y1="710" x2="860" y2="780" stroke="#A78BFA" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr_A78BFA)"/>
+  <text x="860" y="739" text-anchor="middle" font-size="10" fill="#A78BFA" font-style="italic">enlace/push</text>
+  
+  <line x1="960" y1="810" x2="990" y2="810" stroke="#A78BFA" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr_A78BFA)"/>
+  
+  
+  <line x1="1090" y1="780" x2="1090" y2="710" stroke="#FB923C" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr_FB923C)"/>
+  <text x="1090" y="739" text-anchor="middle" font-size="10" fill="#FB923C" font-style="italic">token guardado</text>
+  
+  <line x1="960" y1="680" x2="990" y2="680" stroke="#FB923C" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr_FB923C)"/>
+  
+  
+  <line x1="1190" y1="680" x2="1220" y2="680" stroke="#714B67" stroke-width="2"  marker-end="url(#arr_714B67)"/>
+  <text x="1205" y="674" text-anchor="middle" font-size="10" fill="#714B67" font-style="italic">pagado</text>
+  
+  <line x1="1090" y1="650" x2="1090" y2="560" stroke="#714B67" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arr_714B67)"/>
+  
+
+  <!-- ════════ FLUJO 2 — RECAPTACIÓN ════════ -->
+  <line x1="0" y1="900" x2="1600" y2="900" stroke="#CCCCCC"/>
+  <text x="120" y="920" font-size="13" font-weight="700" fill="#B45309">FLUJO 2 · RECAPTACIÓN (cliente archivado)</text>
+
+  
+  <g filter="url(#shadow)">
+    <rect x="50" y="935" width="220" height="50" rx="10" fill="#FEE2E2" stroke="#B91C1C" stroke-width="2"/>
+    <circle cx="68" cy="953" r="13" fill="#B91C1C"/>
+            <text x="68" y="957" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">1</text>
+    <text x="160" y="973" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Cliente archivado</text>
+    <text x="160" y="991" text-anchor="middle" font-size="11" fill="#5C6066">badge "desactivo" + fecha baja</text>
+    <text x="252" y="957" text-anchor="middle" font-size="14" font-weight="700" fill="#B91C1C">○</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="290" y="935" width="220" height="50" rx="10" fill="#FEE2E2" stroke="#B91C1C" stroke-width="2"/>
+    <circle cx="308" cy="953" r="13" fill="#B91C1C"/>
+            <text x="308" y="957" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">2</text>
+    <text x="400" y="973" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Botón "Activar cliente"</text>
+    <text x="400" y="991" text-anchor="middle" font-size="11" fill="#5C6066">NoofitPro web</text>
+    <text x="492" y="957" text-anchor="middle" font-size="14" font-weight="700" fill="#B91C1C">○</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="530" y="935" width="220" height="50" rx="10" fill="#FEE2E2" stroke="#B91C1C" stroke-width="2"/>
+    <circle cx="548" cy="953" r="13" fill="#B91C1C"/>
+            <text x="548" y="957" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">3</text>
+    <text x="640" y="973" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Modal datos ERP edición</text>
+    <text x="640" y="991" text-anchor="middle" font-size="11" fill="#5C6066">guardar obligatorio</text>
+    <text x="732" y="957" text-anchor="middle" font-size="14" font-weight="700" fill="#B91C1C">○</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="770" y="935" width="220" height="50" rx="10" fill="#FEE2E2" stroke="#B91C1C" stroke-width="2"/>
+    <circle cx="788" cy="953" r="13" fill="#B91C1C"/>
+            <text x="788" y="957" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">4</text>
+    <text x="880" y="973" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Misma flecha → Odoo</text>
+    <text x="880" y="991" text-anchor="middle" font-size="11" fill="#5C6066">crea suscripción nueva</text>
+    <text x="972" y="957" text-anchor="middle" font-size="14" font-weight="700" fill="#B91C1C">○</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="1010" y="935" width="220" height="50" rx="10" fill="#FEE2E2" stroke="#B91C1C" stroke-width="2"/>
+    <circle cx="1028" cy="953" r="13" fill="#B91C1C"/>
+            <text x="1028" y="957" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">5</text>
+    <text x="1120" y="973" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">Pago + sync</text>
+    <text x="1120" y="991" text-anchor="middle" font-size="11" fill="#5C6066">paga, NoofitPro reactiva</text>
+    <text x="1212" y="957" text-anchor="middle" font-size="14" font-weight="700" fill="#B91C1C">○</text>
+  </g>
+  
+  <g filter="url(#shadow)">
+    <rect x="1250" y="935" width="220" height="50" rx="10" fill="#FEE2E2" stroke="#B91C1C" stroke-width="2"/>
+    <circle cx="1268" cy="953" r="13" fill="#B91C1C"/>
+            <text x="1268" y="957" text-anchor="middle" font-size="12" font-weight="700" fill="#FFF">6</text>
+    <text x="1360" y="973" text-anchor="middle" font-size="13" font-weight="700" fill="#0E0F13">CRM: Recaptación</text>
+    <text x="1360" y="991" text-anchor="middle" font-size="11" fill="#5C6066">tag etiquetado</text>
+    <text x="1452" y="957" text-anchor="middle" font-size="14" font-weight="700" fill="#B91C1C">○</text>
+  </g>
+
+  
+  <line x1="270" y1="960" x2="290" y2="960" stroke="#B45309" stroke-width="2"  marker-end="url(#arr_B45309)"/>
+  
+  
+  <line x1="510" y1="960" x2="530" y2="960" stroke="#B45309" stroke-width="2"  marker-end="url(#arr_B45309)"/>
+  
+  
+  <line x1="750" y1="960" x2="770" y2="960" stroke="#B45309" stroke-width="2"  marker-end="url(#arr_B45309)"/>
+  
+  
+  <line x1="990" y1="960" x2="1010" y2="960" stroke="#B45309" stroke-width="2"  marker-end="url(#arr_B45309)"/>
+  
+  
+  <line x1="1230" y1="960" x2="1250" y2="960" stroke="#B45309" stroke-width="2"  marker-end="url(#arr_B45309)"/>
+  
+
+  <!-- Leyenda inferior -->
+  <g transform="translate(40, 990)">
+    <rect x="0" y="-8" width="14" height="10" rx="2" fill="#E8F5F1" stroke="#1A9A7A"/>
+    <text x="20" y="0" font-size="10" fill="#5C6066">✓ Hecho</text>
+    <rect x="80" y="-8" width="14" height="10" rx="2" fill="#FEF3C7" stroke="#B45309"/>
+    <text x="100" y="0" font-size="10" fill="#5C6066">~ Parcial</text>
+    <rect x="170" y="-8" width="14" height="10" rx="2" fill="#FEE2E2" stroke="#B91C1C"/>
+    <text x="190" y="0" font-size="10" fill="#5C6066">○ Pendiente</text>
+    <rect x="280" y="-8" width="14" height="10" rx="2" fill="#DBEAFE" stroke="#1E40AF"/>
+    <text x="300" y="0" font-size="10" fill="#5C6066">⏸ Diferido (probar luego)</text>
+    <text x="450" y="0" font-size="10" fill="#5C6066">·  Carriles = sistema/actor responsable</text>
+  </g>
+</svg>

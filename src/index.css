@@ -1,34 +1,81 @@
 @import "tailwindcss";
 
 :root {
+  /* ── Fondos (escala oscura) ───────────────────────────────────────── */
   --bg-0: #060608;
   --bg-1: #0E0F13;
   --bg-2: #16171C;
   --bg-3: #1E2025;
   --bg-4: #26282E;
 
+  /* ── Acento primario ──────────────────────────────────────────────── */
   --green: #2DD4A8;
   --green-soft: #1A9A7A;
   --green-bg: rgba(45, 212, 168, 0.07);
   --green-border: rgba(45, 212, 168, 0.16);
   --gradient-primary: linear-gradient(135deg, #2DD4A8, #1A9A7A);
 
+  /* ── Acentos secundarios + variantes bg/border (alias semánticos) ── */
   --blue: #5B9CF6;
   --blue-bg: rgba(91, 156, 246, 0.07);
   --blue-border: rgba(91, 156, 246, 0.16);
 
   --red: #F87171;
+  --red-bg: rgba(248, 113, 113, 0.10);
+  --red-border: rgba(248, 113, 113, 0.22);
+
   --amber: #FBBF24;
+  --amber-bg: rgba(251, 191, 36, 0.10);
+  --amber-border: rgba(251, 191, 36, 0.22);
+
   --violet: #A78BFA;
+  --violet-bg: rgba(167, 139, 250, 0.10);
+
   --rose: #FB7185;
+  --rose-bg: rgba(251, 113, 133, 0.10);
 
-  --text-0: #F4F4F6;
-  --text-1: #CBCBD4;
-  --text-2: #82828F;
-  --text-3: #4E4E59;
+  --orange: #FB923C;
 
-  --line: rgba(255, 255, 255, 0.055);
-  --line-2: rgba(255, 255, 255, 0.1);
+  /* ── Texto (jerarquía 4 niveles) ──────────────────────────────────── */
+  --text-0: #F4F4F6;            /* títulos · contrast ≈ 18:1 sobre bg-1 */
+  --text-1: #DCDCE2;            /* texto principal · subido de #CBCBD4 → 13:1 */
+  --text-2: #B0B0BC;            /* secundario · subido de #8C8C99 → 8:1 (antes 4.7:1) */
+  --text-3: #8B8B98;            /* terciario · subido de #4E4E59 → 5.5:1 (antes ~3:1, fallaba WCAG AA) */
+
+  /* ── Líneas / separadores ─────────────────────────────────────────── */
+  --line-decorative: rgba(255, 255, 255, 0.055);  /* divisores muy sutiles */
+  --line: rgba(255, 255, 255, 0.055);             /* (sin cambios, evita rotura visual) */
+  --line-2: rgba(255, 255, 255, 0.10);            /* legacy, equivale a la propuesta nueva */
+  --line-strong: rgba(255, 255, 255, 0.18);       /* inputs / bordes con énfasis */
+
+  /* ── Radius nombrado ──────────────────────────────────────────────── */
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* ── Espaciado (escala 4px) ───────────────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Sombras (sutiles para fondo oscuro) ──────────────────────────── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+
+  /* ── Tipografía ───────────────────────────────────────────────────── */
+  --font-sans:    'DM Sans', system-ui, sans-serif;
+  --font-display: 'Outfit', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -116,5 +163,10 @@ h1, h2, h3, h4, h5, h6 {
     bottom: 20px !important;
     right: 10px !important;
     left: 10px !important;
+  }
+
+  /* Nuevo cliente: el QR baja debajo del formulario en pantallas estrechas */
+  .newclient-grid {
+    grid-template-columns: 1fr !important;
   }
 }

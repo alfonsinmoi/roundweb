@@ -48,6 +48,20 @@ class OdooCuotas:
                 return True
             raise
 
+    def _call_ctx(self, model, method, ctx, *args, **kwargs):
+        if not self._connect():
+            raise RuntimeError('Odoo no disponible')
+        kwargs['context'] = ctx
+        try:
+            return self._models.execute_kw(
+                cfg.ODOO_DB, self._uid, cfg.ODOO_PWD,
+                model, method, list(args), kwargs
+            )
+        except xmlrpc.client.Fault as e:
+            if 'cannot marshal None' in str(e):
+                return True
+            raise
+
     # ── Helpers de fechas ────────────────────────────────────────────────────
     def _periodos_mes(self, mes_str):
         """mes_str = 'YYYY-MM' → (fecha_inicio, fecha_fin) de ese mes."""
@@ -266,26 +280,218 @@ class OdooCuotas:
         return self._list_recibos([('move_type','=','out_invoice'),
                                    ('partner_id','=',partner_ids[0])])
 
+
+    def generar_pdf_factura(self, invoice_id):
+        """Genera el PDF de una factura via el endpoint HTTP de Odoo
+        (`/report/pdf/account.report_invoice/<id>`).
+        Devuelve (filename, bytes_pdf).
+
+        XML-RPC no permite llamar a `_render_qweb_pdf` (método privado),
+        así que autenticamos sesión vía /web/session/authenticate y
+        descargamos el PDF como cualquier navegador haría.
+        """
+        import requests
+        from . import config as cfg
+
+        sess = requests.Session()
+        # 1) Autenticar (sesión cookie)
+        auth_url = f'{cfg.ODOO_URL}/web/session/authenticate'
+        r = sess.post(auth_url, json={
+            'jsonrpc': '2.0',
+            'params': {
+                'db': cfg.ODOO_DB,
+                'login': cfg.ODOO_USER,
+                'password': cfg.ODOO_PWD,
+            },
+        }, timeout=15)
+        if r.status_code != 200:
+            raise RuntimeError(f'Odoo auth fallo {r.status_code}')
+        data = r.json() or {}
+        if data.get('error') or not (data.get('result') or {}).get('uid'):
+            raise RuntimeError(f'Odoo auth: {data.get("error") or "credenciales"}')
+
+        # 2) Descargar el PDF
+        # account.report_invoice es el reporte estándar de Odoo Community 17
+        report_url = f'{cfg.ODOO_URL}/report/pdf/account.report_invoice/{invoice_id}'
+        rp = sess.get(report_url, timeout=30)
+        if rp.status_code != 200:
+            raise RuntimeError(f'pdf {rp.status_code}: {rp.text[:200]}')
+        if not rp.content or not rp.content.startswith(b'%PDF'):
+            raise RuntimeError('respuesta no es un PDF válido')
+
+        # 3) Nombre archivo
+        inv = self._call('account.move', 'read', [invoice_id], ['name'])[0]
+        safe_name = (inv.get('name') or f'factura-{invoice_id}').replace('/', '-')
+        return f'{safe_name}.pdf', rp.content
+
+
+    def enviar_factura_email(self, invoice_id, dest_email=None,
+                             id_manager=None, id_trainer=None,
+                             extra_message=''):
+        """Genera el PDF + envía por email al partner del recibo (o al
+        dest_email indicado). Devuelve dict con resultado."""
+        import re
+        from .email_sender import enviar as enviar_email
+        inv = self._call('account.move', 'read', [invoice_id],
+            ['name', 'state', 'amount_total', 'partner_id', 'invoice_date',
+             'currency_id'])[0]
+        if inv.get('state') != 'posted':
+            return {'ok': False, 'error': 'factura_no_publicada',
+                    'state': inv.get('state')}
+        # Resolver destinatario
+        if not dest_email:
+            partner = self._call('res.partner', 'read',
+                                 [inv['partner_id'][0]],
+                                 ['email', 'name'])[0]
+            dest_email = (partner.get('email') or '').strip()
+            partner_name = partner.get('name') or ''
+        else:
+            dest_email = dest_email.strip()
+            partner_name = inv['partner_id'][1] if inv.get('partner_id') else ''
+        if not dest_email:
+            return {'ok': False, 'error': 'sin_email_destinatario',
+                    'partner_email_odoo': None}
+        # Validación RFC simple del email
+        valid_re = re.compile(r'^[^\s@]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$')
+        if not valid_re.match(dest_email):
+            return {'ok': False, 'error': 'email_invalido',
+                    'email_invalido': dest_email,
+                    'detalle': 'El email no cumple RFC 5321 (puede contener guión bajo en el dominio u otro carácter no permitido)'}
+
+        # PDF
+        try:
+            filename, pdf_bytes = self.generar_pdf_factura(invoice_id)
+        except Exception as e:
+            return {'ok': False, 'error': f'pdf_fail: {e}'}
+
+        importe = inv.get('amount_total') or 0
+        currency_pair = inv.get('currency_id') or [None, '€']
+        currency = currency_pair[1] if isinstance(currency_pair, list) else '€'
+        subject = f'Factura {inv.get("name")} · Round Training Center'
+        body_html = (
+            f'<p>Hola{f" <b>{partner_name}</b>" if partner_name else ""},</p>'
+            f'<p>Adjuntamos tu factura <b>{inv.get("name")}</b> con fecha '
+            f'{inv.get("invoice_date","")} por importe de <b>{importe} {currency}</b>.</p>'
+            + (f'<p>{extra_message}</p>' if extra_message else '')
+            + '<p>Si tienes cualquier duda, responde a este email.</p>'
+            '<p>Un saludo,<br/>Round Training Center</p>'
+        )
+        body_text = (
+            f'Adjuntamos tu factura {inv.get("name")} con fecha '
+            f'{inv.get("invoice_date","")} por importe de {importe} {currency}.'
+        )
+        ok = enviar_email(dest_email, subject, body_text, body_html=body_html,
+                          id_manager=id_manager, id_trainer=id_trainer,
+                          attachments=[(filename, pdf_bytes, 'application/pdf')])
+        return {'ok': bool(ok), 'invoice_name': inv.get('name'),
+                'sent_to': dest_email, 'amount': importe}
+
     def _list_recibos(self, domain):
         invs = self._call('account.move','search_read', domain,
             ['id','name','invoice_date','invoice_date_due','amount_total','state',
              'payment_state','partner_id','round_subscription_id','narration',
              'payment_mode_id','mandate_id','create_date'],
             order='invoice_date desc')
+        # Cache para evitar repetir lectura de cuotas / partners
+        partners_cache = {}
+        cuotas_cache = {}
         # Enriquecer con datos de la suscripción y cuota
         result = []
         for i in invs:
             row = {**i}
-            # Resolver tipo (alta/mensualidad)
-            if i.get('round_subscription_id'):
-                sub = self._call('round.subscription','read',[i['round_subscription_id'][0]],
-                    ['cuota_id','forma_pago','periodicidad'])[0]
-                row['cuota_codigo'] = sub.get('cuota_id', [None,''])[1] if sub.get('cuota_id') else ''
+            # Datos del partner (id_noofit para cross-ref con NoofitPro)
+            partner_pair = i.get('partner_id')
+            if partner_pair:
+                pid = partner_pair[0]
+                if pid not in partners_cache:
+                    pdata = self._call('res.partner','read',[pid],
+                        ['id_noofit','name'])
+                    partners_cache[pid] = pdata[0] if pdata else {}
+                pinfo = partners_cache[pid]
+                row['partner_idnoofit'] = pinfo.get('id_noofit') or None
+            sub_id_pair = i.get('round_subscription_id')
+            if sub_id_pair:
+                sub_id = sub_id_pair[0]
+                sub = self._call('round.subscription','read',[sub_id],
+                    ['cuota_id','forma_pago','periodicidad','descuentos_activos_ids'])[0]
+                cuota_pair = sub.get('cuota_id')
+                row['cuota_codigo'] = cuota_pair[1] if cuota_pair else ''
+                row['cuota_id_int'] = cuota_pair[0] if cuota_pair else None
                 row['forma_pago'] = sub.get('forma_pago')
                 row['periodicidad'] = sub.get('periodicidad')
-            # Detectar tipo: si es el primer recibo de la sub
+                # Para SEPA y tokenización, in_payment se considera cobrado
+                # (el pago está registrado, pendiente de conciliar con banco)
+                if (row.get('payment_state') == 'in_payment'
+                        and sub.get('forma_pago') in ('sepa','tarjeta_token','tokenizacion')):
+                    row['payment_state'] = 'paid'
+                # Actividades incluidas (desc texto)
+                if cuota_pair:
+                    cid = cuota_pair[0]
+                    if cid not in cuotas_cache:
+                        cd = self._call('round.cuota.catalogo','read',[cid],
+                            ['actividades_descripcion','descripcion'])
+                        cuotas_cache[cid] = cd[0] if cd else {}
+                    cinfo = cuotas_cache[cid]
+                    row['cuota_descripcion'] = cinfo.get('descripcion') or ''
+                    row['cuota_actividades'] = cinfo.get('actividades_descripcion') or ''
+
+                mes_str = i['invoice_date'][:7] if i.get('invoice_date') else None
+                # Descuentos aplicados (con importe)
+                desc_aplicados = []
+                if sub.get('descuentos_activos_ids') and cuota_pair:
+                    descs = self._call('round.descuento.catalogo','read',
+                        sub['descuentos_activos_ids'],
+                        ['codigo','descripcion','tipo','valor'])
+                    cuota = self._call('round.cuota.catalogo','read',
+                        [cuota_pair[0]],
+                        ['precio_mensual','precio_trimestral','precio_semestral','precio_anual'])[0]
+                    per = sub.get('periodicidad','mensual')
+                    precio_base = float({
+                        'mensual':    cuota.get('precio_mensual') or 0,
+                        'trimestral': cuota.get('precio_trimestral') or 0,
+                        'semestral':  cuota.get('precio_semestral') or 0,
+                        'anual':      cuota.get('precio_anual') or 0,
+                    }.get(per, cuota.get('precio_mensual') or 0))
+                    for d in descs:
+                        v = float(d['valor'])
+                        importe = precio_base * v / 100.0 if d['tipo'] == 'porcentaje' else v
+                        desc_aplicados.append({
+                            'codigo': d['codigo'],
+                            'descripcion': d.get('descripcion') or d['codigo'],
+                            'tipo': d['tipo'],
+                            'valor': v,
+                            'importe': round(importe, 2),
+                        })
+                row['descuentos_aplicados'] = desc_aplicados
+
+                # Modificaciones vigentes ese mes
+                mods_aplicadas = []
+                if mes_str:
+                    inicio, fin = self._periodos_mes(mes_str)
+                    mods = self._call('round.modificacion.recibo','search_read',
+                        [('subscription_id','=',sub_id),('estado','=','activa'),
+                         ('fecha_desde','<=',str(fin)),
+                         '|',('fecha_hasta','=',False),('fecha_hasta','>=',str(inicio))],
+                        ['tipo','valor','razon'])
+                    for mo in mods:
+                        v = float(mo['valor'])
+                        if mo['tipo'] == 'descuento':
+                            importe = -v
+                        elif mo['tipo'] == 'cargo_extra':
+                            importe = v
+                        else:  # precio_alternativo
+                            importe = 0  # afecta base, no se suma
+                        mods_aplicadas.append({
+                            'tipo': mo['tipo'],
+                            'valor': v,
+                            'importe': round(importe, 2),
+                            'razon': mo.get('razon') or '',
+                        })
+                row['modificaciones_aplicadas'] = mods_aplicadas
+            else:
+                row['descuentos_aplicados'] = []
+                row['modificaciones_aplicadas'] = []
             row['tipo'] = self._detectar_tipo_invoice(i)
-            # mes referencia
             if i.get('invoice_date'):
                 row['mes_ref'] = i['invoice_date'][:7]
             result.append(row)
@@ -303,21 +509,82 @@ class OdooCuotas:
 
     # ── Modificar borrador ───────────────────────────────────────────────────
     def update_borrador(self, invoice_id, vals):
-        """Actualiza precio (line price_unit), narration o descripción."""
-        inv = self._call('account.move','read',[invoice_id],['state','invoice_line_ids'])[0]
+        """Actualiza un borrador.
+        vals admite:
+          - precio: float (override directo del importe final)
+          - invoice_date_due: 'YYYY-MM-DD'
+          - narration: str
+          - descuento_ids: [int]  → reemplaza descuentos_activos_ids del sub y recalcula
+          - modificaciones_nuevas: [{tipo, valor, razon, fecha_desde, fecha_hasta}] → las crea ligadas a la sub
+          - modificaciones_borrar: [int] → borra esos modificaciones (round.modificacion.recibo)
+        Si se han cambiado descuentos o modificaciones, el importe final se recalcula.
+        """
+        inv = self._call('account.move','read',[invoice_id],
+            ['state','invoice_line_ids','round_subscription_id','invoice_date'])[0]
         if inv['state'] != 'draft':
             raise ValueError('Solo se pueden modificar borradores')
-        # Update narration
-        if 'narration' in vals or 'notas' in vals:
-            self._call('account.move','write',[invoice_id],{'narration': vals.get('narration') or vals.get('notas')})
-        # Update precio
-        if 'precio' in vals and inv.get('invoice_line_ids'):
+
+        narration = vals.get('narration', vals.get('notas'))
+        if narration is not None:
+            self._call('account.move','write',[invoice_id],{'narration': narration or False})
+        if 'invoice_date_due' in vals and vals['invoice_date_due']:
+            self._call('account.move','write',[invoice_id],{'invoice_date_due': vals['invoice_date_due']})
+
+        sub_pair = inv.get('round_subscription_id')
+        sub_id = sub_pair[0] if sub_pair else None
+        recalc_needed = False
+
+        # Reemplazar descuentos del sub
+        if 'descuento_ids' in vals and sub_id:
+            ids = [int(x) for x in (vals['descuento_ids'] or [])]
+            # (6,0,ids) reemplaza la colección completa
+            self._call('round.subscription','write',[sub_id],
+                {'descuentos_activos_ids': [(6, 0, ids)]})
+            recalc_needed = True
+
+        # Borrar modificaciones
+        for mid in vals.get('modificaciones_borrar') or []:
+            try: self._call('round.modificacion.recibo','unlink',[int(mid)])
+            except Exception as e: log.warning(f'unlink mod {mid}: {e}')
+            recalc_needed = True
+
+        # Crear nuevas modificaciones
+        for nm in vals.get('modificaciones_nuevas') or []:
+            mod_vals = {
+                'subscription_id': sub_id,
+                'tipo': nm.get('tipo'),
+                'valor': float(nm.get('valor') or 0),
+                'razon': nm.get('razon') or '',
+                'fecha_desde': nm.get('fecha_desde') or (inv['invoice_date'] or ''),
+                'estado': 'activa',
+            }
+            if nm.get('fecha_hasta'): mod_vals['fecha_hasta'] = nm['fecha_hasta']
+            try:
+                self._call('round.modificacion.recibo','create', mod_vals)
+            except Exception as e:
+                log.warning(f'create mod: {e}')
+            recalc_needed = True
+
+        # Recalcular precio si hubo cambios en descuentos/modificaciones
+        if recalc_needed and sub_id:
+            sub = self._call('round.subscription','read',[sub_id],
+                ['cuota_id','partner_id','periodicidad','forma_pago','mandate_id',
+                 'pasarela_id','trainer_analytic_id','company_id','descuentos_activos_ids',
+                 'fecha_inicio','token_tarjeta'])[0]
+            sub['id'] = sub_id
+            mes_str = inv['invoice_date'][:7] if inv.get('invoice_date') else None
+            if mes_str:
+                calc = self._calcular_importe(sub, mes_str)
+                if inv.get('invoice_line_ids'):
+                    line_id = inv['invoice_line_ids'][0]
+                    self._call('account.move.line','write',[line_id],
+                        {'price_unit': float(calc['precio_final'])})
+        elif 'precio' in vals and inv.get('invoice_line_ids'):
+            # Override manual del precio
             line_id = inv['invoice_line_ids'][0]
             self._call('account.move.line','write',[line_id],
                 {'price_unit': float(vals['precio'])})
-        # Update fecha
-        if 'invoice_date_due' in vals:
-            self._call('account.move','write',[invoice_id],{'invoice_date_due': vals['invoice_date_due']})
+
         return self._list_recibos([('id','=',invoice_id)])[0]
 
     def delete_borrador(self, invoice_id):
@@ -331,6 +598,7 @@ class OdooCuotas:
         """1. Post all borradores del mes
            2. Crear payment.order SEPA con todos los SEPA del mes
            3. Generar fichero pain.008
+           4. Registrar pago automático para SEPA + tokenización (se asume cobrado)
         """
         inicio, fin = self._periodos_mes(mes_str)
         borradores = self._call('account.move','search',
@@ -343,6 +611,9 @@ class OdooCuotas:
         # Post (action_post)
         self._call('account.move','action_post', borradores)
         log.info(f'Emisión {mes_str}: {len(borradores)} recibos posted')
+
+        # Auto-pago SEPA + tokenización (asumimos cobrado salvo devolución posterior)
+        cobrados_auto = self._registrar_pagos_auto(borradores)
 
         # Crear payment.order SEPA
         sepa_pm = self._call('account.payment.mode','search',
@@ -399,9 +670,101 @@ class OdooCuotas:
             'ok': True,
             'mes': mes_str,
             'recibos_emitidos': len(borradores),
+            'cobrados_auto': cobrados_auto,
             'sepa_attachment_id': sepa_attachment_id,
             'sepa_filename': sepa_filename,
         }
+
+    def _registrar_pagos_auto(self, invoice_ids):
+        """Para cada invoice de SEPA o tokenización, registra un account.payment
+        que la deja como 'paid'. Devuelve lista de invoice_ids procesados.
+        """
+        if not invoice_ids:
+            return []
+        # Buscar journal bancario
+        journals = self._call('account.journal','search',
+            [('type','=','bank'),('company_id','=',cfg.ODOO_COMPANY)], limit=1)
+        if not journals:
+            log.warning('No journal bancario; no se registran pagos auto')
+            return []
+        journal_id = journals[0]
+
+        cobrados = []
+        for inv_id in invoice_ids:
+            inv = self._call('account.move','read',[inv_id],
+                ['round_subscription_id','invoice_date','payment_state','state'])[0]
+            sub_pair = inv.get('round_subscription_id')
+            if not sub_pair: continue
+            sub = self._call('round.subscription','read',[sub_pair[0]],['forma_pago'])[0]
+            fp = sub.get('forma_pago')
+            if fp not in ('sepa','tarjeta_token','tokenizacion'):
+                continue
+            if inv.get('payment_state') == 'paid':
+                continue  # ya pagado
+            try:
+                ctx = {'active_model':'account.move','active_ids':[inv_id]}
+                wiz_id = self._call_ctx('account.payment.register','create', ctx, {
+                    'journal_id': journal_id,
+                    'payment_date': inv.get('invoice_date') or False,
+                })
+                self._call_ctx('account.payment.register','action_create_payments', ctx, [wiz_id])
+                cobrados.append(inv_id)
+                log.info(f'Pago auto {fp} registrado para inv {inv_id}')
+            except Exception as e:
+                log.warning(f'No se pudo registrar pago auto inv {inv_id}: {e}')
+        return cobrados
+
+    # ── Devoluciones ────────────────────────────────────────────────────────
+    def procesar_devoluciones(self, rows):
+        """rows = [{invoice_ref, motivo}, ...]
+        Para cada uno: anula los pagos reconciliados → vuelve a 'not_paid'
+        y deja una nota en narration.
+        """
+        from datetime import date as _date
+        result = {'procesadas': [], 'errores': []}
+        for r in rows:
+            ref = (r.get('invoice_ref') or r.get('name') or '').strip()
+            if not ref:
+                result['errores'].append({'row': r, 'error': 'Sin referencia'})
+                continue
+            inv_ids = self._call('account.move','search',
+                [('move_type','=','out_invoice'),('name','=',ref)], limit=1)
+            if not inv_ids:
+                result['errores'].append({'invoice_ref': ref, 'error': 'No encontrado'})
+                continue
+            inv_id = inv_ids[0]
+            inv = self._call('account.move','read',[inv_id],
+                ['name','partner_id','amount_total','payment_state','narration'])[0]
+            try:
+                # Pagos reconciliados con esta factura
+                payments = self._call('account.payment','search',
+                    [('reconciled_invoice_ids','in',[inv_id])])
+                anulados = 0
+                for p in payments:
+                    try:
+                        self._call('account.payment','action_draft',[p])
+                    except Exception: pass
+                    try:
+                        self._call('account.payment','action_cancel',[p])
+                        anulados += 1
+                    except Exception as e:
+                        log.warning(f'cancel payment {p}: {e}')
+                # Nota
+                motivo = (r.get('motivo') or 'sin motivo').strip()
+                nota_extra = f"\n[DEVOLUCIÓN {_date.today().isoformat()}] {motivo}"
+                new_narration = (inv.get('narration') or '') + nota_extra
+                self._call('account.move','write',[inv_id],{'narration': new_narration})
+                result['procesadas'].append({
+                    'invoice_ref': ref,
+                    'invoice_id': inv_id,
+                    'partner': inv['partner_id'][1] if inv.get('partner_id') else '',
+                    'importe': inv.get('amount_total'),
+                    'pagos_anulados': anulados,
+                    'motivo': motivo,
+                })
+            except Exception as e:
+                result['errores'].append({'invoice_ref': ref, 'error': str(e)})
+        return result
 
     def descargar_sepa(self, attachment_id):
         att = self._call('ir.attachment','read',[attachment_id],['name','datas','mimetype'])

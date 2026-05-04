@@ -163,7 +163,7 @@ export default function ClaseDetalle() {
     .filter(c => {
       if (!clientSearch) return true
       const q = clientSearch.toLowerCase()
-      return `${c.name} ${c.surname} ${c.email}`.toLowerCase().includes(q)
+      return `${c.name} ${c.surname} ${c.email} ${c.gympassId || ''} ${c.alias || ''}`.toLowerCase().includes(q)
     })
 
   if (loading) return (
@@ -323,6 +323,7 @@ export default function ClaseDetalle() {
                       : <Badge color="gray"><XCircle size={10} aria-hidden="true" /> Sin confirmar</Badge>
                     }
                     {u.isPause && <Badge color="yellow">Pausado</Badge>}
+                    {u.gympassId && <Badge color="purple">Gympass {u.gympassId}</Badge>}
                   </div>
                 </div>
 
@@ -423,8 +424,14 @@ export default function ClaseDetalle() {
                         }}>
                   <Avatar nombre={`${c.name} ${c.surname}`} size={38} imgUrl={c.imgUrl} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>{c.name} {c.surname}</p>
-                    <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{c.email}</p>
+                    <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-0)' }}>
+                      {c.name} {c.surname}
+                      {c.gympassId && <span style={{ marginLeft: 8, fontSize: 10, padding: '2px 8px', borderRadius: 999, background: 'rgba(167,139,250,0.12)', color: 'var(--violet)', fontFamily: 'var(--font-mono)' }}>Gympass</span>}
+                    </p>
+                    <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                      {c.email}
+                      {c.gympassId && <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)' }}>· {c.gympassId}</span>}
+                    </p>
                   </div>
                   {actionLoading === `join-${c.id}`
                     ? <Loader2 size={16} className="animate-spin" style={{ color: 'var(--green)' }} aria-label="Inscribiendo" />

@@ -48,7 +48,8 @@ class RoundSubscription(models.Model):
     forma_pago = fields.Selection(
         [('sepa',          'SEPA Direct Debit'),
          ('tarjeta_token', 'Tarjeta tokenizada'),
-         ('enlace_pago',   'Enlace de pago / caja')],
+         ('enlace_pago',   'Enlace de pago'),
+         ('efectivo',      'Efectivo / caja')],
         string='Forma de pago',
         required=True,
         default='sepa',

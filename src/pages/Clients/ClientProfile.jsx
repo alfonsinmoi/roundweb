@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft, User, CalendarCheck, Send,
   Archive, UserX, CheckCircle2, XCircle,
   Heart, Ruler, Weight, Target, Loader2,
   Activity, Smartphone, Settings, Shield, Mail, Phone, Pencil, Dumbbell,
   BarChart3, TrendingUp, TrendingDown, Clock, Users, Download, Code, Copy, Check,
-  Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2,
+  Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2, Receipt, RefreshCw,
+  QrCode,
 } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import Modal from '../../components/Modal'
@@ -16,9 +18,10 @@ import { useAuth } from '../../contexts/AuthContext'
 import {
   getClientes, postClientes, desvinculaCliente as apiDesvincular,
   getClasesCliente, getTrainingsUser, getTrainingsFromSalas, getERPDatosCliente,
-  postERPDatosCliente, loginEasy,
+  postERPDatosCliente, apiPostRaw, apiGetRaw, loginEasy,
   getSalasByRange, getUsuariosBySala,
 } from '../../utils/api'
+import { useGympassMap } from '../../hooks/useGympassMap'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
 
@@ -26,6 +29,7 @@ const tabs = [
   { id: 'personal', label: 'Datos personales', icon: User },
   { id: 'clases',   label: 'Clases realizadas', icon: CalendarCheck },
   { id: 'analisis', label: 'Análisis uso',      icon: BarChart3 },
+  { id: 'cuotas',   label: 'Cuotas',            icon: Receipt },
   { id: 'erp',      label: 'Datos ERP',         icon: Send },
 ]
 
@@ -132,6 +136,7 @@ function GenderField({ label, value, editing, editForm, setEditForm }) {
 function AuthModal({ open, onClose, onAuthorized, clienteName }) {
   const { user } = useAuth()
   const [password, setPassword] = useState('')
+  const [showPwd, setShowPwd] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -171,19 +176,30 @@ function AuthModal({ open, onClose, onAuthorized, clienteName }) {
           <label htmlFor="auth-password" style={{ display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--text-3)', marginBottom: 8 }}>
             Contraseña
           </label>
-          <input
-            id="auth-password"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={e => { setPassword(e.target.value); setError('') }}
-            className="form-input"
-            style={{
-              width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
-              background: 'var(--bg-1)', border: `1px solid ${error ? 'var(--red)' : 'var(--line)'}`,
-              color: 'var(--text-0)', outline: 'none',
-            }}
-          />
+          <div style={{ position: 'relative' }}>
+            <input
+              id="auth-password"
+              type={showPwd ? 'text' : 'password'}
+              autoComplete="current-password"
+              value={password}
+              onChange={e => { setPassword(e.target.value); setError('') }}
+              className="form-input"
+              style={{
+                width: '100%', padding: '14px 48px 14px 18px', borderRadius: 14, fontSize: 14,
+                background: 'var(--bg-1)', border: `1px solid ${error ? 'var(--red)' : 'var(--line)'}`,
+                color: 'var(--text-0)', outline: 'none',
+              }}
+            />
+            <button type="button" onClick={() => setShowPwd(s => !s)} tabIndex={-1}
+                    aria-label={showPwd ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    style={{
+                      position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: 'var(--text-3)', padding: 6, display: 'flex',
+                    }}>
+              {showPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          </div>
           {error && <p role="alert" style={{ fontSize: 13, color: 'var(--red)', marginTop: 10 }}>{error}</p>}
         </div>
         <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
@@ -205,7 +221,9 @@ export default function ClientProfile() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
-  const [tab, setTab] = useState('personal')
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') || 'personal'
+  const [tab, setTab] = useState(initialTab)
   const [cliente, setCliente] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -215,6 +233,7 @@ export default function ClientProfile() {
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
   const [motivoModal, setMotivoModal] = useState(false)
   const [motivo, setMotivo] = useState('')
+  const [qrOpen, setQrOpen] = useState(false)
 
   useEffect(() => {
     getClientes()
@@ -277,7 +296,9 @@ export default function ClientProfile() {
     </div>
   )
 
-  const edad = cliente.age ?? calcEdad(cliente.birthdate)
+  // NoofitPro suele devolver age=0 cuando no se rellenó al alta. Si es 0/null,
+  // lo calculamos desde birthdate.
+  const edad = (cliente.age && cliente.age > 0) ? cliente.age : calcEdad(cliente.birthdate)
 
   return (
     <div style={{ maxWidth: 1000 }}>
@@ -345,6 +366,9 @@ export default function ClientProfile() {
 
         {/* Actions */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 28, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
+          <Btn variant="secondary" size="md" onClick={() => setQrOpen(true)}>
+            <QrCode size={15} aria-hidden="true" /> Mostrar QR
+          </Btn>
           <Btn variant="secondary" size="md" onClick={handleArchivar} disabled={!!actionLoading}>
             {actionLoading === 'archivar'
               ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
@@ -384,6 +408,7 @@ export default function ClientProfile() {
       {tab === 'personal' && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
       {tab === 'clases'   && <TabClases clienteId={cliente.id} />}
       {tab === 'analisis' && <TabAnalisis cliente={cliente} />}
+      {tab === 'cuotas'   && <TabCuotas cliente={cliente} />}
       {tab === 'erp'      && <TabERP clienteId={cliente.id} cliente={cliente} />}
 
       {/* Dialogs */}
@@ -404,6 +429,36 @@ export default function ClientProfile() {
         onConfirm={doDesvincular}
         onCancel={() => setConfirmDesvincular(false)}
       />
+      <Modal open={qrOpen} onClose={() => setQrOpen(false)} title="QR del cliente">
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: 4 }}>
+          <p style={{ fontSize: 13, color: 'var(--text-2)', textAlign: 'center', maxWidth: 360, lineHeight: 1.5 }}>
+            Para que <strong style={{ color: 'var(--text-0)' }}>{cliente.name} {cliente.surname}</strong> se vincule
+            a su cuenta en <strong style={{ color: 'var(--text-1)' }}>mynoofit</strong>, escanea este QR desde la app.
+          </p>
+          <div style={{
+            background: '#fff', borderRadius: 14, padding: 18,
+            display: 'flex', justifyContent: 'center',
+          }}>
+            <QRCodeSVG
+              value={`cliente:${cliente.idEspejo ?? cliente.id}`}
+              size={320}
+              level="M"
+              includeMargin={false}
+              style={{ display: 'block' }}
+            />
+          </div>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
+            borderRadius: 10, background: 'var(--bg-3)', border: '1px solid var(--line)',
+            fontSize: 12, color: 'var(--text-3)', fontFamily: 'monospace',
+          }}>
+            <span>cliente:</span>
+            <strong style={{ color: 'var(--text-1)' }}>{cliente.idEspejo ?? cliente.id}</strong>
+          </div>
+          <Btn variant="secondary" size="md" onClick={() => setQrOpen(false)}>Cerrar</Btn>
+        </div>
+      </Modal>
+
       <Modal open={motivoModal} onClose={() => setMotivoModal(false)} title="Archivar cliente"
              subtitle={`${cliente.name} ${cliente.surname}`} maxWidth={480}>
         <div style={{ padding: '28px 32px' }}>
@@ -435,19 +490,41 @@ function TabPersonal({ cliente, onClienteUpdate }) {
   const [authOpen, setAuthOpen] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // Gympass: lo guardamos en NUESTRA BD, no en NoofitPro
+  const { mapa: gympassMap, setGympass } = useGympassMap()
+  const gympassActual = cliente
+    ? (gympassMap[String(cliente.id)] || cliente.gympassId || '')
+    : ''
+
   const startEdit = () => {
-    setEditForm({ ...cliente })
+    setEditForm({ ...cliente, gympassId: gympassActual })
     setEditing(true)
   }
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      await postClientes([editForm])
+      // Gympass se guarda separadamente en nuestra BD
+      const newGympass = (editForm.gympassId || '').trim()
+      if (newGympass !== gympassActual) {
+        try { await setGympass(cliente.id, newGympass) }
+        catch (e) { console.warn('gympass save:', e.message) }
+      }
+      // El resto de campos sí van a NoofitPro (sin gympassId que lo descarta)
+      const { gympassId: _gymp, ...payload } = editForm
+      await postClientes([payload])
       onClienteUpdate({ ...editForm })
       setEditing(false)
       setEditForm(null)
       toast.success('Cambios guardados correctamente')
+
+      // Sync automático NoofitPro → Odoo (sin bloquear si falla)
+      try {
+        const { syncClienteOdoo, getRoundIdentity } = await import('../../utils/configApi')
+        const identity = getRoundIdentity(user)
+        const r = await syncClienteOdoo(identity, cliente.id)
+        if (r?.ok) toast.success('Datos sincronizados con Odoo')
+      } catch (e) { console.warn('sync odoo:', e?.message) }
     } catch {
       toast.error('Error al guardar los cambios')
     } finally {
@@ -506,6 +583,7 @@ function TabPersonal({ cliente, onClienteUpdate }) {
             <Field label="Nombre"         value={cliente.name}      fieldKey="name"       {...ep} />
             <Field label="Apellidos"      value={cliente.surname}   fieldKey="surname"    {...ep} />
             <Field label="Alias"          value={cliente.alias}     fieldKey="alias"      {...ep} />
+            <Field label="Gympass ID"     value={gympassActual}     fieldKey="gympassId"  {...ep} />
             <Field label="Email"          value={cliente.email}     fieldKey="email"      type="email" {...ep} />
             <Field label="Teléfono"       value={cliente.cellPhone} fieldKey="cellPhone"  type="tel"   {...ep} />
             <Field label="DNI"            value={cliente.dni}       fieldKey="dni"        {...ep} />
@@ -544,7 +622,7 @@ function TabPersonal({ cliente, onClienteUpdate }) {
       <AuthModal
         open={authOpen}
         onClose={() => setAuthOpen(false)}
-        onAuthorized={startEdit}
+        onAuthorized={() => { setAuthOpen(false); startEdit() }}
         clienteName={`${cliente.name} ${cliente.surname}`}
       />
     </div>
@@ -1152,25 +1230,26 @@ function TabAnalisis({ cliente }) {
 }
 
 // ── Tab: Datos ERP ─────────────────────────────────────────────────────────────
-// Definición canónica de los 10 campos que espera el MCP / GestPlus.
-// Esto es la fuente de verdad mientras el backend `GET /api/erp/configuracion`
-// no devuelva esta misma lista. Los nombres internos coinciden EXACTAMENTE con
-// los que espera el webhook (snake_case, sin renombrar).
+// El backend de Wiemspro solo acepta nombreCampo del tipo string1, string2,
+// bool1, datetime1, double1, int1... (esquema legacy hardcodeado).
+// Para no chocar con eso, usamos esos nombres en `nombreCampo` y ponemos las
+// etiquetas MCP en `nombreAMostrar`. El campo `mcpKey` define cómo se llama
+// cada valor cuando se envía al webhook del MCP.
 const MCP_CAMPOS = [
-  { nombreCampo: 'dni',                 nombreAMostrar: 'DNI / NIE',                  tipo: 'string',   formato: 'dni',       obligatorio: true,  orden: 1 },
-  { nombreCampo: 'movil',               nombreAMostrar: 'Móvil',                      tipo: 'string',   formato: 'telefono',  obligatorio: true,  orden: 2 },
-  { nombreCampo: 'curso',               nombreAMostrar: 'Curso / Tipo de cuota',      tipo: 'string',   formato: 'texto',     obligatorio: true,  orden: 3 },
-  { nombreCampo: 'precio_curso',        nombreAMostrar: 'Precio del curso (€/mes)',   tipo: 'decimal',  formato: 'moneda',    obligatorio: true,  orden: 4 },
-  { nombreCampo: 'fecha_alta',          nombreAMostrar: 'Fecha de alta',              tipo: 'datetime', formato: 'fecha',     obligatorio: true,  orden: 5, defaultHoy: true },
-  { nombreCampo: 'tipo_pago',           nombreAMostrar: 'Tipo de pago',               tipo: 'string',   formato: 'select',    obligatorio: true,  orden: 6,
-    opciones: ['Banco', 'Caja'] },
-  { nombreCampo: 'iban',                nombreAMostrar: 'IBAN',                       tipo: 'string',   formato: 'iban',      obligatorio: false, orden: 7,
-    obligatorioSi: { campo: 'tipo_pago', valor: 'Banco' } },
-  { nombreCampo: 'forma_primera_cuota', nombreAMostrar: 'Forma de la primera cuota',  tipo: 'string',   formato: 'select',    obligatorio: true,  orden: 8,
-    opciones: ['Efectivo', 'Tarjeta'] },
-  { nombreCampo: 'periodo_pago',        nombreAMostrar: 'Periodo de pago',            tipo: 'string',   formato: 'select',    obligatorio: true,  orden: 9,
-    opciones: ['Mensual', 'Trimestral', 'Semestral'] },
-  { nombreCampo: 'tipo_descuento',      nombreAMostrar: 'Tipo de descuento',          tipo: 'string',   formato: 'select',    obligatorio: false, orden: 10,
+  { nombreCampo: 'string1',   nombreAMostrar: 'DNI / NIE',                 tipo: 'string',   formato: 'dni',      obligatorio: true,  orden: 1,  mcpKey: 'dni' },
+  { nombreCampo: 'string2',   nombreAMostrar: 'Móvil',                     tipo: 'string',   formato: 'telefono', obligatorio: true,  orden: 2,  mcpKey: 'movil' },
+  { nombreCampo: 'string3',   nombreAMostrar: 'Curso / Tipo de cuota',     tipo: 'string',   formato: 'texto',    obligatorio: true,  orden: 3,  mcpKey: 'curso' },
+  { nombreCampo: 'double1',   nombreAMostrar: 'Precio del curso (€/mes)',  tipo: 'decimal',  formato: 'moneda',   obligatorio: true,  orden: 4,  mcpKey: 'precio_curso' },
+  { nombreCampo: 'datetime1', nombreAMostrar: 'Fecha de alta',             tipo: 'datetime', formato: 'fecha',    obligatorio: true,  orden: 5,  mcpKey: 'fecha_alta', defaultHoy: true },
+  { nombreCampo: 'string4',   nombreAMostrar: 'Forma de pago recurrente',  tipo: 'string',   formato: 'select',   obligatorio: true,  orden: 6,  mcpKey: 'tipo_pago',
+    opciones: ['SEPA', 'Tarjeta tokenizada', 'Enlace de pago / caja'] },
+  { nombreCampo: 'string5',   nombreAMostrar: 'IBAN',                      tipo: 'string',   formato: 'iban',     obligatorio: false, orden: 7,  mcpKey: 'iban',
+    obligatorioSi: { campo: 'string4', valor: 'SEPA' } },
+  { nombreCampo: 'string6',   nombreAMostrar: 'Forma de la primera cuota', tipo: 'string',   formato: 'select',   obligatorio: true,  orden: 8,  mcpKey: 'forma_primera_cuota',
+    opciones: ['Efectivo', 'TPV físico', 'Enlace de pago', 'Aplazar al próximo recibo'] },
+  { nombreCampo: 'string7',   nombreAMostrar: 'Periodo de pago',           tipo: 'string',   formato: 'select',   obligatorio: true,  orden: 9,  mcpKey: 'periodo_pago',
+    opciones: ['Mensual', 'Bimensual', 'Trimestral', 'Semestral', 'Anual'] },
+  { nombreCampo: 'string8',   nombreAMostrar: 'Tipo de descuento',         tipo: 'string',   formato: 'select',   obligatorio: false, orden: 10, mcpKey: 'tipo_descuento',
     opciones: ['Sin descuento', 'Familiar', 'Estudiante', 'Pensionista'] },
 ]
 
@@ -1224,8 +1303,27 @@ function fechaNacimientoToMCP(birthdate) {
   return `${dd}/${mm}/${d.getFullYear()}`
 }
 
-// Dispara webhook al MCP (fire-and-forget, best-effort)
+// Convierte un valor según el mcpKey al formato que espera el MCP
+function valueToMCP(mcpKey, raw) {
+  if (raw == null || raw === '') return ''
+  // precio_curso: numérico como string ("49.9")
+  if (mcpKey === 'precio_curso') return String(raw)
+  // fecha_alta: yyyy-MM-dd. Si viene timestamp, convertir
+  if (mcpKey === 'fecha_alta') {
+    if (typeof raw === 'number') return new Date(raw).toISOString().slice(0, 10)
+    return String(raw).slice(0, 10)
+  }
+  return String(raw)
+}
+
+// Dispara webhook al MCP (fire-and-forget, best-effort).
+// formValues está keyed por nombreCampo (string1, string2, double1...).
+// Convertimos a mcpKey (dni, movil, precio_curso...) para el payload.
 function dispararWebhookERP(cliente, formValues) {
+  const camposMCP = {}
+  for (const c of MCP_CAMPOS) {
+    camposMCP[c.mcpKey] = valueToMCP(c.mcpKey, formValues[c.nombreCampo])
+  }
   const payload = {
     // 6 campos desde la BD NoofitPro
     id_cliente:          cliente.id,
@@ -1234,17 +1332,8 @@ function dispararWebhookERP(cliente, formValues) {
     email:               cliente.email ?? '',
     sexo:                genderToMCP(cliente.gender),
     fecha_nacimiento:    fechaNacimientoToMCP(cliente.birthdate),
-    // 10 campos del formulario ERP
-    dni:                 formValues.dni ?? '',
-    movil:               formValues.movil ?? '',
-    curso:               formValues.curso ?? '',
-    precio_curso:        formValues.precio_curso != null ? String(formValues.precio_curso) : '',
-    fecha_alta:          formValues.fecha_alta ?? '',
-    tipo_pago:           formValues.tipo_pago ?? '',
-    iban:                formValues.iban ?? '',
-    forma_primera_cuota: formValues.forma_primera_cuota ?? '',
-    periodo_pago:        formValues.periodo_pago ?? '',
-    tipo_descuento:      formValues.tipo_descuento ?? '',
+    // 10 campos del formulario ERP traducidos a nombres MCP
+    ...camposMCP,
   }
   // Fire-and-forget: no esperamos la respuesta para no bloquear la UI
   fetch('/api/erp-webhook', {
@@ -1265,6 +1354,242 @@ function dispararWebhookERP(cliente, formValues) {
     })
 }
 
+// ── Tab: Cuotas/recibos del cliente ─────────────────────────────────────────
+function TabCuotas({ cliente }) {
+  const { user } = useAuth()
+  const toast = useToast()
+  const [recibos, setRecibos] = useState([])
+  const [loading, setLoading] = useState(true)
+  const identity = (() => {
+    // Misma lógica que getRoundIdentity, inline para no añadir dep cyclic
+    if (!user) return { managerId: '', trainerId: null }
+    const isFalsy = v => v == null || v === false || v === '' || v === 'false' || v === '0' || v === 0
+    if (user.originalSession) {
+      const o = user.originalSession
+      return {
+        managerId: String(!isFalsy(o.manager) ? o.manager : (o.id || '')),
+        trainerId: String(!isFalsy(user.manager) ? user.manager : (user.id || '')),
+      }
+    }
+    return {
+      managerId: String(!isFalsy(user.manager) ? user.manager : (user.id || '')),
+      trainerId: null,
+    }
+  })()
+
+  async function reload() {
+    setLoading(true)
+    try {
+      const { cuotasCliente } = await import('../../utils/cuotasApi')
+      const data = await cuotasCliente(identity, cliente.id)
+      setRecibos(data || [])
+    } catch (e) { toast.error(`Error cargando cuotas: ${e.message}`) }
+    setLoading(false)
+  }
+  useEffect(() => { reload() }, [cliente.id])
+
+  return (
+    <div role="tabpanel" aria-label="Cuotas">
+      <Card style={{ padding: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <SectionTitle><Receipt size={16} style={{ marginRight: 8 }} /> Cuotas y recibos</SectionTitle>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', margin: 0 }}>
+              {loading ? 'Cargando…' : `${recibos.length} recibo${recibos.length !== 1 ? 's' : ''} emitidos para este cliente`}
+            </p>
+          </div>
+          <Btn variant="secondary" size="sm" onClick={reload}><RefreshCw size={13} /> Refrescar</Btn>
+        </div>
+
+        {loading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+            <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} />
+          </div>
+        ) : recibos.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-3)', textAlign: 'center', padding: 32 }}>
+            Sin recibos. Genera una preemisión desde el menú "Cuotas clientes".
+          </p>
+        ) : (
+          <RecibosTable recibos={recibos} />
+        )}
+      </Card>
+    </div>
+  )
+}
+
+// Tabla común de recibos (también usable desde Cuotas Clientes / Listado)
+function RecibosTable({ recibos, mostrarCliente = false }) {
+  return (
+    <div style={{ width: '100%' }}>
+      <table style={{
+        width: '100%', borderCollapse: 'collapse', fontSize: 12,
+        fontFamily: 'inherit',
+      }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
+            {mostrarCliente && <Th>Cliente</Th>}
+            <Th>Mes</Th>
+            <Th>Cuota</Th>
+            <Th>Periodicidad</Th>
+            <Th>Tipo</Th>
+            <Th>Importe</Th>
+            <Th>Forma pago</Th>
+            <Th>Día emisión</Th>
+            <Th>Día cobro</Th>
+            <Th>Día devolución</Th>
+            <Th>Estado</Th>
+            <Th>Notas</Th>
+            <Th></Th>
+          </tr>
+        </thead>
+        <tbody>
+          {recibos.map(r => <ReciboRow key={r.id} r={r} mostrarCliente={mostrarCliente} />)}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function Th({ children }) {
+  return <th style={{
+    padding: '8px 8px', fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
+    textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap',
+  }}>{children}</th>
+}
+
+function Td({ children, mono, color, style, wrap, title }) {
+  const tip = title ?? (typeof children === 'string' ? children : undefined)
+  return <td title={tip} style={{
+    padding: '8px 8px', borderBottom: '1px solid var(--line)',
+    fontFamily: mono ? 'var(--font-mono)' : 'inherit',
+    color: color || 'var(--text-1)',
+    whiteSpace: wrap ? 'normal' : 'nowrap',
+    overflow: wrap ? 'visible' : 'hidden',
+    textOverflow: wrap ? 'clip' : 'ellipsis',
+    wordBreak: wrap ? 'break-word' : 'normal',
+    verticalAlign: 'top',
+    ...(style || {}),
+  }}>{children}</td>
+}
+
+function ReciboRow({ r, mostrarCliente }) {
+  const formaPago = r.forma_pago || '—'
+  const formaPagoLabels = {
+    sepa: 'SEPA', tarjeta_token: 'Tarjeta', enlace_pago: 'Enlace/Caja', tokenizacion: 'Tarjeta',
+  }
+  const stateLabels = {
+    not_paid:    { label: 'Pendiente',  bg: 'rgba(251,191,36,0.12)', color: 'var(--amber)' },
+    in_payment:  { label: 'En cobro',   bg: 'rgba(91,156,246,0.12)', color: 'var(--blue)' },
+    paid:        { label: 'Cobrado',    bg: 'rgba(45,212,168,0.12)', color: 'var(--green)' },
+    partial:     { label: 'Parcial',    bg: 'rgba(251,191,36,0.12)', color: 'var(--amber)' },
+    reversed:    { label: 'Devuelto',   bg: 'rgba(248,113,113,0.12)', color: 'var(--red)' },
+  }
+  const moveStateLabels = {
+    draft:  { label: 'Borrador', bg: 'var(--bg-3)', color: 'var(--text-3)' },
+    posted: { label: 'Emitido',  bg: 'rgba(91,156,246,0.12)', color: 'var(--blue)' },
+    cancel: { label: 'Cancelado',bg: 'rgba(248,113,113,0.12)', color: 'var(--red)' },
+  }
+  const isPosted = r.state === 'posted'
+  const isImpagado = isPosted && (r.payment_state === 'not_paid' || r.payment_state === 'reversed')
+
+  // Día cobro: si es SEPA y está posted = invoice_date_due; si paid = invoice_date_due tb (asumimos cobro al vencimiento)
+  // Día devolución: solo si payment_state == 'reversed' (no tenemos campo R-transaction aún)
+  const diaEmision = r.invoice_date || '—'
+  const diaCobro = isPosted ? (r.invoice_date_due || '—') : '—'
+  const diaDevol = r.payment_state === 'reversed' ? r.invoice_date_due : '—'
+
+  return (
+    <tr>
+      {mostrarCliente && <Td title={r.partner_id?.name || `#${r.partner_id?.id}`}>{r.partner_id?.name || `#${r.partner_id?.id}`}</Td>}
+      <Td mono>{r.mes_ref || '—'}</Td>
+      <Td>{r.cuota_codigo || '—'}</Td>
+      <Td>{({ mensual:'Mensual', bimensual:'Bimensual', trimestral:'Trimestral', semestral:'Semestral', anual:'Anual' })[r.periodicidad] || r.periodicidad || '—'}</Td>
+      <Td>
+        <span style={{
+          fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+          background: r.tipo === 'alta' ? 'rgba(45,212,168,0.12)' : 'var(--bg-3)',
+          color: r.tipo === 'alta' ? 'var(--green)' : 'var(--text-2)',
+        }}>{r.tipo === 'alta' ? 'Alta' : 'Mensualidad'}</span>
+      </Td>
+      <Td mono style={{ fontWeight: 600, color: 'var(--text-0)' }}>{r.amount_total?.toFixed(2)} €</Td>
+      <Td>{formaPagoLabels[formaPago] || formaPago}</Td>
+      <Td mono>{diaEmision}</Td>
+      <Td mono>{diaCobro}</Td>
+      <Td mono color={diaDevol !== '—' ? 'var(--red)' : 'var(--text-3)'}>{diaDevol}</Td>
+      <Td>
+        {!isPosted ? (
+          <Badge color={moveStateLabels[r.state]?.color === 'var(--text-3)' ? 'gray' : 'blue'}>
+            {moveStateLabels[r.state]?.label || r.state}
+          </Badge>
+        ) : (
+          <Badge color={
+            r.payment_state === 'paid' ? 'green' :
+            r.payment_state === 'reversed' ? 'red' :
+            r.payment_state === 'in_payment' ? 'blue' : 'amber'
+          }>
+            {stateLabels[r.payment_state]?.label || r.payment_state}
+          </Badge>
+        )}
+      </Td>
+      <Td wrap color="var(--text-3)" title={r.narration || ''} style={{ fontSize: 11 }}>
+        {r.narration || '—'}
+      </Td>
+      <Td>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {isImpagado && (
+            <Btn variant="secondary" size="sm"
+                 onClick={() => alert('Enlace de pago: pendiente de TPV virtual real')}>
+              Pagar
+            </Btn>
+          )}
+          {isPosted && <EnviarFacturaBtn invoiceId={r.id} />}
+        </div>
+      </Td>
+    </tr>
+  )
+}
+
+
+/** Botón para enviar la factura por email al cliente con PDF adjunto.
+ *  Pide confirmación del email destino (editable) — útil cuando el del
+ *  cliente está mal o vacío. */
+function EnviarFacturaBtn({ invoiceId }) {
+  const { user } = useAuth()
+  const toast = useToast()
+  const [sending, setSending] = useState(false)
+  const handleSend = async () => {
+    if (sending) return
+    const dest = window.prompt(
+      'Enviar factura al email:\n(deja vacío para usar el del cliente registrado en Odoo)',
+      ''
+    )
+    if (dest === null) return  // cancel
+    const destClean = dest.trim()
+    setSending(true)
+    try {
+      const { enviarFactura } = await import('../../utils/cuotasApi')
+      const { getRoundIdentity } = await import('../../utils/configApi')
+      const r = await enviarFactura(getRoundIdentity(user), invoiceId, destClean || null)
+      if (r?.ok) toast.success(`Factura enviada a ${r.sent_to}`)
+      else if (r?.error === 'email_invalido')
+        toast.error(`Email inválido: ${r.email_invalido} — ${r.detalle || ''}`)
+      else
+        toast.error(`No se pudo enviar: ${r?.error || 'desconocido'}`)
+    } catch (e) {
+      toast.error(`Error: ${e.message}`)
+    }
+    setSending(false)
+  }
+  return (
+    <Btn variant="ghost" size="sm" onClick={handleSend} disabled={sending}
+         title="Enviar factura por email (editable antes de enviar)">
+      {sending ? <Loader2 size={11} className="animate-spin" /> : <Mail size={11} />}
+      Enviar
+    </Btn>
+  )
+}
+
+
 function TabERP({ clienteId, cliente }) {
   const toast = useToast()
 
@@ -1281,14 +1606,17 @@ function TabERP({ clienteId, cliente }) {
   const [sent,    setSent]    = useState(false)
   const [unlocked,setUnlocked]= useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
+  const [infoDlg, setInfoDlg] = useState(null) // { title, message }
+  // Catálogo de cuotas para el dropdown de "Curso / Tipo de cuota"
+  const [cuotasCatalogo, setCuotasCatalogo] = useState([])
 
   useEffect(() => {
     async function load() {
       try {
         const d = await getERPDatosCliente(clienteId).catch(() => null)
         const datosIniciales = d?.campos ?? {}
-        // Pre-rellenar fecha_alta con hoy si no hay valor guardado
-        if (!datosIniciales.fecha_alta) datosIniciales.fecha_alta = todayISO()
+        // Pre-rellenar fecha_alta (datetime1) con hoy si no hay valor guardado
+        if (!datosIniciales.datetime1) datosIniciales.datetime1 = todayISO()
         setValues(datosIniciales)
       } catch {
         setError('Error cargando datos ERP')
@@ -1298,6 +1626,25 @@ function TabERP({ clienteId, cliente }) {
     }
     load()
   }, [clienteId])
+
+  // Cargar catálogo de cuotas (vía /api/config/cuotas)
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const session = (() => { try { return JSON.parse(sessionStorage.getItem('round_session') || '{}') } catch { return {} } })()
+        const [{ getRoundIdentity, cuotasList }, ] = await Promise.all([
+          import('../../utils/configApi'),
+        ])
+        const identity = getRoundIdentity(session)
+        const arr = await cuotasList(identity)
+        if (alive) setCuotasCatalogo(arr || [])
+      } catch (e) {
+        console.warn('cuotas catalogo:', e?.message)
+      }
+    })()
+    return () => { alive = false }
+  }, [])
 
   function setDraftValue(key, val) {
     setDraft(d => ({ ...d, [key]: val }))
@@ -1317,9 +1664,19 @@ function TabERP({ clienteId, cliente }) {
     const payload = {}
     for (const c of campos) {
       const k = c.nombreCampo ?? c.nombre
-      if (source[k] !== undefined && source[k] !== '' && source[k] !== null) {
-        payload[k] = source[k]
+      let v = source[k]
+      if (v === undefined || v === '' || v === null) continue
+      // Wiems backend rechaza datetime1 como timestamp ms; lo enviamos siempre
+      // como string ISO (yyyy-MM-dd o yyyy-MM-ddTHH:mm).
+      if (k.startsWith('datetime')) {
+        if (typeof v === 'number') {
+          const isOnlyDate = c.formato === 'date' || c.formato === 'fecha'
+          v = new Date(v).toISOString().slice(0, isOnlyDate ? 10 : 16)
+        } else {
+          v = String(v)
+        }
       }
+      payload[k] = v
     }
     return payload
   }
@@ -1333,11 +1690,47 @@ function TabERP({ clienteId, cliente }) {
       })
   }
 
+  // Guarda los datos ERP del cliente. El backend exige que el body tenga
+  // valor (aunque sea vacío) para CADA campo configurado. Como hay campos
+  // huérfanos del primer intento (dni, movil...), los rellenamos con cadena
+  // vacía para evitar el error "No se pudo leer el campo ERP: X".
+  async function postDatosERPSmart(idCliente, payload) {
+    // 1) Obtener la lista completa de campos configurados en el backend
+    let allKeys = new Set()
+    try {
+      const cfg = await apiGetRaw('api/erp/configuracion')
+      const configs = Array.isArray(cfg) ? cfg : (cfg ? [cfg] : [])
+      for (const c of configs) {
+        for (const campo of (c.campos ?? [])) {
+          const k = campo.nombreCampo ?? campo.nombre
+          if (k) allKeys.add(k)
+        }
+      }
+    } catch { /* si falla, seguimos con lo que hay */ }
+
+    // 2) Construir body completo: payload + ('' para campos sin valor)
+    const fullCampos = {}
+    for (const k of allKeys) fullCampos[k] = ''
+    Object.assign(fullCampos, payload) // sobrescribe con los valores reales
+
+    const r = await apiPostRaw(`api/erp/datos/${idCliente}`, { campos: fullCampos })
+    const ok = r.ok && (r.data?.mensaje === 'OK' || r.data?.campos != null || r.text === '')
+    if (ok) return { ok: true }
+    return {
+      ok: false,
+      error: `POST api/erp/datos/${idCliente} → HTTP ${r.status} / ${r.data?.mensaje ?? r.text?.slice(0, 200)}\n\nBody enviado:\n${JSON.stringify({ campos: fullCampos }, null, 2).slice(0, 600)}`,
+    }
+  }
+
   async function handleSave() {
     setSaving(true)
     try {
       const payload = buildPayload(draft)
-      await postERPDatosCliente(clienteId, payload)
+      const r = await postDatosERPSmart(clienteId, payload)
+      if (!r.ok) {
+        setInfoDlg({ title: 'Error al guardar datos ERP', message: r.error })
+        return
+      }
       setValues(payload)
       setEditing(false)
       setDraft({})
@@ -1360,9 +1753,104 @@ function TabERP({ clienteId, cliente }) {
         setSending(false)
         return
       }
-      await postERPDatosCliente(clienteId, payload)
+      const r = await postDatosERPSmart(clienteId, payload)
+      if (!r.ok) {
+        setInfoDlg({ title: 'Error al enviar datos al ERP', message: r.error })
+        setSending(false)
+        return
+      }
       // Disparar webhook al MCP — fire-and-forget, no bloquea la UI
       dispararWebhookERP(cliente, payload)
+
+      // ── Crear alta en Odoo (round_facturacion) ──
+      // Mapear payload por mcpKey y construir estructura {cliente, suscripcion, alta}
+      try {
+        const mcp = {}
+        for (const c of campos) {
+          if (c.mcpKey && payload[c.nombreCampo] != null && payload[c.nombreCampo] !== '') {
+            mcp[c.mcpKey] = payload[c.nombreCampo]
+          }
+        }
+        // Mapear "tipo_pago" / "forma_primera_cuota" a las claves del backend Odoo.
+        // tipo_pago indica forma recurrente; forma_primera_cuota es la del alta.
+        const formaRecurrenteMap = {
+          'sepa':'sepa',
+          'tarjeta tokenizada':'tarjeta_token','tarjeta':'tarjeta_token','token':'tarjeta_token',
+          // Odoo agrupa caja/efectivo dentro de 'enlace_pago' a nivel suscripción
+          'enlace de pago':'enlace_pago','enlace':'enlace_pago',
+          'enlace de pago / caja':'enlace_pago','enlace / caja':'enlace_pago',
+          'efectivo':'enlace_pago','caja':'enlace_pago',
+        }
+        const formaAltaMap = {
+          'efectivo':'efectivo','caja':'efectivo',
+          'tpv físico':'tpv_fisico','tpv fisico':'tpv_fisico','tpv':'tpv_fisico','datafono':'tpv_fisico',
+          'enlace de pago':'enlace_pago','enlace':'enlace_pago','paycomet':'enlace_pago',
+          'aplazar al próximo recibo':'aplazar','aplazar al proximo recibo':'aplazar',
+          'aplazar':'aplazar','aplazado':'aplazar','siguiente recibo':'aplazar',
+        }
+        const periodicidadMap = {
+          'mensual':'mensual','bimensual':'bimensual','trimestral':'trimestral',
+          'semestral':'semestral','anual':'anual',
+        }
+        const norm = s => (s || '').toString().trim().toLowerCase()
+        const altaPayload = {
+          cliente: {
+            idnoofit: String(clienteId),
+            nombre: cliente.nombre || cliente.name || '',
+            apellidos: cliente.apellidos || cliente.surname || '',
+            email: cliente.email || '',
+            movil: mcp.movil || cliente.cellPhone || '',
+            dni: mcp.dni || cliente.dni || '',
+            iban: mcp.iban || '',
+            fecha_nacimiento: cliente.birthdate || '',
+          },
+          suscripcion: {
+            cuota_codigo: mcp.curso,
+            periodicidad: periodicidadMap[norm(mcp.periodo_pago)] || 'mensual',
+            forma_pago_recurrente: formaRecurrenteMap[norm(mcp.tipo_pago)] || 'sepa',
+            fecha_alta: mcp.fecha_alta,
+            descuento_codigo: mcp.tipo_descuento || null,
+          },
+          alta: {
+            forma_pago_alta: formaAltaMap[norm(mcp.forma_primera_cuota)] || 'aplazar',
+            importe_alta: parseFloat(mcp.precio_curso || 0),
+            matricula: 0,
+          },
+        }
+        // Importar dinámicamente para no inflar el chunk principal
+        const [{ altaCliente }, { getRoundIdentity }] = await Promise.all([
+          import('../../utils/cuotasApi'),
+          import('../../utils/configApi'),
+        ])
+        // identity: leemos del sessionStorage round_session
+        const session = (() => { try { return JSON.parse(sessionStorage.getItem('round_session') || '{}') } catch { return {} } })()
+        const identity = getRoundIdentity(session)
+        const r2 = await altaCliente(identity, altaPayload)
+        if (r2?.ok) {
+          let extra = ''
+          if (r2.pago?.paid)                          extra = '· pago registrado'
+          else if (r2.pago?.modificacion_proximo_mes) extra = '· cargo aplazado próximo recibo'
+          else if (r2.pago?.warning)                  extra = '⚠ ' + r2.pago.warning
+          if (r2.pago?.enlace_pago_url) {
+            // PayComet: copiar al portapapeles + mostrar modal
+            try { await navigator.clipboard.writeText(r2.pago.enlace_pago_url) } catch {}
+            setInfoDlg({
+              title: 'Enlace de pago generado',
+              message: `Comparte este enlace con el cliente para que complete el cobro:\n\n${r2.pago.enlace_pago_url}\n\n(Ya copiado al portapapeles. Cuando el cliente pague, el recibo se marcará como cobrado automáticamente.)`,
+            })
+          } else if (r2.pago?.error_pago) {
+            toast.warning(`Recibo #${r2.invoice_id} creado · ⚠ ${r2.pago.error_pago}`)
+          } else {
+            toast.success(`Alta creada en Odoo (recibo #${r2.invoice_id}) ${extra}`)
+          }
+        } else {
+          toast.warning('Wiems OK · alta Odoo no realizada: ' + (r2?.error || 'desconocido'))
+        }
+      } catch (e) {
+        console.error('alta Odoo:', e)
+        toast.warning('Wiems OK · alta Odoo falló: ' + (e?.message || e))
+      }
+
       toast.success('Datos enviados al ERP correctamente')
       setSent(true)
       setUnlocked(false)
@@ -1483,6 +1971,10 @@ function TabERP({ clienteId, cliente }) {
               const val       = (editing ? draft[key] : values[key]) ?? ''
               const obligNow  = esObligatorio(campo, fuente)
               const isSelect  = campo.formato === 'select'
+              // El campo "curso / tipo de cuota" se identifica por mcpKey === 'curso'.
+              // (No usar regex sobre nombreAMostrar porque "Forma de la primera
+              // cuota" también contiene "cuota" y no es el selector de catálogo.)
+              const isCuotaField = campo.mcpKey === 'curso' && cuotasCatalogo.length > 0
 
               let valueEl
               if (!editing) {
@@ -1497,6 +1989,19 @@ function TabERP({ clienteId, cliente }) {
                   }}>
                     {missing ? '⚠ falta' : display}
                   </span>
+                )
+              } else if (isCuotaField) {
+                valueEl = (
+                  <select value={val} onChange={e => setDraftValue(key, e.target.value)}
+                          className="form-input"
+                          style={{ ...inputStyleERP(), cursor: 'pointer' }}>
+                    <option value="">— Selecciona cuota —</option>
+                    {cuotasCatalogo.map(c => (
+                      <option key={c.codigo} value={c.codigo}>
+                        {c.codigo} — {c.descripcion || ''} {c.precio_mensual ? `(${c.precio_mensual} €/mes)` : ''}
+                      </option>
+                    ))}
+                  </select>
                 )
               } else if (isSelect) {
                 valueEl = (
@@ -1539,9 +2044,12 @@ function TabERP({ clienteId, cliente }) {
                          style={inputStyleERP()} />
                 )
               } else if (tipo === 'number' || tipo === 'decimal') {
+                // Importes en € → step 0,5; otros decimales → 0,01; enteros → 1
+                const step = campo.formato === 'moneda' ? '0.5'
+                           : tipo === 'decimal' ? '0.01' : '1'
                 valueEl = (
                   <input type="number" value={val}
-                         step={tipo === 'decimal' ? '0.01' : '1'}
+                         step={step}
                          onChange={e => setDraftValue(key, e.target.value === '' ? '' : Number(e.target.value))}
                          className="form-input"
                          style={inputStyleERP()} />
@@ -1583,6 +2091,36 @@ function TabERP({ clienteId, cliente }) {
           onClose={() => setPwdOpen(false)}
           onUnlocked={() => { setPwdOpen(false); setUnlocked(true); doSend() }}
         />
+      )}
+
+      {infoDlg && (
+        <div onClick={e => { if (e.target === e.currentTarget) setInfoDlg(null) }}
+             style={{
+               position: 'fixed', inset: 0, zIndex: 700,
+               background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+               display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+             }}>
+          <div style={{
+            background: 'var(--bg-1)', borderRadius: 16, width: '100%', maxWidth: 640,
+            boxShadow: '0 24px 80px rgba(0,0,0,0.45)', overflow: 'hidden',
+          }}>
+            <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-0)', margin: 0 }}>{infoDlg.title}</h3>
+            </div>
+            <pre style={{
+              margin: 0, padding: '16px 22px', maxHeight: '60vh', overflow: 'auto',
+              fontSize: 12, lineHeight: 1.5, color: 'var(--text-1)', whiteSpace: 'pre-wrap',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            }}>{infoDlg.message}</pre>
+            <div style={{ padding: '14px 22px', borderTop: '1px solid var(--line)',
+                          display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={() => setInfoDlg(null)} style={{
+                padding: '8px 18px', borderRadius: 10, border: 'none',
+                background: 'var(--green)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}>Cerrar</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

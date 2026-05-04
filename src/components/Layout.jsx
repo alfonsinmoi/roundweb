@@ -1,14 +1,31 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Header from './Header'
 import Breadcrumbs from './Breadcrumbs'
 import ErrorBoundary from './ErrorBoundary'
+import BannerNuevosClientes from './BannerNuevosClientes'
 
 export default function Layout() {
   const { pathname } = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // pinned: usuario forzó expandir/colapsar manualmente; sobreescribe hover.
+  const [pinned, setPinned] = useState(false)
+  const [hovering, setHovering] = useState(false)
+  const hideTimeoutRef = useRef(null)
+
+  // Sidebar visualmente expandida si: pinned o hovering.
+  const expanded = pinned || hovering
+  const collapsed = !expanded
+
+  const handleEnter = () => {
+    if (hideTimeoutRef.current) { clearTimeout(hideTimeoutRef.current); hideTimeoutRef.current = null }
+    setHovering(true)
+  }
+  const handleLeave = () => {
+    // pequeño delay para evitar parpadeos al salir un instante
+    hideTimeoutRef.current = setTimeout(() => setHovering(false), 100)
+  }
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg-0)' }}>
@@ -19,16 +36,23 @@ export default function Layout() {
       )}
 
       {/* Sidebar */}
-      <div className="sidebar-container" data-open={sidebarOpen || undefined}>
+      <div className="sidebar-container" data-open={sidebarOpen || undefined}
+           onMouseEnter={handleEnter}
+           onMouseLeave={handleLeave}>
         <Sidebar
-          onNavigate={() => setSidebarOpen(false)}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+          onNavigate={() => {
+            setSidebarOpen(false)
+            setHovering(false)   // colapsa al hacer click en un item
+            setPinned(false)
+          }}
+          collapsed={collapsed}
+          onToggleCollapse={() => setPinned(p => !p)}
         />
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <Header onMenuClick={() => setSidebarOpen(true)} />
+        <BannerNuevosClientes />
         <main style={{
           flex: 1, overflowY: 'auto',
           // No top padding on the scroll container — content pages add their
@@ -37,7 +61,7 @@ export default function Layout() {
           // scrolling underneath is fully hidden behind it.
           padding: '0 clamp(20px, 4vw, 48px) clamp(20px, 4vw, 48px)',
         }} key={pathname}>
-          <div className="anim-enter" style={{ maxWidth: 1200, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
+          <div className="anim-enter" style={{ maxWidth: 1500, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
             <Breadcrumbs />
             <ErrorBoundary key={pathname}>
               <Outlet />

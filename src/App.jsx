@@ -25,6 +25,9 @@ const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
 const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
 const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
+const CuotasClientes = lazy(() => import('./pages/CuotasClientes/CuotasClientes'))
+const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
+const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -77,6 +80,9 @@ function AppRoutes() {
           <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
           <Route path="/configuracion"       element={<Configuracion />} />
+          <Route path="/cuotas-clientes"     element={<CuotasClientes />} />
+          <Route path="/crm"                 element={<CrmPage />} />
+          <Route path="/agenda-social"       element={<SocialAgenda />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
         </Route>
 

@@ -1,19 +1,85 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Loader2, CheckCircle2 } from 'lucide-react'
 import { Btn } from './UI'
 import Modal from './Modal'
 import { useToast } from './Toast'
+import { useAuth } from '../contexts/AuthContext'
 import { getERPDatosCliente, postERPDatosCliente } from '../utils/api'
 import { validarIBAN, validarDNI, validarEmail, validarTelefono } from '../utils/validators'
+import { getRoundIdentity, cuotasList as cfgCuotasList, descuentosList } from '../utils/configApi'
+import { altaCliente } from '../utils/cuotasApi'
 
-export default function ERPModal({ cliente, erpConfig, onClose }) {
+// Selectores fijos para los nuevos campos Odoo
+const PERIODICIDAD_OPTS = [
+  { value: 'mensual',    label: 'Mensual' },
+  { value: 'bimensual',  label: 'Bimensual' },
+  { value: 'trimestral', label: 'Trimestral' },
+  { value: 'semestral',  label: 'Semestral' },
+  { value: 'anual',      label: 'Anual' },
+]
+const FORMA_PAGO_RECURRENTE_OPTS = [
+  { value: 'sepa',          label: 'SEPA (domiciliación)' },
+  { value: 'tarjeta_token', label: 'Tarjeta tokenizada' },
+  { value: 'enlace_pago',   label: 'Enlace de pago / efectivo' },
+  { value: 'efectivo',      label: 'Efectivo' },
+]
+const FORMA_PAGO_ALTA_OPTS = [
+  { value: 'efectivo',    label: 'Efectivo (caja)' },
+  { value: 'tpv_fisico',  label: 'TPV físico' },
+  { value: 'enlace_pago', label: 'Enlace de pago (PayComet)' },
+  { value: 'aplazar',     label: 'Aplazar (modificación próximo recibo)' },
+]
+
+// Devuelve un array de opciones (o null si no es un campo dropdown) según el label.
+// Acepta variantes habituales del manager: "Tipo de pago", "Forma de la primera cuota",
+// "Periodo de pago", etc.
+function dropdownOptionsFor(nombreAMostrar, cuotas, descuentos) {
+  const n = (nombreAMostrar || '').toLowerCase()
+
+  // Forma de pago del ALTA (primera cuota / pago inicial / matrícula)
+  if (/forma\s*(de\s*)?(pago\s*)?alta/.test(n))                          return FORMA_PAGO_ALTA_OPTS
+  if (/(primera\s*cuota|forma.*primera|pago\s*inicial|forma\s*alta)/.test(n)) return FORMA_PAGO_ALTA_OPTS
+
+  // Forma de pago RECURRENTE (cuotas mensuales/sucesivas)
+  if (/forma\s*(de\s*)?pago\s*recurrente/.test(n))                       return FORMA_PAGO_RECURRENTE_OPTS
+  if (/tipo\s*de\s*pago|forma\s*recurrente|forma\s*sucesiva/.test(n))    return FORMA_PAGO_RECURRENTE_OPTS
+
+  // Periodicidad / periodo de pago / frecuencia
+  if (/periodicidad|periodo\s*(de\s*)?pago|frecuencia/.test(n))          return PERIODICIDAD_OPTS
+
+  // Descuento (lista del catálogo)
+  if (/descuento/.test(n))                                               return descuentos
+
+  // Cuota (catálogo de cuotas) — solo si NO incluye "forma" o "primera" o "tipo de pago"
+  if (/cuota/.test(n) && !/forma|primera|tipo\s*de\s*pago/.test(n))      return cuotas
+
+  return null
+}
+
+export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recaptacion = false }) {
   const toast = useToast()
+  const { user } = useAuth()
+  const identity = useMemo(() => getRoundIdentity(user), [user])
   const [form, setForm] = useState({})
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Catálogos cargados del VPS para dropdowns
+  const [cuotas, setCuotas] = useState([])
+  const [descuentos, setDescuentos] = useState([])
 
   const campos = erpConfig?.campos ?? []
+
+  // Cargar cuotas + descuentos del manager para dropdowns
+  useEffect(() => {
+    if (!identity?.managerId) return
+    cfgCuotasList(identity).then(arr => setCuotas(
+      (arr || []).map(c => ({ value: c.codigo, label: `${c.codigo} — ${c.descripcion || ''}`.trim() }))
+    )).catch(() => setCuotas([]))
+    descuentosList(identity).then(arr => setDescuentos(
+      (arr || []).map(d => ({ value: d.codigo, label: `${d.codigo} — ${d.descripcion || ''}`.trim() }))
+    )).catch(() => setDescuentos([]))
+  }, [identity?.managerId, identity?.trainerId])
 
   useEffect(() => {
     if (!cliente || campos.length === 0) return
@@ -25,10 +91,11 @@ export default function ERPModal({ cliente, erpConfig, onClose }) {
       for (const campo of [...campos].sort((a, b) => a.orden - b.orden)) {
         const existing = datos?.campos?.[campo.nombreCampo]
         if (campo.nombreCampo.startsWith('datetime')) {
+          const isOnlyDate = campo.formato === 'date' || campo.formato === 'fecha'
           let val = ''
           if (existing != null) {
-            if (typeof existing === 'number') val = new Date(existing).toISOString().slice(0, campo.formato === 'date' ? 10 : 16)
-            else val = String(existing)
+            if (typeof existing === 'number') val = new Date(existing).toISOString().slice(0, isOnlyDate ? 10 : 16)
+            else val = String(existing).slice(0, isOnlyDate ? 10 : 16)
           }
           f[campo.nombreCampo] = val
         } else if (campo.nombreCampo.startsWith('bool')) {
@@ -77,13 +144,107 @@ export default function ERPModal({ cliente, erpConfig, onClose }) {
       for (const campo of campos) {
         const val = form[campo.nombreCampo]
         if (campo.nombreCampo.startsWith('bool')) data[campo.nombreCampo] = !!val
-        else if (campo.nombreCampo.startsWith('datetime')) { if (val) data[campo.nombreCampo] = val }
+        else if (campo.nombreCampo.startsWith('datetime')) {
+          if (val !== '' && val != null) {
+            // Wiems espera string ISO, no timestamp en ms.
+            let v = val
+            if (typeof v === 'number') v = new Date(v).toISOString().slice(0, campo.formato === 'date' ? 10 : 16)
+            data[campo.nombreCampo] = String(v)
+          }
+        }
         else if (campo.nombreCampo.startsWith('double')) { if (val !== '' && val != null) data[campo.nombreCampo] = Number(String(val).replace(',', '.')) }
         else if (campo.nombreCampo.startsWith('int')) { if (val !== '' && val != null) data[campo.nombreCampo] = parseInt(val) }
         else { if (val !== '' && val != null) data[campo.nombreCampo] = String(val).trim() }
       }
-      await postERPDatosCliente(cliente.id, data)
-      toast.success('Datos ERP guardados correctamente')
+      // 1) Guardar en Wiems (legacy ERP, mantener para compatibilidad)
+      try {
+        await postERPDatosCliente(cliente.id, data)
+      } catch (e) {
+        console.warn('save legacy ERP wiems:', e?.message)
+      }
+
+      // 2) Mapear los campos a la estructura Odoo y crear alta-cliente
+      // Búsqueda flexible: matchea cualquier campo cuya nombreAMostrar contenga
+      // alguno de los keywords proporcionados (case-insensitive).
+      const findByLabel = (...keywords) => {
+        const c = campos.find(c => {
+          const n = (c.nombreAMostrar || '').toLowerCase()
+          return keywords.some(k => n.includes(k.toLowerCase()))
+        })
+        return c ? data[c.nombreCampo] : undefined
+      }
+      // Versión más estricta: matchea solo si TODAS las palabras clave aparecen
+      const findAll = (...keywords) => {
+        const c = campos.find(c => {
+          const n = (c.nombreAMostrar || '').toLowerCase()
+          return keywords.every(k => n.includes(k.toLowerCase()))
+        })
+        return c ? data[c.nombreCampo] : undefined
+      }
+      // Cuota recurrente (catálogo): la cuota mensual, sin "forma" ni "primera" ni "tipo de pago"
+      const cuotaCodigo = (() => {
+        const c = campos.find(c => {
+          const n = (c.nombreAMostrar || '').toLowerCase()
+          return /cuota/.test(n) && !/forma|primera|tipo\s*de\s*pago/.test(n)
+        })
+        return c ? data[c.nombreCampo] : undefined
+      })()
+      const altaPayload = {
+        cliente: {
+          idnoofit: String(cliente.id),
+          nombre: cliente.nombre || cliente.name || '',
+          apellidos: cliente.apellidos || cliente.surname || '',
+          email: cliente.email || '',
+          movil: findByLabel('móvil', 'movil', 'teléfono', 'telefono') || cliente.cellPhone || '',
+          dni: findByLabel('dni', 'nif', 'documento') || cliente.dni || '',
+          direccion: findByLabel('dirección', 'direccion') || '',
+          localidad: findByLabel('localidad', 'ciudad', 'población') || '',
+          cp: findByLabel('postal', 'cp ', 'código postal') || '',
+          fecha_nacimiento: cliente.birthdate || '',
+          iban: findByLabel('iban', 'cuenta bancaria') || '',
+        },
+        suscripcion: {
+          cuota_codigo: cuotaCodigo,
+          periodicidad: findByLabel('periodicidad', 'periodo de pago', 'frecuencia'),
+          forma_pago_recurrente: findByLabel('forma de pago recurrente', 'tipo de pago', 'forma recurrente'),
+          fecha_alta: findByLabel('fecha de alta', 'fecha alta'),
+          descuento_codigo: findByLabel('descuento', 'tipo de descuento') || null,
+        },
+        alta: {
+          forma_pago_alta: findByLabel('forma de pago alta', 'forma de la primera cuota', 'pago inicial'),
+          importe_alta: parseFloat(
+            findByLabel('importe alta', 'importe inicial',
+                        'precio del curso', 'precio mensual', 'precio')
+            || 0
+          ),
+          matricula: parseFloat(findByLabel('matrícula', 'matricula') || 0),
+          recaptacion: !!recaptacion,
+        },
+      }
+      try {
+        const r = await altaCliente(identity, altaPayload)
+        if (r?.ok) {
+          let msg = `Alta creada en Odoo (recibo #${r.invoice_id}, importe ${altaPayload.alta.importe_alta} €).`
+          if (r.pago?.paid)                  msg += ' Pago registrado.'
+          if (r.pago?.modificacion_proximo_mes) msg += ' Cargo aplazado al próximo recibo.'
+          if (r.pago?.warning)               msg += ' ⚠ ' + r.pago.warning
+          if (r.pago?.error_pago)            msg += ' ⚠ Error pago: ' + r.pago.error_pago
+          if (r.cliente_reactivado_noofit)   msg += ' Cliente reactivado en NoofitPro.'
+          toast.success(msg)
+          // Avisar al padre para que refresque la lista (estado cliente, etc.)
+          if (typeof onSaved === 'function') {
+            try { await onSaved() } catch {}
+          }
+        } else {
+          toast.warning('ERP guardado, alta Odoo: ' + (r?.error || 'desconocido'))
+        }
+      } catch (e) {
+        toast.error('Alta Odoo falló: ' + e.message)
+        setError('Datos ERP guardados, pero alta en Odoo falló: ' + e.message)
+        setSaving(false)
+        return
+      }
+
       onClose()
     } catch (err) {
       setError('Error al guardar los datos ERP')
@@ -95,8 +256,8 @@ export default function ERPModal({ cliente, erpConfig, onClose }) {
   return (
     <Modal open={!!cliente} onClose={onClose} disabled={saving}
            title="Enviar ERP" subtitle={cliente ? `${cliente.name} ${cliente.surname}` : ''}>
-      {/* Form */}
-      <div style={{ padding: '28px 32px' }}>
+      {/* Form — scrollea internamente si es largo */}
+      <div style={{ padding: '28px 32px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center' }} role="status" aria-label="Cargando datos ERP">
             <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
@@ -138,21 +299,38 @@ export default function ERPModal({ cliente, erpConfig, onClose }) {
                     </button>
                   ) : isDate ? (
                     <input id={`erp-${key}`}
-                           type={campo.formato === 'time' ? 'time' : campo.formato === 'date' ? 'date' : 'datetime-local'}
+                           type={campo.formato === 'time' ? 'time' : (campo.formato === 'date' || campo.formato === 'fecha') ? 'date' : 'datetime-local'}
                            value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
                            aria-invalid={error && error.includes(campo.nombreAMostrar) ? 'true' : undefined}
                            className="form-input"
                            style={inputStyle} />
-                  ) : (
-                    <input id={`erp-${key}`}
-                           type={isNum ? 'text' : campo.formato === 'email' ? 'email' : campo.formato === 'phone' ? 'tel' : 'text'}
-                           inputMode={isNum ? 'decimal' : undefined}
-                           value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                           placeholder={campo.formato === 'IBAN' ? 'ES00 0000 0000 00...' : campo.formato === 'dni' ? '12345678Z' : ''}
-                           aria-invalid={error && error.includes(campo.nombreAMostrar) ? 'true' : undefined}
-                           className="form-input"
-                           style={inputStyle} />
-                  )}
+                  ) : (() => {
+                    const opts = dropdownOptionsFor(campo.nombreAMostrar, cuotas, descuentos)
+                    if (opts) {
+                      return (
+                        <select id={`erp-${key}`}
+                                value={form[key] ?? ''}
+                                onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                                aria-invalid={error && error.includes(campo.nombreAMostrar) ? 'true' : undefined}
+                                style={inputStyle}>
+                          <option value="">— selecciona —</option>
+                          {opts.map(o => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      )
+                    }
+                    return (
+                      <input id={`erp-${key}`}
+                             type={isNum ? 'text' : campo.formato === 'email' ? 'email' : campo.formato === 'phone' ? 'tel' : 'text'}
+                             inputMode={isNum ? 'decimal' : undefined}
+                             value={form[key] ?? ''} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                             placeholder={campo.formato === 'IBAN' ? 'ES00 0000 0000 00...' : campo.formato === 'dni' ? '12345678Z' : ''}
+                             aria-invalid={error && error.includes(campo.nombreAMostrar) ? 'true' : undefined}
+                             className="form-input"
+                             style={inputStyle} />
+                    )
+                  })()}
                 </div>
               )
             })}

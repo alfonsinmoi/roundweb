@@ -6,20 +6,27 @@ import ConfirmDialog from '../components/ConfirmDialog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
 
-// ─── Plantilla MCP / GestPlus ─────────────────────────────────────────────────
-// Los 10 campos canónicos que espera el webhook del MCP. Se usan al pulsar
-// "Importar campos MCP" en cualquier configuración (sustituyendo los actuales).
+// ─── Plantilla Odoo (Round) ──────────────────────────────────────────────────
+// Esta plantilla refleja los campos que necesita Odoo (round_facturacion) para
+// dar de alta un cliente con su suscripción. El backend de Wiems solo permite
+// nombres de campo legacy (string1..string8, double1, datetime1) por lo que
+// seguimos usándolos como contenedor — las etiquetas son las que ven los
+// usuarios. La traducción a campos Odoo ocurre en el webhook al ERP.
 const MCP_CAMPOS_PLANTILLA = [
-  { nombreCampo: 'dni',                 nombreAMostrar: 'DNI / NIE',                 formato: 'dni',      obligatorio: true,  orden: 1,  valorPorDefecto: null },
-  { nombreCampo: 'movil',               nombreAMostrar: 'Móvil',                     formato: 'telefono', obligatorio: true,  orden: 2,  valorPorDefecto: null },
-  { nombreCampo: 'curso',               nombreAMostrar: 'Curso / Tipo de cuota',     formato: 'texto',    obligatorio: true,  orden: 3,  valorPorDefecto: null },
-  { nombreCampo: 'precio_curso',        nombreAMostrar: 'Precio del curso (€/mes)',  formato: 'moneda',   obligatorio: true,  orden: 4,  valorPorDefecto: null },
-  { nombreCampo: 'fecha_alta',          nombreAMostrar: 'Fecha de alta',             formato: 'fecha',    obligatorio: true,  orden: 5,  valorPorDefecto: null },
-  { nombreCampo: 'tipo_pago',           nombreAMostrar: 'Tipo de pago',              formato: 'texto',    obligatorio: true,  orden: 6,  valorPorDefecto: null },
-  { nombreCampo: 'iban',                nombreAMostrar: 'IBAN',                      formato: 'iban',     obligatorio: false, orden: 7,  valorPorDefecto: null },
-  { nombreCampo: 'forma_primera_cuota', nombreAMostrar: 'Forma de la primera cuota', formato: 'texto',    obligatorio: true,  orden: 8,  valorPorDefecto: null },
-  { nombreCampo: 'periodo_pago',        nombreAMostrar: 'Periodo de pago',           formato: 'texto',    obligatorio: true,  orden: 9,  valorPorDefecto: null },
-  { nombreCampo: 'tipo_descuento',      nombreAMostrar: 'Tipo de descuento',         formato: 'texto',    obligatorio: false, orden: 10, valorPorDefecto: null },
+  { nombreCampo: 'string1',   nombreAMostrar: 'DNI / NIE',                  formato: 'dni',      obligatorio: true,  orden: 1,  valorPorDefecto: null },
+  { nombreCampo: 'string2',   nombreAMostrar: 'Móvil',                      formato: 'telefono', obligatorio: true,  orden: 2,  valorPorDefecto: null },
+  { nombreCampo: 'string3',   nombreAMostrar: 'Dirección',                  formato: 'texto',    obligatorio: false, orden: 3,  valorPorDefecto: null },
+  { nombreCampo: 'string4',   nombreAMostrar: 'Localidad',                  formato: 'texto',    obligatorio: false, orden: 4,  valorPorDefecto: null },
+  { nombreCampo: 'string5',   nombreAMostrar: 'Código postal',              formato: 'cp',       obligatorio: false, orden: 5,  valorPorDefecto: null },
+  { nombreCampo: 'string6',   nombreAMostrar: 'Cuota (código)',             formato: 'texto',    obligatorio: true,  orden: 6,  valorPorDefecto: null },
+  { nombreCampo: 'string7',   nombreAMostrar: 'Periodicidad',               formato: 'texto',    obligatorio: true,  orden: 7,  valorPorDefecto: 'mensual' },
+  { nombreCampo: 'string8',   nombreAMostrar: 'Forma de pago recurrente',   formato: 'texto',    obligatorio: true,  orden: 8,  valorPorDefecto: null },
+  { nombreCampo: 'string9',   nombreAMostrar: 'IBAN (si SEPA)',             formato: 'iban',     obligatorio: false, orden: 9,  valorPorDefecto: null },
+  { nombreCampo: 'string10',  nombreAMostrar: 'Forma de pago alta',         formato: 'texto',    obligatorio: true,  orden: 10, valorPorDefecto: null },
+  { nombreCampo: 'double1',   nombreAMostrar: 'Importe alta (€)',           formato: 'moneda',   obligatorio: true,  orden: 11, valorPorDefecto: null },
+  { nombreCampo: 'double2',   nombreAMostrar: 'Matrícula (€)',              formato: 'moneda',   obligatorio: false, orden: 12, valorPorDefecto: 0   },
+  { nombreCampo: 'datetime1', nombreAMostrar: 'Fecha de alta',              formato: 'fecha',    obligatorio: true,  orden: 13, valorPorDefecto: null },
+  { nombreCampo: 'string11',  nombreAMostrar: 'Descuento (código)',         formato: 'texto',    obligatorio: false, orden: 14, valorPorDefecto: null },
 ]
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -620,11 +627,12 @@ export default function ERPConfiguracion() {
   function handleImportMCP(cfg) {
     withAuth(() => {
       setConfirmDlg({
-        title: 'Importar campos MCP',
+        title: 'Importar plantilla Odoo',
         message:
-          'Se crearán los 10 campos estándar del MCP / GestPlus en esta configuración. ' +
-          'Si ya existen, se sobrescribirán. Los campos antiguos que tengas no se tocan ' +
-          '(el backend de Wiemspro no permite borrarlos desde la API; quedarán ocultos en esta vista).',
+          `Se crearán los ${MCP_CAMPOS_PLANTILLA.length} campos estándar para Odoo / Round (DNI, IBAN, Cuota, ` +
+          'Forma de pago, etc.) en esta configuración. Si ya existen, se sobrescribirán. ' +
+          'Los campos antiguos que tengas no se tocan (el backend de Wiems no permite borrarlos ' +
+          'desde la API; quedarán ocultos en esta vista).',
         confirmText: 'Importar',
         variant: 'primary',
         onConfirm: async () => {
@@ -648,7 +656,7 @@ export default function ERPConfiguracion() {
           if (errCrear.length > 0) {
             setInfoDlg({ title: 'Importación parcial', message: `Fallaron ${errCrear.length}/${MCP_CAMPOS_PLANTILLA.length} campo(s):\n${errCrear.join('\n')}` })
           } else {
-            setInfoDlg({ title: 'Importación completada', message: 'Los 10 campos del MCP se han creado / actualizado correctamente.' })
+            setInfoDlg({ title: 'Importación completada', message: `Los ${MCP_CAMPOS_PLANTILLA.length} campos de la plantilla Odoo se han creado / actualizado correctamente.` })
           }
         },
       })
@@ -788,7 +796,7 @@ export default function ERPConfiguracion() {
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     onClick={() => handleImportMCP(cfg)}
-                    title="Sustituir los campos actuales por los 10 estándar del MCP / GestPlus"
+                    title="Sustituir los campos actuales por los estándar para Odoo / Round (DNI, IBAN, Cuota...)"
                     style={{
                       display: 'flex', alignItems: 'center', gap: 6,
                       padding: '8px 14px', borderRadius: 10,
@@ -797,7 +805,7 @@ export default function ERPConfiguracion() {
                       fontSize: 13, fontWeight: 600, cursor: 'pointer',
                     }}
                   >
-                    <Download size={14} /> Importar campos MCP
+                    <Download size={14} /> Importar plantilla Odoo
                   </button>
                   <button
                     onClick={() => openAdd(cfg)}

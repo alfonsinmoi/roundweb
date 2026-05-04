@@ -1,17 +1,26 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Save, Loader2, CheckCircle2 } from 'lucide-react'
-import { Card, Btn, Input, Select, SectionTitle } from '../../components/UI'
+import { ArrowLeft, Save, Loader2, CheckCircle2, QrCode, Smartphone } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
+import { Card, Btn, Input, Select, SectionTitle, Avatar } from '../../components/UI'
 import { postClientes } from '../../utils/api'
+import { useAuth } from '../../contexts/AuthContext'
 
 const nivelesConocimiento = ['Principiante', 'Básico', 'Intermedio', 'Avanzado', 'Experto']
 const estadosForma = ['Sedentario', 'Regular', 'Activo', 'Muy activo', 'Atleta']
 
 export default function NewClient() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
+
+  // Identificador del entrenador para vincular al cliente desde la app mynoofit.
+  // Preferimos el manager id (cabecera X-TRAINER_MANAGER del backend); como
+  // fallback, el entrenador id.
+  const qrValue = String(user?.manager ?? user?.id ?? '')
+  const trainerNombre = `${user?.nombre ?? ''} ${user?.apellidos ?? ''}`.trim() || (user?.email ?? '—')
 
   const [form, setForm] = useState({
     name: '', surname: '', email: '', cellPhone: '', dni: '',
@@ -68,7 +77,7 @@ export default function NewClient() {
   )
 
   return (
-    <div style={{ maxWidth: 640 }}>
+    <div style={{ maxWidth: 1100 }}>
 
       <button onClick={() => navigate('/clientes')}
               style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', color: 'var(--text-3)', background: 'none', border: 'none', marginBottom: 28, transition: 'color 0.15s' }}
@@ -80,6 +89,13 @@ export default function NewClient() {
       <h1 style={{ fontFamily: 'Outfit', fontSize: 28, fontWeight: 700, color: 'var(--text-0)', marginBottom: 32 }}>
         Nuevo Cliente
       </h1>
+
+      <div className="newclient-grid" style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) 360px',
+        gap: 24,
+        alignItems: 'start',
+      }}>
 
       <form onSubmit={handleSubmit}>
         <Card style={{ padding: 32 }}>
@@ -150,6 +166,90 @@ export default function NewClient() {
           </div>
         </Card>
       </form>
+
+      {/* ── QR de vinculación del entrenador ──────────────────────────────── */}
+      <aside style={{ position: 'sticky', top: 24 }}>
+        <Card style={{ padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'flex-start' }}>
+            <QrCode size={16} style={{ color: 'var(--green)' }} aria-hidden="true" />
+            <h2 style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 700, color: 'var(--text-0)', margin: 0 }}>
+              Vincular cliente
+            </h2>
+          </div>
+
+          <p style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55, alignSelf: 'flex-start', margin: 0 }}>
+            Para que el cliente quede asociado a este entrenador al darse de alta en la app, escanea este código desde <strong style={{ color: 'var(--text-1)' }}>mynoofit</strong>.
+          </p>
+
+          {/* Datos del entrenador */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+            padding: '10px 12px', borderRadius: 10,
+            background: 'var(--bg-2)', border: '1px solid var(--line)',
+          }}>
+            <Avatar nombre={trainerNombre} size={34} imgUrl={user?.imgUrl} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {trainerNombre}
+              </p>
+              <p style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'monospace', marginTop: 1 }}>
+                ID: {qrValue || '—'}
+              </p>
+            </div>
+          </div>
+
+          {/* Código QR grande */}
+          {qrValue ? (
+            <div style={{
+              background: '#fff', borderRadius: 14, padding: 14,
+              width: '100%', display: 'flex', justifyContent: 'center',
+            }}>
+              <QRCodeSVG
+                value={qrValue}
+                size={280}
+                level="M"
+                includeMargin={false}
+                style={{ width: '100%', height: 'auto', display: 'block', maxWidth: 280 }}
+              />
+            </div>
+          ) : (
+            <div style={{
+              width: '100%', aspectRatio: '1 / 1',
+              borderRadius: 14, background: 'var(--bg-3)', border: '1px dashed var(--line)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-3)', fontSize: 12, padding: 20, textAlign: 'center',
+            }}>
+              No hay sesión activa. Vuelve a iniciar sesión para generar el QR.
+            </div>
+          )}
+
+          {/* Pasos */}
+          <ol style={{
+            margin: 0, paddingLeft: 18,
+            fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6, alignSelf: 'stretch',
+          }}>
+            <li>El cliente abre la app <strong style={{ color: 'var(--text-1)' }}>mynoofit</strong></li>
+            <li>Pulsa <strong style={{ color: 'var(--text-1)' }}>Vincular entrenador</strong> y permite la cámara</li>
+            <li>Escanea este código y queda asociado a tu centro</li>
+          </ol>
+
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '8px 12px', borderRadius: 10,
+            background: 'rgba(45,212,168,0.08)', border: '1px solid rgba(45,212,168,0.2)',
+            width: '100%',
+          }}>
+            <Smartphone size={13} style={{ color: 'var(--green)', flexShrink: 0 }} aria-hidden="true" />
+            <p style={{ fontSize: 11, color: 'var(--green)', margin: 0, lineHeight: 1.4 }}>
+              Tras escanear, el cliente aparecerá en la lista al refrescar.
+            </p>
+          </div>
+
+        </Card>
+      </aside>
+
+      </div>
     </div>
   )
 }
