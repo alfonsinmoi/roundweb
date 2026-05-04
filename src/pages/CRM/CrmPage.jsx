@@ -331,6 +331,9 @@ function LeadCard({ l, isImpersonating, draggingId, setDraggingId, fullName, for
         </div>
       )}
 
+      {/* Slot reservado (clase de prueba) */}
+      {l.slot_reserva && <SlotReservadoBox slot={l.slot_reserva} />}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
         <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
           {l.origen === 'web_form' ? '🌐 Web' :
@@ -341,6 +344,64 @@ function LeadCard({ l, isImpersonating, draggingId, setDraggingId, fullName, for
           {formatDate(l.created_at)}
         </span>
       </div>
+    </div>
+  )
+}
+
+
+/** Caja con la info de la clase reservada del lead. Color y badge según estado. */
+function SlotReservadoBox({ slot }) {
+  const ESTADOS = {
+    pendiente:  { label: 'pdte. confirmar', bg: 'var(--amber-bg)',  fg: 'var(--amber)',  border: 'var(--amber-border)' },
+    confirmada: { label: 'confirmada',      bg: 'var(--green-bg)',  fg: 'var(--green)',  border: 'var(--green-border)' },
+    expirada:   { label: 'expirada',        bg: 'var(--red-bg)',    fg: 'var(--red)',    border: 'var(--red-border)' },
+    cancelada:  { label: 'cancelada',       bg: 'var(--bg-3)',      fg: 'var(--text-3)', border: 'var(--line)' },
+    asistio:    { label: 'asistió',         bg: 'var(--green-bg)',  fg: 'var(--green)',  border: 'var(--green-border)' },
+    creando:    { label: 'creando…',        bg: 'var(--blue-bg)',   fg: 'var(--blue)',   border: 'var(--blue-border)' },
+    error_cliente: { label: 'error', bg: 'var(--red-bg)', fg: 'var(--red)', border: 'var(--red-border)' },
+    error_reserva: { label: 'error', bg: 'var(--red-bg)', fg: 'var(--red)', border: 'var(--red-border)' },
+  }
+  const cfg = ESTADOS[slot.estado] || ESTADOS.creando
+  let fechaStr = '', horaStr = ''
+  try {
+    const d = new Date(slot.fecha_clase)
+    if (!isNaN(d)) {
+      fechaStr = d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })
+      horaStr  = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+    }
+  } catch {}
+  return (
+    <div onClick={e => e.stopPropagation()}
+         style={{
+           marginTop: 8, padding: '6px 8px', borderRadius: 6,
+           background: cfg.bg, color: cfg.fg,
+           border: `1px solid ${cfg.border}`,
+           fontSize: 11, lineHeight: 1.35,
+         }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+        <span style={{ fontWeight: 600 }}>📅 Prueba reservada</span>
+        <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 999,
+                       background: 'var(--bg-1)', color: cfg.fg }}>
+          {cfg.label}
+        </span>
+      </div>
+      <div style={{ marginTop: 2, color: 'var(--text-1)', display: 'flex',
+                    justifyContent: 'space-between', gap: 6 }}>
+        <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis',
+                       whiteSpace: 'nowrap' }} title={slot.nombre_clase}>
+          {slot.nombre_clase || 'Clase'}
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
+          {fechaStr}{horaStr ? ` · ${horaStr}` : ''}
+        </span>
+      </div>
+      {slot.reserva_url && (
+        <a href={slot.reserva_url} target="_blank" rel="noreferrer"
+           onClick={e => e.stopPropagation()}
+           style={{ fontSize: 10, color: cfg.fg, textDecoration: 'underline' }}>
+          ver / cambiar →
+        </a>
+      )}
     </div>
   )
 }

@@ -396,6 +396,26 @@ def list_leads():
         if not asignaciones:
             return jsonify({'ok': True, 'leads': []})
 
+        # ── Reservas de prueba asociadas (slot_reserva) por odoo_lead_id ──
+        odoo_ids = [a['odoo_lead_id'] for a in asignaciones if a.get('odoo_lead_id')]
+        reservas_por_lead = {}
+        if odoo_ids:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, odoo_lead_id, noofit_sala_id, fecha_clase, nombre_clase,
+                           estado, expira_at, confirmado_at, token, created_at,
+                           noofit_cliente_id
+                      FROM slot_reserva
+                     WHERE odoo_lead_id = ANY(%s)
+                     ORDER BY created_at DESC
+                """, (odoo_ids,))
+                rows = cur.fetchall() or []
+                # Tomamos la más reciente por lead (el ORDER BY ya lo asegura)
+                for r in rows:
+                    key = r['odoo_lead_id']
+                    if key not in reservas_por_lead:
+                        reservas_por_lead[key] = r
+
         # Enriquecer con datos de Odoo crm.lead
         oc = get_cuotas()
         ids = [a['odoo_lead_id'] for a in asignaciones if a.get('odoo_lead_id')]
@@ -443,6 +463,30 @@ def list_leads():
                 and row['hours_since_creation'] > 24
                 and not a.get('lost_at')
             )
+
+            # Reserva de prueba asociada (si la hay)
+            reserva = reservas_por_lead.get(a.get('odoo_lead_id'))
+            if reserva:
+                fc = reserva.get('fecha_clase')
+                exp = reserva.get('expira_at')
+                if fc and getattr(fc, 'tzinfo', None) is None:
+                    fc = fc.replace(tzinfo=timezone.utc)
+                if exp and getattr(exp, 'tzinfo', None) is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                row['slot_reserva'] = {
+                    'id':              reserva['id'],
+                    'noofit_sala_id':  reserva.get('noofit_sala_id'),
+                    'noofit_cliente_id': reserva.get('noofit_cliente_id'),
+                    'fecha_clase':     fc.isoformat() if fc else None,
+                    'nombre_clase':    reserva.get('nombre_clase'),
+                    'estado':          reserva.get('estado'),
+                    'expira_at':       exp.isoformat() if exp else None,
+                    'confirmado_at':   reserva.get('confirmado_at').isoformat() if reserva.get('confirmado_at') else None,
+                    'token':           reserva.get('token'),
+                    'reserva_url':     f'/reserva/{reserva["token"]}' if reserva.get('token') else None,
+                }
+            else:
+                row['slot_reserva'] = None
 
             out.append(row)
         return jsonify({'ok': True, 'leads': out})
