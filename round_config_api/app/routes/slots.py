@@ -417,6 +417,19 @@ PAGE_HTML = """<!doctype html>
          border-radius: 8px; color: #f87171; }
   .ok { background: #2dd4a81a; border: 1px solid #2dd4a840; padding: 12px;
         border-radius: 8px; color: #2dd4a8; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .anular-form { background: #1e2025; border: 1px solid #f8717140; padding: 16px;
+                 border-radius: 12px; margin-top: 12px; display: none; }
+  .anular-form.active { display: block; }
+  .anular-form textarea { width: 100%; min-height: 80px; padding: 10px;
+                          background: #060608; color: #f4f4f6;
+                          border: 1px solid #26282e; border-radius: 8px;
+                          font-size: 14px; font-family: inherit; resize: vertical; }
+  .anular-form label { display: block; font-size: 12px; color: #b0b0bc; margin-bottom: 6px; }
+  .anular-form .row { display: flex; gap: 6px; margin-top: 10px; }
+  .motivo-box { background: #1e2025; border-left: 3px solid #f87171;
+                padding: 12px; border-radius: 6px; margin-top: 12px; font-size: 13px; }
+  .motivo-box b { color: #f87171; display: block; margin-bottom: 4px; }
 </style></head>
 <body><div class="card">
 {% if estado == 'pendiente' %}
@@ -428,10 +441,25 @@ PAGE_HTML = """<!doctype html>
     <p><b>Hora:</b> {{ reserva.hora_local }}</p>
   </div>
   <div class="timer">⏰ Caduca a las <b>{{ reserva.expira_local }}</b>. Si no confirmas, la plaza se libera.</div>
-  <form method="POST" action="/api/crm/reserva/{{ token }}/confirmar" style="display:inline">
-    <button type="submit" class="btn">✓ Confirmar plaza</button>
+  <div class="actions">
+    <form method="POST" action="/api/crm/reserva/{{ token }}/confirmar" style="display:inline">
+      <button type="submit" class="btn">✓ Confirmar plaza</button>
+    </form>
+    <a href="/reserva/{{ token }}/cambiar" class="btn btn-secondary">🔄 Cambiar día/hora</a>
+    <button type="button" class="btn btn-danger"
+            onclick="document.getElementById('anular').classList.add('active');this.style.display='none'">
+      ✕ Anular
+    </button>
+  </div>
+  <form id="anular" method="POST" action="/api/crm/reserva/{{ token }}/anular" class="anular-form">
+    <label for="motivo">¿Por qué quieres anular? (opcional, nos ayuda a mejorar)</label>
+    <textarea name="motivo" id="motivo" placeholder="Ej. me ha surgido un imprevisto, ya no me interesa, prefiero otro centro…"></textarea>
+    <div class="row">
+      <button type="submit" class="btn btn-danger">Sí, anular reserva</button>
+      <button type="button" class="btn btn-secondary"
+              onclick="this.closest('form').classList.remove('active')">Volver</button>
+    </div>
   </form>
-  <a href="/reserva/{{ token }}/cambiar" class="btn btn-secondary">🔄 Cambiar día/hora</a>
 {% elif estado == 'confirmada' %}
   <h1>¡Plaza confirmada! 🎉</h1>
   <div class="ok">Tu plaza está confirmada. Te esperamos en <b>{{ reserva.centro_nombre }}</b>:</div>
@@ -440,14 +468,37 @@ PAGE_HTML = """<!doctype html>
     <p><b>Día:</b> {{ reserva.fecha_local }}</p>
     <p><b>Hora:</b> {{ reserva.hora_local }}</p>
   </div>
-  <p class="muted">Recibirás un email con los detalles. Si necesitas cancelar, contacta directamente con el centro.</p>
+  <p class="muted">Recibirás un email con los detalles. Si no puedes asistir, anula la reserva con un motivo:</p>
+  <div class="actions">
+    <a href="/reserva/{{ token }}/cambiar" class="btn btn-secondary">🔄 Cambiar día/hora</a>
+    <button type="button" class="btn btn-danger"
+            onclick="document.getElementById('anular').classList.add('active');this.style.display='none'">
+      ✕ Anular plaza
+    </button>
+  </div>
+  <form id="anular" method="POST" action="/api/crm/reserva/{{ token }}/anular" class="anular-form">
+    <label for="motivo">¿Por qué anulas? (opcional, nos ayuda a entender)</label>
+    <textarea name="motivo" id="motivo" placeholder="Ej. enfermedad, imprevisto laboral, cambio de planes…"></textarea>
+    <div class="row">
+      <button type="submit" class="btn btn-danger">Sí, anular plaza</button>
+      <button type="button" class="btn btn-secondary"
+              onclick="this.closest('form').classList.remove('active')">Volver</button>
+    </div>
+  </form>
 {% elif estado == 'expirada' %}
   <h1>Reserva expirada ⌛</h1>
   <div class="err">Lo sentimos, tu reserva caducó por falta de confirmación. La plaza ha vuelto a estar disponible.</div>
   <p>Puedes hacer una nueva reserva desde <a href="https://roundtrainingcenter.com/prueba-gratuita/">la web</a>.</p>
 {% elif estado == 'cancelada' %}
   <h1>Reserva cancelada</h1>
-  <div class="err">Esta reserva fue cancelada.</div>
+  <div class="err">Esta reserva fue cancelada{% if reserva.cancelado_local %} el {{ reserva.cancelado_local }}{% endif %}.</div>
+  {% if reserva.motivo_cancelacion %}
+  <div class="motivo-box">
+    <b>Motivo:</b>
+    {{ reserva.motivo_cancelacion }}
+  </div>
+  {% endif %}
+  <p class="muted" style="margin-top:16px">¿Cambio de planes? Puedes hacer una nueva reserva desde <a href="https://roundtrainingcenter.com/prueba-gratuita/" style="color:#2dd4a8">la web</a>.</p>
 {% else %}
   <h1>Reserva no encontrada</h1>
   <div class="err">El enlace no es válido o ha expirado.</div>
@@ -482,6 +533,9 @@ def pagina_reserva(token):
         fecha_local = hora_local = '?'
     expira = reserva['expira_at']
     if expira and expira.tzinfo is None: expira = expira.replace(tzinfo=timezone.utc)
+    cancelado = reserva.get('cancelado_at')
+    if cancelado and cancelado.tzinfo is None:
+        cancelado = cancelado.replace(tzinfo=timezone.utc)
     return render_template_string(PAGE_HTML,
         titulo=f'Reserva — {reserva.get("centro_nombre") or "Round"}',
         estado=estado, token=token,
@@ -492,7 +546,96 @@ def pagina_reserva(token):
             'fecha_local':    fecha_local,
             'hora_local':     hora_local,
             'expira_local':   expira.astimezone().strftime('%H:%M') if expira else '',
+            'motivo_cancelacion': reserva.get('motivo_cancelacion') or '',
+            'cancelado_local':    cancelado.astimezone().strftime('%d/%m/%Y a las %H:%M') if cancelado else '',
         })
+
+
+@bp.route('/reserva/<token>/anular', methods=['POST'])
+@bp.route('/api/crm/reserva/<token>/anular', methods=['POST'])
+def anular_reserva(token):
+    """Anula una reserva (estado→'cancelada'). Acepta motivo opcional via form.
+    Cancela también la plaza en NoofitPro y notifica al trainer."""
+    motivo = (request.form.get('motivo') or
+              (request.get_json(silent=True) or {}).get('motivo') or '').strip()
+    motivo = motivo[:500]  # límite de la columna
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM slot_reserva WHERE token=%s", (token,))
+        r = cur.fetchone()
+    if not r:
+        return redirect(f'/reserva/{token}')
+    if r['estado'] in ('cancelada', 'expirada', 'asistio'):
+        # idempotente — ya estaba cerrada
+        return redirect(f'/reserva/{token}')
+
+    # Cancelar plaza en NoofitPro (best-effort, no rompe si falla)
+    if r.get('noofit_sala_id') and r.get('noofit_cliente_id'):
+        try:
+            nc.cancelar_reserva(r['noofit_sala_id'], r['noofit_cliente_id'])
+        except Exception as e:
+            log.warning(f'anular_reserva: cancelar NoofitPro {r["id"]}: {e}')
+
+    # Marcar en BD
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""UPDATE slot_reserva SET
+                          estado='cancelada',
+                          cancelado_at=NOW(),
+                          motivo_cancelacion=%s
+                        WHERE id=%s""", (motivo or None, r['id']))
+
+    # Mover lead Odoo a "Perdido" si existe (con motivo si hay)
+    try:
+        if r.get('odoo_lead_id'):
+            from ..odoo_cuotas import get_cuotas
+            oc = get_cuotas()
+            stages = oc._call('crm.stage', 'search',
+                [('name', 'ilike', 'perdido')], limit=1)
+            if stages:
+                oc._call('crm.lead', 'write', [r['odoo_lead_id']],
+                         {'stage_id': stages[0]})
+            # Actualizar también lead_asignacion local
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""UPDATE lead_asignacion SET
+                                 lost_at = NOW(),
+                                 lost_reason = COALESCE(NULLIF(%s, ''), 'cancelacion_lead')
+                                WHERE odoo_lead_id=%s""",
+                            (motivo, r['odoo_lead_id']))
+    except Exception as e:
+        log.warning(f'anular_reserva: mover lead Odoo: {e}')
+
+    # Email al trainer del centro avisándole de la anulación (si tiene email)
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT nombre_centro, email FROM centro_contacto
+                            WHERE id_manager=%s AND id_trainer=%s LIMIT 1""",
+                        (r['id_manager'], r['id_trainer']))
+            centro = cur.fetchone()
+        if centro and centro.get('email'):
+            fecha = r.get('fecha_clase')
+            if fecha and fecha.tzinfo is None:
+                fecha = fecha.replace(tzinfo=timezone.utc)
+            full_name = f"{r.get('nombre_lead','')} {r.get('apellidos_lead','')}".strip()
+            subject = f'Reserva ANULADA: {full_name} ({r.get("nombre_clase","?")})'
+            html = (
+                f'<p>El lead <b>{full_name}</b> '
+                f'(<a href="mailto:{r.get("email_lead","")}">{r.get("email_lead","")}</a>, '
+                f'tel: {r.get("telefono_lead","")}) '
+                f'ha <b>anulado su reserva</b> de prueba en <b>{r.get("nombre_clase","?")}</b> '
+                f'el {fecha.astimezone().strftime("%A %d/%m/%Y a las %H:%M") if fecha else "?"}.</p>'
+                f'{"<p><b>Motivo:</b> " + motivo + "</p>" if motivo else "<p>(sin motivo indicado)</p>"}'
+                f'<p>La plaza queda libre. Puedes contactar al lead si quieres re-encantarlo.</p>'
+                f'<hr/><p style="color:#888;font-size:12px">Round Training Center · Reserva #{r["id"]}</p>'
+            )
+            from ..email_sender import enviar as enviar_email
+            enviar_email(centro['email'], subject,
+                         f'{full_name} anuló su prueba. Motivo: {motivo or "no indicado"}',
+                         body_html=html, id_manager=r['id_manager'],
+                         id_trainer=r['id_trainer'])
+    except Exception as e:
+        log.warning(f'anular_reserva: email trainer: {e}')
+
+    return redirect(f'/reserva/{token}')
 
 
 @bp.route('/reserva/<token>/confirmar', methods=['POST', 'GET'])

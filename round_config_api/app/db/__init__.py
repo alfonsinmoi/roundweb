@@ -45,9 +45,16 @@ BEGIN
   END IF;
 
   -- slot_reserva: marcador de recordatorio enviado (cron 24h antes)
+  -- + motivo de cancelación cuando el lead anula desde la web
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='slot_reserva') THEN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='slot_reserva' AND column_name='recordatorio_at') THEN
       ALTER TABLE slot_reserva ADD COLUMN recordatorio_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='slot_reserva' AND column_name='motivo_cancelacion') THEN
+      ALTER TABLE slot_reserva ADD COLUMN motivo_cancelacion VARCHAR(500);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='slot_reserva' AND column_name='cancelado_at') THEN
+      ALTER TABLE slot_reserva ADD COLUMN cancelado_at TIMESTAMPTZ;
     END IF;
   END IF;
 
