@@ -108,6 +108,88 @@ def sincronizar():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@bp.route('/<int:cliente_id>/fechas', methods=['GET'])
+@auth_required
+def fechas_cliente(cliente_id):
+    """Devuelve las fechas clave de un cliente.
+
+    Reglas (derivadas de cliente_estado_log):
+      - fecha_primera_alta: detected_at del PRIMER evento donde el cliente
+        fue visto como 'activo' (o NoofitPro fechaCreacion como fallback).
+      - fecha_alta_actual: detected_at del último evento 'activo' (la
+        última reactivación). Igual a primera_alta si nunca pasó a inactivo.
+      - fecha_inactivo: detected_at del último evento 'archivado' SI el
+        cliente está actualmente inactivo (su último estado es archivado).
+        NULL si está activo.
+    """
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            # Estado actual: el más reciente
+            cur.execute("""
+                SELECT estado_nuevo, detected_at
+                  FROM cliente_estado_log
+                 WHERE id_manager=%s AND cliente_id=%s
+                 ORDER BY detected_at DESC LIMIT 1
+            """, (g.id_manager, cliente_id))
+            ult = cur.fetchone()
+            estado_actual = ult['estado_nuevo'] if ult else None
+
+            # Primera vez visto como 'activo'
+            cur.execute("""
+                SELECT detected_at FROM cliente_estado_log
+                 WHERE id_manager=%s AND cliente_id=%s AND estado_nuevo='activo'
+                 ORDER BY detected_at ASC LIMIT 1
+            """, (g.id_manager, cliente_id))
+            primera_act = cur.fetchone()
+            fecha_primera_alta = primera_act['detected_at'].isoformat() if primera_act else None
+
+            # Última vez que pasó a activo
+            cur.execute("""
+                SELECT detected_at FROM cliente_estado_log
+                 WHERE id_manager=%s AND cliente_id=%s AND estado_nuevo='activo'
+                 ORDER BY detected_at DESC LIMIT 1
+            """, (g.id_manager, cliente_id))
+            ult_act = cur.fetchone()
+            fecha_alta_actual = ult_act['detected_at'].isoformat() if ult_act else None
+
+            # Último archivado solo si actualmente inactivo
+            fecha_inactivo = None
+            if estado_actual == 'archivado':
+                cur.execute("""
+                    SELECT detected_at FROM cliente_estado_log
+                     WHERE id_manager=%s AND cliente_id=%s AND estado_nuevo='archivado'
+                     ORDER BY detected_at DESC LIMIT 1
+                """, (g.id_manager, cliente_id))
+                ult_arc = cur.fetchone()
+                fecha_inactivo = ult_arc['detected_at'].isoformat() if ult_arc else None
+
+        # Fallback NoofitPro fechaCreacion si no tenemos primera alta en log
+        fecha_creacion_noofit = None
+        if not fecha_primera_alta:
+            try:
+                clis = nc.get_clientes() or []
+                cli = next((c for c in clis if c.get('id') == cliente_id), None)
+                if cli:
+                    fecha_creacion_noofit = cli.get('fechaCreacion') or cli.get('createdAt')
+                    if not fecha_primera_alta and fecha_creacion_noofit:
+                        fecha_primera_alta = fecha_creacion_noofit
+            except Exception:
+                pass
+
+        return jsonify({
+            'ok': True,
+            'cliente_id': cliente_id,
+            'estado_actual': estado_actual,           # 'activo' | 'archivado' | None
+            'fecha_primera_alta': fecha_primera_alta,
+            'fecha_alta_actual': fecha_alta_actual,
+            'fecha_inactivo': fecha_inactivo,         # NULL si está activo
+            'fecha_creacion_noofit': fecha_creacion_noofit,
+        })
+    except Exception as e:
+        log.exception(f'fechas_cliente {cliente_id}')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @bp.route('/<int:id_noofit>/sync-odoo', methods=['POST'])
 @auth_required
 def sync_odoo(id_noofit):

@@ -90,7 +90,9 @@ export default function CrmPage() {
   async function moveTo(lead, stageId, lostReason = null) {
     setDraggingId(null); setHoverStageId(null)
     if (!lead.lead?.id || stageId === lead.lead?.stage_id?.[0]) return
-    if (stageId === '_sin_etapa') return
+    if (stageId === '_sin_etapa' || stageId === 'placeholder') return
+    const stageIdInt = parseInt(stageId, 10)
+    if (Number.isNaN(stageIdInt)) return
     const targetStage = stagesView.find(s => s.id === stageId)
     const isLost = (targetStage?.name || '').toLowerCase() === 'perdido' || targetStage?.fold
 
@@ -101,7 +103,7 @@ export default function CrmPage() {
     }
 
     try {
-      const payload = { stage_id: stageId }
+      const payload = { stage_id: stageIdInt }
       if (isLost && lostReason) payload.lost_reason = lostReason
       const updated = await leadUpdate(identity, lead.lead.id, payload)
       setLeads(arr => arr.map(l => l.odoo_lead_id === lead.odoo_lead_id

@@ -23,8 +23,14 @@ class PayCometError(Exception):
 
 
 class PayCometClient:
-    REST_PROD = 'https://rest.paycomet.com/v2'
-    REST_SANDBOX = 'https://rest-sandbox.paycomet.com/v2'
+    # PayComet REST API v1 — única URL para producción y sandbox.
+    # La diferencia entre "test" y "real" la marcan el API Key + terminal
+    # (los terminales sandbox como 86879 BANKSTORE TEST no llaman al banco).
+    # Endpoint /v2 NO existe; PayComet sigue en v1 a fecha 2026-05.
+    REST_BASE = 'https://rest.paycomet.com/v1'
+    # Compat
+    REST_PROD = REST_BASE
+    REST_SANDBOX = REST_BASE
 
     def __init__(
         self,
@@ -82,28 +88,41 @@ class PayCometClient:
             return f'{base}/api/cuotas/paycomet-stub/{order_ref}?amount={amount_eur:.2f}'
 
         amount_cents = str(int(round(float(amount_eur) * 100)))
-        payload = {
-            'terminal': self.terminal,
+        # PayComet v1 espera el envelope { operationType, language, payment: {...} }
+        # Los campos del payment van anidados dentro de "payment".
+        payment = {
+            'terminal': int(self.terminal),
             'order': str(order_ref)[:50],
             'amount': amount_cents,
             'currency': currency,
-            'operationType': operationType,
+            'productDescription': productDescription[:100],
             'urlOk': self.url_ok,
             'urlKo': self.url_ko,
-            'productDescription': productDescription[:100],
-            # 'methods': methods or [],   # opcional, vacío = todos los configurados
             'secure': 1,
+        }
+        if methods:
+            payment['methods'] = methods
+        payload = {
+            'operationType': operationType,
+            'language': 'es',
+            'payment': payment,
         }
         # urlNotification se configura en panel PayComet por terminal, no en el body.
         try:
             r = requests.post(f'{self.base}/form', json=payload,
                               headers=self._headers(), timeout=30)
-            d = r.json()
+            try:
+                d = r.json()
+            except Exception:
+                # Body no-JSON: incluye texto en el error para diagnosticar
+                raise PayCometError(f'PayComet respuesta no-JSON status={r.status_code} body={r.text[:300]}')
+        except PayCometError:
+            raise
         except Exception as e:
             log.exception('paycomet form')
             raise PayCometError(f'PayComet HTTP error: {e}')
 
-        err = d.get('errorCode') or d.get('error') or 0
+        err = d.get('errorCode') or 0
         if err:
             raise PayCometError(f"PayComet error {err}: {d.get('errorMessage') or d}")
         url = d.get('challengeUrl') or d.get('url')

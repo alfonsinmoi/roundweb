@@ -166,6 +166,8 @@ ssh round-vps "systemctl stop odoo17 && \
 
 ## Tablas BD principales (round_config)
 
+- `manager_config` — catálogo de managers + sus credenciales NoofitPro
+  (multi-tenant: los crons iteran sobre las filas activas)
 - `cuota`, `descuento`, `modificacion` — catálogos del manager
 - `cuota_cliente`, `descuento_asignacion`, `modificacion_cobro` — asignaciones
 - `centro_contacto` — un centro por trainer (slug, email, teléfono)
@@ -174,9 +176,12 @@ ssh round-vps "systemctl stop odoo17 && \
 - `email_proveedor` — config Resend/Postmark/SMTP/Gmail (manager + per trainer)
 - `email_template` — plantillas con variables `{{var}}` por evento
 - `pasarela_credenciales` — PayComet por trainer
-- `cliente_estado_log` — track diario activo↔archivado
+- `cliente_estado_log` — track diario activo↔inactivo
 - `social_cuenta`, `social_post` — agenda Meta Instagram + Facebook
 - `cliente_gympass` — extensión local para gympassId
+- `categoria` + `cliente_categoria` — categorías de cliente per manager
+  (Gympass / Trabajador / Invitado / …) con flags `puede_reservar`,
+  `tiene_cuota`, `activa`
 
 ## Credenciales y secretos (NO subir a git)
 
@@ -184,8 +189,13 @@ ssh round-vps "systemctl stop odoo17 && \
 - `/opt/round_config_api/.env` en VPS — DB, Resend, NoofitPro, ROUND_DEFAULT_MANAGER
 - Login NoofitPro: `roundgestion@noofit.com` / `1234abcd` (manager_id real `7673`)
 - Login Round web: el mismo email que NoofitPro
-- IDs reales:
-  - Manager NoofitPro: **7673**
+- IDs reales (Round, manager por defecto):
+  - **id_manager (Round Config)**: `17675` — coincide con el id NoofitPro
+    devuelto al hacer login con `roundgestion@noofit.com`. Es la clave que
+    el frontend manda en `X-Round-Manager-Id` y la que usa el cron al
+    iterar `manager_config`.
+  - Manager parent NoofitPro: **7673** (el "global gym manager" interno
+    de NoofitPro; no se usa directamente desde Round).
   - Trainer ROUND MÁLAGA CENTRO: **17675**
   - Trainer ROUND AÑORETA: **17674**
   - id_manager interno (Round Config): **17677** (no es el de NoofitPro)
@@ -266,5 +276,9 @@ Tras la prueba, el trainer da de alta al cliente:
 - Manual operativo (manager + trainers): `docs/Manual_CRM_Round.docx`
 - Arquitectura técnica + infografía: `docs/Arquitectura_round_noofit.docx`
 - Flujo dual-PC + setup nuevo PC: `docs/FLUJO_DUAL_PC.md`
+- Integración pendiente con NoofitPro (cosas que mantenemos local
+  hasta que NoofitPro las publique): `docs/INTEGRACION_NOOFIT_PENDIENTE.md`
+- PayComet (sandbox + decisión de cobros vía Odoo, no vía suscripciones
+  PayComet): `docs/PAYCOMET.md`
 - Mantener este CLAUDE.md actualizado cuando cambien tablas, servicios o
   flujos críticos.

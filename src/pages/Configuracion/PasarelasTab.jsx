@@ -134,12 +134,22 @@ export default function PasarelasTab({ identity: identityProp }) {
                     onChange={setEditing}
                     onSave={async () => {
                       try {
+                        // Si el usuario dejó el placeholder (texto sugerido) en
+                        // un campo URL, lo tratamos como vacío para usar los
+                        // defaults de PayComet en backend.
+                        const isPlaceholderOrEmpty = (v, ph) => {
+                          const s = String(v ?? '').trim()
+                          return !s || s === ph
+                        }
+                        const dft = 'https://round.wiemspro.com/cuotas-clientes'
+                        const url_ok = isPlaceholderOrEmpty(editing.url_ok, dft) ? null : editing.url_ok
+                        const url_ko = isPlaceholderOrEmpty(editing.url_ko, dft) ? null : editing.url_ko
                         await pasarelaUpsert(identity, t.id, {
                           proveedor: editing.proveedor,
                           api_token: editing.api_token, // vacío = mantener
                           terminal: editing.terminal,
-                          url_ok: editing.url_ok || null,
-                          url_ko: editing.url_ko || null,
+                          url_ok,
+                          url_ko,
                           url_notif: editing.url_notif || null,
                           sandbox: !!editing.sandbox,
                           active: !!editing.active,

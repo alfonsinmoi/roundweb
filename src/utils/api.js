@@ -156,14 +156,26 @@ function evictOldest() {
   _cache.delete(oldest)
 }
 
+// Mapa de promesas en vuelo para evitar lanzar dos peticiones idénticas
+// en paralelo (p.ej. prefetch en hover + click del usuario al mismo tiempo).
+const _inflight = new Map()
+
 function cached(key, fetcher) {
   const entry = _cache.get(key)
-  if (entry && Date.now() - entry.ts < CACHE_TTL) return Promise.resolve(entry.data)
-  return fetcher().then(data => {
+  if (entry && entry.data && Date.now() - entry.ts < CACHE_TTL) return Promise.resolve(entry.data)
+  const pending = _inflight.get(key)
+  if (pending) return pending
+  const promise = fetcher().then(data => {
     _cache.set(key, { data, ts: Date.now() })
     evictOldest()
+    _inflight.delete(key)
     return data
+  }).catch(err => {
+    _inflight.delete(key)
+    throw err
   })
+  _inflight.set(key, promise)
+  return promise
 }
 
 export function invalidateCache(key) {

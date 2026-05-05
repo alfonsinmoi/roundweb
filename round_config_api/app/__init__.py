@@ -11,6 +11,7 @@ from .routes.descuentos       import bp as bp_descuentos
 from .routes.modificaciones   import bp as bp_modificaciones
 from .routes.cuotas_clientes  import bp as bp_cuotas_clientes
 from .routes.cliente_gympass  import bp as bp_cliente_gympass
+from .routes.categorias       import bp as bp_categorias
 from .routes.pasarelas         import bp as bp_pasarelas
 from .routes.centros           import bp as bp_centros
 from .routes.crm               import bp as bp_crm
@@ -66,6 +67,8 @@ def create_app():
         app.register_blueprint(bp_cuotas_clientes, name=f'cc{prefix}', url_prefix=prefix)
     for prefix in ('/cliente-gympass', '/api/config/cliente-gympass'):
         app.register_blueprint(bp_cliente_gympass, name=f'cg{prefix}', url_prefix=prefix)
+    for prefix in ('/categorias', '/api/config/categorias'):
+        app.register_blueprint(bp_categorias, name=f'cat{prefix}', url_prefix=prefix)
     for prefix in ('/pasarelas', '/api/config/pasarelas'):
         app.register_blueprint(bp_pasarelas, name=f'ps{prefix}', url_prefix=prefix)
     for prefix in ('/centros', '/api/config/centros'):

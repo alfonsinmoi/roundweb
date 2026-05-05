@@ -205,6 +205,15 @@ export const historialEstadoCliente = (identity, clienteId) =>
     .then(d => d.historial || [])
 export const syncClienteOdoo = (identity, idNoofit) =>
   _clientesRequest('POST', `/${idNoofit}/sync-odoo`, identity)
+// Fechas clave del cliente (primera alta, alta actual, fecha inactivo)
+export const clienteFechas = (identity, idNoofit) =>
+  _clientesRequest('GET', `/${idNoofit}/fechas`, identity).then(d => ({
+    estado_actual: d.estado_actual,
+    fecha_primera_alta: d.fecha_primera_alta,
+    fecha_alta_actual: d.fecha_alta_actual,
+    fecha_inactivo: d.fecha_inactivo,
+    fecha_creacion_noofit: d.fecha_creacion_noofit,
+  }))
 
 // ── Redes sociales (cuentas Meta + agenda de posts) ───────────────────────
 async function _socialRequest(method, path, identity, body = null) {
@@ -260,6 +269,26 @@ export const clienteGympassDelete = (identity, idNoofit) =>
   _request('DELETE', `/cliente-gympass/${idNoofit}`, identity)
 export const clienteGympassBulk = (identity, items) =>
   _request('POST', '/cliente-gympass/bulk', identity, { items })
+
+// ── Categorías de cliente (Gympass / Trabajador / Invitado / …) ────────────
+export const categoriasList = (identity) =>
+  _request('GET', '/categorias', identity).then(d => d.categorias || [])
+export const categoriaCreate = (identity, data) =>
+  _request('POST', '/categorias', identity, data).then(d => d.categoria)
+export const categoriaUpdate = (identity, id, data) =>
+  _request('PATCH', `/categorias/${id}`, identity, data).then(d => d.categoria)
+export const categoriaDelete = (identity, id, hard = false) =>
+  _request('DELETE', `/categorias/${id}${hard ? '?hard=1' : ''}`, identity)
+export const categoriaConteo = (identity) =>
+  _request('GET', '/categorias/conteo-clientes', identity).then(d => d.conteo || [])
+// Asignaciones cliente↔categoría — devuelve mapa idnoofit → {id, nombre, color, …}
+export const categoriasAsignaciones = (identity) =>
+  _request('GET', '/categorias/asignaciones', identity).then(d => d.mapa || {})
+export const categoriaClienteSet = (identity, idNoofit, categoria_id) =>
+  _request('PUT', `/categorias/clientes/${idNoofit}`, identity, { categoria_id })
+export const categoriaClienteDel = (identity, idNoofit) =>
+  _request('DELETE', `/categorias/clientes/${idNoofit}`, identity)
+
 
 export const modificacionesList  = (identity) => _request('GET',   '/modificaciones', identity).then(d => d.modificaciones)
 export const modificacionCreate  = (identity, data) => _request('POST',  '/modificaciones', identity, data).then(d => d.modificacion)

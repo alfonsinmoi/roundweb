@@ -12,6 +12,7 @@ import { useClaseEnCurso } from '../hooks/useClaseEnCurso'
 import { formatHora } from '../utils/formatters'
 import { Avatar } from './UI'
 import { getEntrenadores } from '../utils/api'
+import { prefetchRoute } from '../utils/prefetch'
 
 export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
   const { logout, user, loginAsTrainer, switchBackToManager, isImpersonating } = useAuth()
@@ -106,6 +107,9 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
       <NavLink
         to={to}
         onClick={e => { if (active) e.preventDefault(); else onNavigate() }}
+        onMouseEnter={() => prefetchRoute(to)}
+        onFocus={() => prefetchRoute(to)}
+        onTouchStart={() => prefetchRoute(to)}
         aria-current={active ? 'page' : undefined}
         title={collapsed ? label : undefined}
         className="nav-link"

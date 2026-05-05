@@ -1,13 +1,17 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import Header from './Header'
 import Breadcrumbs from './Breadcrumbs'
 import ErrorBoundary from './ErrorBoundary'
 import BannerNuevosClientes from './BannerNuevosClientes'
+import { prefetchPopularRoutes } from '../utils/prefetch'
 
 export default function Layout() {
   const { pathname } = useLocation()
+  // Prefetch en idle de chunks + datos de las rutas más visitadas
+  // (clientes, crm, clases, cuotas) → el primer click al menú es instantáneo.
+  useEffect(() => { prefetchPopularRoutes() }, [])
   const [sidebarOpen, setSidebarOpen] = useState(false)
   // pinned: usuario forzó expandir/colapsar manualmente; sobreescribe hover.
   const [pinned, setPinned] = useState(false)

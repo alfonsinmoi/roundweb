@@ -22,6 +22,8 @@ import {
   getSalasByRange, getUsuariosBySala,
 } from '../../utils/api'
 import { useGympassMap } from '../../hooks/useGympassMap'
+import { useCategoriasMap } from '../../hooks/useCategoriasMap'
+import { clienteFechas, getRoundIdentity } from '../../utils/configApi'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
 
@@ -261,9 +263,9 @@ export default function ClientProfile() {
       const updated = { ...cliente, enabled: isArchived, motivoArchivado: isArchived ? null : motivoArchivado }
       await postClientes([updated])
       setCliente(updated)
-      toast.success(isArchived ? 'Cliente desarchivado' : 'Cliente archivado')
+      toast.success(isArchived ? 'Cliente reactivado' : 'Cliente marcado como inactivo')
     } catch {
-      toast.error('Error al archivar/desarchivar el cliente')
+      toast.error('Error al activar/inactivar el cliente')
     } finally {
       setActionLoading('')
     }
@@ -328,8 +330,8 @@ export default function ClientProfile() {
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {cliente.enabled === false
-                  ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Archivado</Badge>
-                  : cliente.activo === false ? <Badge color="yellow">Inactivo</Badge> : <Badge color="green">Activo</Badge>
+                  ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Inactivo</Badge>
+                  : cliente.activo === false ? <Badge color="yellow">No activo</Badge> : <Badge color="green">Activo</Badge>
                 }
                 {cliente.nivelConocimiento != null && <Badge color="blue">Nivel {cliente.nivelConocimiento}</Badge>}
               </div>
@@ -373,7 +375,7 @@ export default function ClientProfile() {
             {actionLoading === 'archivar'
               ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
               : <Archive size={15} aria-hidden="true" />}
-            {cliente.enabled === false ? ' Desarchivar' : ' Archivar'}
+            {cliente.enabled === false ? ' Reactivar' : ' Inactivar'}
           </Btn>
           <Btn variant="danger" size="md" onClick={() => setConfirmDesvincular(true)} disabled={!!actionLoading}>
             {actionLoading === 'desvincular'
@@ -414,9 +416,9 @@ export default function ClientProfile() {
       {/* Dialogs */}
       <ConfirmDialog
         open={confirmArchivar}
-        title="Desarchivar cliente"
-        message={`¿Quieres desarchivar a ${cliente.name} ${cliente.surname}?`}
-        confirmText="Desarchivar"
+        title="Reactivar cliente"
+        message={`¿Quieres reactivar a ${cliente.name} ${cliente.surname}?`}
+        confirmText="Reactivar"
         variant="primary"
         onConfirm={() => doArchivar(null)}
         onCancel={() => setConfirmArchivar(false)}
@@ -459,11 +461,11 @@ export default function ClientProfile() {
         </div>
       </Modal>
 
-      <Modal open={motivoModal} onClose={() => setMotivoModal(false)} title="Archivar cliente"
+      <Modal open={motivoModal} onClose={() => setMotivoModal(false)} title="Inactivar cliente"
              subtitle={`${cliente.name} ${cliente.surname}`} maxWidth={480}>
         <div style={{ padding: '28px 32px' }}>
           <label htmlFor="motivo-archivado" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
-            Motivo del archivado (opcional)
+            Motivo de inactivación (opcional)
           </label>
           <input id="motivo-archivado" type="text" value={motivo} onChange={e => setMotivo(e.target.value)}
                  placeholder="Ej: Baja voluntaria, cambio de centro..."
@@ -475,7 +477,7 @@ export default function ClientProfile() {
         </div>
         <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <Btn variant="secondary" size="md" onClick={() => setMotivoModal(false)}>Cancelar</Btn>
-          <Btn variant="primary" size="md" onClick={() => doArchivar(motivo)}>Archivar</Btn>
+          <Btn variant="primary" size="md" onClick={() => doArchivar(motivo)}>Inactivar</Btn>
         </div>
       </Modal>
     </div>
@@ -597,6 +599,9 @@ function TabPersonal({ cliente, onClienteUpdate }) {
           </dl>
         </Card>
 
+        {/* Categoría + fechas clave (alta / primera alta / inactivo) */}
+        <CategoriaYFechasCard cliente={cliente} />
+
         {/* Estado */}
         <Card style={{ padding: 24 }}>
           <SectionTitle>
@@ -613,7 +618,7 @@ function TabPersonal({ cliente, onClienteUpdate }) {
             <BoolField label="Virtual Coach" value={cliente.virtualCoach} />
             <Field label="Última evaluación" value={formatDate(cliente.fechaUltimaEvaluacion)} />
             <Field label="Fecha edición"     value={formatDate(cliente.editionDate)} />
-            {cliente.motivoArchivado && <Field label="Motivo archivado" value={cliente.motivoArchivado} />}
+            {cliente.motivoArchivado && <Field label="Motivo inactivo" value={cliente.motivoArchivado} />}
           </dl>
         </Card>
 
@@ -628,6 +633,93 @@ function TabPersonal({ cliente, onClienteUpdate }) {
     </div>
   )
 }
+
+// ── Card: Categoría + Fechas clave ─────────────────────────────────────────
+function CategoriaYFechasCard({ cliente }) {
+  const { user } = useAuth()
+  const identity = (() => { try { return getRoundIdentity(user) } catch { return null } })()
+  const { categorias, getCategoria, setCategoria } = useCategoriasMap()
+  const [fechas, setFechas] = useState(null)
+  const [savingCat, setSavingCat] = useState(false)
+  const toast = useToast()
+
+  useEffect(() => {
+    if (!identity?.managerId || !cliente?.id) return
+    let active = true
+    clienteFechas(identity, cliente.id)
+      .then(d => { if (active) setFechas(d) })
+      .catch(() => { if (active) setFechas(null) })
+    return () => { active = false }
+  }, [identity?.managerId, cliente?.id])
+
+  const catActual = getCategoria(cliente)
+
+  const handleChange = async (e) => {
+    const val = e.target.value
+    const newCatId = val ? parseInt(val, 10) : null
+    setSavingCat(true)
+    try {
+      await setCategoria(cliente.id, newCatId)
+      toast.success(newCatId ? 'Categoría asignada' : 'Categoría eliminada')
+    } catch (err) {
+      toast.error(`Error: ${err.message}`)
+    } finally {
+      setSavingCat(false)
+    }
+  }
+
+  const fmt = (iso) => {
+    if (!iso) return '—'
+    try {
+      return new Date(iso).toLocaleDateString('es-ES',
+        { day: 'numeric', month: 'short', year: 'numeric' })
+    } catch { return '—' }
+  }
+
+  return (
+    <Card style={{ padding: 24 }}>
+      <SectionTitle>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Users size={16} aria-hidden="true" /> Categoría y fechas
+        </span>
+      </SectionTitle>
+      <dl>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', gap: 12 }}>
+          <dt style={{ fontSize: 13, color: 'var(--text-3)' }}>Categoría</dt>
+          <dd style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-0)', flex: 1, textAlign: 'right' }}>
+            <select value={catActual?.id ?? ''} onChange={handleChange} disabled={savingCat}
+                    style={{
+                      padding: '6px 10px', borderRadius: 8, fontSize: 13,
+                      background: 'var(--bg-2)', border: '1px solid var(--line)',
+                      color: 'var(--text-0)', cursor: 'pointer', minWidth: 180,
+                    }}>
+              <option value="">— Pagador con cuota</option>
+              {categorias.map(c => (
+                <option key={c.id} value={c.id} disabled={!c.activa}>
+                  {c.nombre}{!c.activa ? ' (inactiva)' : ''}
+                </option>
+              ))}
+            </select>
+            {catActual && !catActual.puede_reservar && (
+              <p style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>
+                ⚠ Esta categoría no permite reservar clases
+              </p>
+            )}
+          </dd>
+        </div>
+        <Field label="Fecha primera alta"
+               value={fechas?.fecha_primera_alta ? fmt(fechas.fecha_primera_alta) : '—'} />
+        <Field label="Fecha alta actual"
+               value={fechas?.fecha_alta_actual ? fmt(fechas.fecha_alta_actual) : '—'} />
+        {cliente.enabled === false && (
+          <Field label="Fecha inactivo"
+                 value={fechas?.fecha_inactivo ? fmt(fechas.fecha_inactivo) : '—'} />
+        )}
+      </dl>
+    </Card>
+  )
+}
+
 
 // ── Tab: Clases realizadas ─────────────────────────────────────────────────────
 function pickFecha(t) {

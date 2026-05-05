@@ -16,8 +16,10 @@ const badgeStyles = {
   blue:   { bg: 'var(--blue-bg)',   fg: 'var(--blue)',   border: 'var(--blue-border)' },
   red:    { bg: 'rgba(248,113,113,0.07)', fg: 'var(--red)',  border: 'rgba(248,113,113,0.16)' },
   yellow: { bg: 'rgba(251,191,36,0.07)',  fg: 'var(--amber)', border: 'rgba(251,191,36,0.16)' },
+  amber:  { bg: 'rgba(251,191,36,0.10)',  fg: 'var(--amber)', border: 'rgba(251,191,36,0.20)' },
   orange: { bg: 'rgba(251,146,60,0.07)',  fg: '#FB923C',      border: 'rgba(251,146,60,0.16)' },
   purple: { bg: 'rgba(167,139,250,0.07)', fg: 'var(--violet)', border: 'rgba(167,139,250,0.16)' },
+  cyan:   { bg: 'rgba(34,211,238,0.08)',  fg: '#22D3EE',       border: 'rgba(34,211,238,0.20)' },
   gray:   { bg: 'rgba(130,130,143,0.07)', fg: 'var(--text-2)', border: 'rgba(130,130,143,0.12)' },
 }
 

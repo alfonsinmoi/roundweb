@@ -1,5 +1,8 @@
 """Tarea programada DIARIA: detecta cambios de estado de clientes NoofitPro.
 
+Multi-tenant: itera sobre cada manager activo de `manager_config` y procesa
+sus clientes con sus propias credenciales NoofitPro.
+
 Para cada cliente que devuelve `nc.get_clientes()`:
   1. Calcula su estado actual: 'activo' (enabled=True) o 'archivado' (enabled=False)
   2. Lee la última entrada en `cliente_estado_log` para ese cliente_id
@@ -7,11 +10,11 @@ Para cada cliente que devuelve `nc.get_clientes()`:
   4. Si la última entrada tiene estado_nuevo distinto al actual → INSERT entrada de transición
   5. Si igual → no hace nada (no contamina el log)
 
-Diseñado para ejecutarse 1× al día. Se ejecuta sin --dry-run.
-Ejecutado vía systemd timer round_cliente_log.timer.
+Diseñado para ejecutarse 1× al día. Ejecutado vía systemd timer
+round_cliente_log.timer.
 """
 import os, logging
-from .db import get_conn
+from .db import get_conn, iter_active_managers
 from . import noofit_client as nc
 
 log = logging.getLogger(__name__)
@@ -22,10 +25,38 @@ def _estado_de(cliente):
 
 
 def sincronizar_log(id_manager=None):
-    """Compara clientes vivos con su última entrada de log y registra cambios."""
-    if id_manager is None:
-        id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17677')
+    """Sincroniza los logs de un manager (o de TODOS los activos si no se
+    especifica id_manager).
 
+    - Si id_manager se pasa: procesa solo ese (modo legacy / disparo manual).
+    - Si no se pasa: itera `manager_config` activos.
+
+    Devuelve: { 'ok': True, 'managers': { id: <resultado>, ... } }
+    """
+    if id_manager is not None:
+        return _sincronizar_one(id_manager)
+
+    managers = iter_active_managers()
+    if not managers:
+        log.warning('sincronizar_log: no hay managers activos')
+        return {'ok': False, 'error': 'no_managers'}
+
+    out = {}
+    for m in managers:
+        try:
+            # NOTA: el cliente NoofitPro hoy es singleton con creds del .env.
+            # Cuando se añada un 2º manager, refactorizar `noofit_client` para
+            # aceptar (email, password) per-call y switchear aquí. Por ahora
+            # asumimos que todos los managers comparten la cuenta del .env.
+            out[m['id_manager']] = _sincronizar_one(m['id_manager'])
+        except Exception as e:
+            log.exception(f"sincronizar_log manager={m['id_manager']}")
+            out[m['id_manager']] = {'ok': False, 'error': str(e)}
+    return {'ok': True, 'managers': out, 'total_managers': len(managers)}
+
+
+def _sincronizar_one(id_manager):
+    """Sincroniza un manager concreto. Lógica original."""
     try:
         clientes = nc.get_clientes() or []
     except Exception as e:

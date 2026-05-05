@@ -255,6 +255,13 @@ def update_lead(lead_id):
                    'email_from','phone','date_deadline','expected_revenue',
                    'probability','lost_reason_id')
         vals = {k: d[k] for k in allowed if k in d}
+        # Validación de tipos: stage_id / lost_reason_id deben ser enteros
+        for int_field in ('stage_id', 'lost_reason_id'):
+            if int_field in vals:
+                try:
+                    vals[int_field] = int(vals[int_field])
+                except (TypeError, ValueError):
+                    return jsonify({'ok': False, 'error': f'{int_field}_invalido', 'value': vals[int_field]}), 400
         # Campos que NO van a Odoo, pero sí a lead_asignacion
         lost_reason  = (d.get('lost_reason') or '').strip() or None
         qualification_patch = d.get('qualification') if isinstance(d.get('qualification'), dict) else None
@@ -363,7 +370,7 @@ def list_stages():
     """Lista las etapas del pipeline CRM (crm.stage)."""
     try:
         oc = get_cuotas()
-        ids = oc._call('crm.stage','search',[],{'order':'sequence,id'})
+        ids = oc._call('crm.stage','search',[], order='sequence,id')
         if not ids: return jsonify({'ok': True, 'stages': []})
         stages = oc._call('crm.stage','read', ids,
             ['id','name','sequence','is_won','fold'])

@@ -438,6 +438,58 @@ CREATE INDEX IF NOT EXISTS idx_cligym_cliente ON cliente_gympass(cliente_idnoofi
 CREATE INDEX IF NOT EXISTS idx_cligym_manager ON cliente_gympass(id_manager);
 
 
+-- ─── CATEGORÍAS DE CLIENTE (manager-level catalog) ──────────────────────────
+-- Reemplaza progresivamente al campo Gympass hardcoded. Cada cliente puede
+-- tener una sola categoría (Gympass, Trabajador, Invitado, …). Sin asignación
+-- = "Pagador con cuota" implícito. Se sincronizará con NoofitPro cuando el
+-- servicio remoto esté disponible (campo noofit_alias para mapping).
+CREATE TABLE IF NOT EXISTS categoria (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  nombre                   VARCHAR(80) NOT NULL,
+  color                    VARCHAR(20),                 -- hex o nombre badge (purple/cyan/amber/…)
+  puede_reservar           BOOLEAN NOT NULL DEFAULT TRUE,
+  tiene_cuota              BOOLEAN NOT NULL DEFAULT FALSE,
+  activa                   BOOLEAN NOT NULL DEFAULT TRUE,
+  noofit_alias             VARCHAR(80),                 -- para mapping futuro con NoofitPro
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT categoria_unique UNIQUE (id_manager, nombre)
+);
+CREATE INDEX IF NOT EXISTS idx_categoria_manager ON categoria(id_manager);
+
+
+-- ─── CLIENTE ↔ CATEGORÍA (asignación 1:1) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS cliente_categoria (
+  id_manager               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  categoria_id             INTEGER NOT NULL REFERENCES categoria(id) ON DELETE CASCADE,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, cliente_idnoofit)
+);
+CREATE INDEX IF NOT EXISTS idx_clicat_categoria ON cliente_categoria(categoria_id);
+CREATE INDEX IF NOT EXISTS idx_clicat_manager   ON cliente_categoria(id_manager);
+
+
+-- ─── MANAGER CONFIG (multi-tenant — N managers, cada uno con sus creds NoofitPro) ──
+-- Cada Round que se conecta tiene su propia cuenta NoofitPro. Los crons
+-- iteran sobre las filas activas de esta tabla para procesar a todos los
+-- managers en lugar de leer un único id por env (ROUND_DEFAULT_MANAGER).
+-- Compat: si la tabla está vacía, se usa el env como fallback.
+CREATE TABLE IF NOT EXISTS manager_config (
+  id_manager               VARCHAR(64) PRIMARY KEY,
+  nombre                   VARCHAR(120),
+  noofit_email             VARCHAR(160),
+  noofit_password          TEXT,                          -- TODO: cifrar at-rest con master key
+  activo                   BOOLEAN NOT NULL DEFAULT TRUE,
+  notas                    TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_manager_config_activo ON manager_config(activo);
+
+
 -- ─── TRIGGER updated_at ──────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION trg_set_updated_at() RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -455,6 +507,9 @@ DROP TRIGGER IF EXISTS trg_email_tpl_upd    ON email_template;
 DROP TRIGGER IF EXISTS trg_slot_reserva_upd ON slot_reserva;
 DROP TRIGGER IF EXISTS trg_social_cuenta_upd ON social_cuenta;
 DROP TRIGGER IF EXISTS trg_social_post_upd  ON social_post;
+DROP TRIGGER IF EXISTS trg_categoria_upd     ON categoria;
+DROP TRIGGER IF EXISTS trg_cli_categoria_upd ON cliente_categoria;
+DROP TRIGGER IF EXISTS trg_manager_config_upd ON manager_config;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -480,10 +535,135 @@ CREATE TRIGGER trg_social_cuenta_upd BEFORE UPDATE ON social_cuenta
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_social_post_upd  BEFORE UPDATE ON social_post
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_categoria_upd     BEFORE UPDATE ON categoria
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_cli_categoria_upd BEFORE UPDATE ON cliente_categoria
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_manager_config_upd BEFORE UPDATE ON manager_config
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
+
+
+# Categorías por defecto que se sembran la primera vez que un manager
+# accede al sistema. NoofitPro categorías habituales: Gympass, Trabajador,
+# Invitado. El "Pagador con cuota" no se siembra porque equivale a "sin
+# categoría" en la lista (queda vacía en la columna).
+DEFAULT_CATEGORIAS = [
+    # (nombre,       color,    puede_reservar, tiene_cuota)
+    ('Gympass',     'purple',  True,  False),
+    ('Trabajador',  'cyan',    True,  False),
+    ('Invitado',    'amber',   True,  False),
+]
+
+
+def seed_categorias_for_manager(id_manager: str) -> None:
+    """Crea las categorías por defecto si el manager no tiene ninguna.
+
+    Tras sembrar, auto-migra los clientes marcados en `cliente_gympass`
+    al catálogo nuevo (asignándolos a la categoría "Gympass") para que el
+    sistema heredado siga funcionando sin re-asignación manual.
+
+    Idempotente: usa ON CONFLICT en todos los inserts.
+    """
+    if not id_manager:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        # Si ya hay alguna, no sembramos (el manager pudo borrar las default a propósito)
+        cur.execute("SELECT 1 FROM categoria WHERE id_manager=%s LIMIT 1", (str(id_manager),))
+        ya_tiene = cur.fetchone() is not None
+        if not ya_tiene:
+            for nombre, color, puede_reservar, tiene_cuota in DEFAULT_CATEGORIAS:
+                cur.execute("""
+                    INSERT INTO categoria (id_manager, nombre, color, puede_reservar, tiene_cuota, activa)
+                    VALUES (%s,%s,%s,%s,%s,TRUE)
+                    ON CONFLICT (id_manager, nombre) DO NOTHING
+                """, (str(id_manager), nombre, color, puede_reservar, tiene_cuota))
+
+        # Auto-migración cliente_gympass → cliente_categoria con categoría "Gympass".
+        # Idempotente: ON CONFLICT no hace nada si ya está asignado.
+        cur.execute("""
+            SELECT id FROM categoria
+             WHERE id_manager=%s AND nombre='Gympass'
+        """, (str(id_manager),))
+        cat_gympass = cur.fetchone()
+        if cat_gympass:
+            cur.execute("""
+                INSERT INTO cliente_categoria (id_manager, cliente_idnoofit, categoria_id)
+                SELECT id_manager, cliente_idnoofit, %s
+                  FROM cliente_gympass
+                 WHERE id_manager = %s
+                ON CONFLICT (id_manager, cliente_idnoofit) DO NOTHING
+            """, (cat_gympass['id'], str(id_manager)))
 
 
 def init_schema():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+    # Bootstrap manager_config con el manager por defecto del .env
+    # si la tabla está vacía y existen las variables de entorno necesarias.
+    bootstrap_default_manager()
+
+
+def bootstrap_default_manager() -> None:
+    """Si manager_config está vacío, mete una fila desde las variables de
+    entorno (ROUND_DEFAULT_MANAGER + NOOFIT_EMAIL/NOOFIT_PASSWORD).
+
+    Pensado para que el primer despliegue funcione sin tocar manualmente la
+    tabla. Cuando haya N managers, el admin añadirá filas con sus propias
+    credenciales y los crons las procesarán automáticamente.
+    """
+    import os
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '').strip()
+    email = os.getenv('NOOFIT_EMAIL', '').strip()
+    pwd = os.getenv('NOOFIT_PASSWORD', '').strip()
+    if not id_manager:
+        return
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM manager_config LIMIT 1")
+            if cur.fetchone():
+                return  # ya hay datos, no machacamos
+            cur.execute("""
+                INSERT INTO manager_config (id_manager, nombre, noofit_email, noofit_password, activo, notas)
+                VALUES (%s, %s, %s, %s, TRUE, %s)
+                ON CONFLICT (id_manager) DO NOTHING
+            """, (id_manager, 'Round (default)', email or None, pwd or None,
+                  'Bootstrap inicial desde .env. Editar para añadir más managers.'))
+    except Exception:
+        # init_schema no debe romper la app si esto falla
+        pass
+
+
+def iter_active_managers():
+    """Devuelve la lista de managers activos como dicts.
+
+    Cada dict: {id_manager, nombre, noofit_email, noofit_password}.
+
+    Si la tabla manager_config está vacía (despliegue antiguo),
+    devuelve un único manager construido desde el env (fallback).
+    """
+    import os
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_manager, nombre, noofit_email, noofit_password
+                  FROM manager_config
+                 WHERE activo = TRUE
+                 ORDER BY id_manager
+            """)
+            rows = cur.fetchall()
+        if rows:
+            return rows
+    except Exception:
+        pass
+    # Fallback al env (legacy)
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '').strip()
+    if not id_manager:
+        return []
+    return [{
+        'id_manager': id_manager,
+        'nombre': 'Round (env fallback)',
+        'noofit_email': os.getenv('NOOFIT_EMAIL', ''),
+        'noofit_password': os.getenv('NOOFIT_PASSWORD', ''),
+    }]

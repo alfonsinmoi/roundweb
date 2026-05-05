@@ -6,6 +6,7 @@ import ERPModal from '../../components/ERPModal'
 import { getClientes, peekCache, peekPersistedCache, getERPConfiguraciones, invalidateCache, clearPersistedCache } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import { useGympassMap } from '../../hooks/useGympassMap'
+import { useCategoriasMap } from '../../hooks/useCategoriasMap'
 import { getRoundIdentity, fechaBajaPorCliente } from '../../utils/configApi'
 
 const PAGE_SIZE = 15
@@ -41,9 +42,13 @@ export default function ClientList() {
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
   const [filtro, setFiltro] = useState('activos')
-  const [filtroGympass, setFiltroGympass] = useState(false)
-  const [clientes, setClientes] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [filtroCategoria, setFiltroCategoria] = useState('')   // '' = todas, 'sin' = sin categoría, '<id>' = id específico
+  // Inicializamos clientes con cualquier cache disponible (memoria o sessionStorage)
+  // para evitar el spinner full-page cuando ya tenemos datos.
+  const [clientes, setClientes] = useState(() => peekPersistedCache('clientes') || [])
+  // loading=true SOLO si no había nada cacheado de entrada.
+  const [loading, setLoading] = useState(() => !peekPersistedCache('clientes'))
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [erpCliente, setErpCliente] = useState(null)
   const [page, setPage] = useState(1)
@@ -57,18 +62,14 @@ export default function ClientList() {
     let active = true
     setError('')
 
-    // 1. Pintado instantáneo: memoria o sessionStorage (sobrevive a F5)
-    const cachedClientes = peekPersistedCache('clientes')
-    if (cachedClientes) {
-      setClientes(cachedClientes)
-      setLoading(false)
-    }
+    const hadCache = !!peekPersistedCache('clientes')
+    setRefreshing(true)
 
-    // 2. Refresco en segundo plano
+    // Refresco en segundo plano (la cache ya pintó la lista al inicializar el state)
     getClientes()
       .then(cli => { if (active) setClientes(cli) })
-      .catch(err => { if (active && !cachedClientes) setError(err.message) })
-      .finally(() => { if (active) setLoading(false) })
+      .catch(err => { if (active && !hadCache) setError(err.message) })
+      .finally(() => { if (active) { setLoading(false); setRefreshing(false) } })
 
     return () => { active = false }
   }, [])
@@ -111,18 +112,24 @@ export default function ClientList() {
   const clientFullName = c => `${c.nombre || c.name || ''} ${c.apellidos || c.surname || ''}`.trim()
 
   // Detección de cliente Gympass: tira de la BD propia del VPS (cliente_gympass)
-  // y como fallback usa el alias.
+  // y como fallback usa el alias. (Compat — se mostrará si no tiene categoría asignada)
   const { isGympass, getGympassId } = useGympassMap()
+  // Sistema nuevo: catálogo de categorías + asignación cliente↔categoría
+  const { categorias, getCategoria } = useCategoriasMap()
 
   const filtered = useMemo(() => clientes.filter(c => {
     const q = deferredSearch.toLowerCase()
     const match = `${clientFullName(c)} ${c.email} ${c.gympassId || ''} ${c.alias || ''}`.toLowerCase().includes(q)
     if (!match) return false
-    if (filtroGympass && !isGympass(c)) return false
-    if (filtro === 'activos') return c.enabled !== false
-    if (filtro === 'archivados') return c.enabled === false
+    if (filtroCategoria) {
+      const cat = getCategoria(c)
+      if (filtroCategoria === 'sin') { if (cat) return false }
+      else if (!cat || String(cat.id) !== String(filtroCategoria)) return false
+    }
+    if (filtro === 'activos')   return c.enabled !== false
+    if (filtro === 'inactivos') return c.enabled === false
     return true
-  }), [clientes, deferredSearch, filtro, filtroGympass])
+  }), [clientes, deferredSearch, filtro, filtroCategoria, getCategoria])
 
   // Paginación: calcular total y ajustar la página actual si el filtro la deja
   // fuera de rango (p.ej. estábamos en pág. 5 y el nuevo filtro sólo tiene 3).
@@ -131,7 +138,9 @@ export default function ClientList() {
     if (page > totalPages) setPage(totalPages)
   }, [page, totalPages])
 
-  if (loading) return (
+  // Solo bloqueamos con spinner si NO tenemos absolutamente nada que pintar.
+  // Si hay datos cacheados, los mostramos al instante y refrescamos en background.
+  if (loading && clientes.length === 0) return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '120px 0' }} role="status" aria-label="Cargando clientes">
       <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
     </div>
@@ -183,7 +192,7 @@ export default function ClientList() {
           </div>
 
           <div role="group" aria-label="Filtrar clientes" style={{ display: 'flex', borderRadius: 10, overflow: 'hidden', border: '1px solid var(--line)' }}>
-            {[['activos','Activos'],['archivados','Archivados'],['todos','Todos']].map(([v, l]) => (
+            {[['activos','Activos'],['inactivos','Inactivos'],['todos','Todos']].map(([v, l]) => (
               <button key={v} onClick={() => { setFiltro(v); setPage(1) }}
                       aria-pressed={filtro === v}
                       style={{
@@ -197,19 +206,22 @@ export default function ClientList() {
             ))}
           </div>
 
-          <button onClick={() => { setFiltroGympass(g => !g); setPage(1) }}
-                  aria-pressed={filtroGympass}
-                  title={filtroGympass ? 'Mostrar todos' : 'Solo Gympass'}
+          <select value={filtroCategoria}
+                  onChange={e => { setFiltroCategoria(e.target.value); setPage(1) }}
+                  aria-label="Filtrar por categoría"
+                  title="Filtrar por categoría"
                   style={{
-                    padding: '8px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    borderRadius: 10,
-                    background: filtroGympass ? 'rgba(167,139,250,0.18)' : 'var(--bg-2)',
-                    color: filtroGympass ? 'var(--violet)' : 'var(--text-2)',
-                    border: `1px solid ${filtroGympass ? 'rgba(167,139,250,0.35)' : 'var(--line)'}`,
-                    transition: 'all 0.1s', display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '8px 12px', fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                    borderRadius: 10, background: 'var(--bg-2)',
+                    color: filtroCategoria ? 'var(--text-0)' : 'var(--text-2)',
+                    border: '1px solid var(--line)',
                   }}>
-            Gympass
-          </button>
+            <option value="">Todas las categorías</option>
+            <option value="sin">Sin categoría (pagador con cuota)</option>
+            {categorias.filter(c => c.activa).map(c => (
+              <option key={c.id} value={c.id}>{c.nombre}</option>
+            ))}
+          </select>
 
           <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
             <Plus size={15} aria-hidden="true" /> Nuevo cliente
@@ -219,11 +231,19 @@ export default function ClientList() {
         {(() => {
           const sinFoto = filtered.filter(c => !c.imgUrl || typeof c.imgUrl !== 'string' || !c.imgUrl.trim()).length
           return (
-            <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }} aria-live="polite">
-              {filtered.length} cliente{filtered.length !== 1 ? 's' : ''}
-              {filtered.length > 0 && (
-                <span style={{ marginLeft: 10 }}>
-                  · <strong style={{ color: sinFoto > 0 ? 'var(--amber)' : 'var(--text-2)' }}>{sinFoto}</strong> sin foto
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }} aria-live="polite">
+              <span>
+                {filtered.length} cliente{filtered.length !== 1 ? 's' : ''}
+                {filtered.length > 0 && (
+                  <span style={{ marginLeft: 10 }}>
+                    · <strong style={{ color: sinFoto > 0 ? 'var(--amber)' : 'var(--text-2)' }}>{sinFoto}</strong> sin foto
+                  </span>
+                )}
+              </span>
+              {refreshing && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--text-3)' }}>
+                  <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+                  actualizando…
                 </span>
               )}
             </p>
@@ -238,7 +258,7 @@ export default function ClientList() {
         <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 0, padding: '8px 20px', background: 'var(--bg-3)', borderBottom: '1px solid var(--line)' }}>
-            {['Cliente', 'Gympass', 'Email', 'Estado', 'Teléfono', 'DNI', ...(tieneERP ? [''] : [])].map((h, i) => (
+            {['Cliente', 'Categoría', 'Email', 'Estado', 'Teléfono', 'DNI', ...(tieneERP ? [''] : [])].map((h, i) => (
               <span key={i} style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>{h}</span>
             ))}
           </div>
@@ -290,14 +310,34 @@ export default function ClientList() {
                 </div>
               </div>
 
-              {/* Gympass */}
-              {isGympass(c) ? (
-                <div>
-                  <Badge color="purple" title={getGympassId(c) || c.alias || 'Gympass'}>Gympass</Badge>
-                </div>
-              ) : (
-                <p style={{ fontSize: 13, color: 'var(--text-3)' }}>—</p>
-              )}
+              {/* Categoría */}
+              {(() => {
+                const cat = getCategoria(c)
+                if (cat) {
+                  const color = cat.color || 'purple'
+                  const titleParts = [cat.nombre]
+                  if (!cat.activa) titleParts.push('inactiva')
+                  if (!cat.puede_reservar) titleParts.push('no reserva clases')
+                  if (!cat.tiene_cuota) titleParts.push('sin cuota')
+                  return (
+                    <div>
+                      <Badge color={color} title={titleParts.join(' · ')}>
+                        {cat.nombre}
+                      </Badge>
+                    </div>
+                  )
+                }
+                // Compat: marcar gympass detectado por alias si no tiene categoría
+                if (isGympass(c)) {
+                  return (
+                    <div>
+                      <Badge color="purple" title={getGympassId(c) || c.alias || 'Gympass (alias)'}>Gympass</Badge>
+                    </div>
+                  )
+                }
+                // Sin categoría = pagador con cuota → vacío
+                return <p style={{ fontSize: 13, color: 'var(--text-3)' }}>—</p>
+              })()}
 
               {/* Email */}
               <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 12 }} title={c.email}>
@@ -321,11 +361,11 @@ export default function ClientList() {
                   }
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <Badge color="red"><Archive size={10} aria-hidden="true" /> Desactivo</Badge>
+                      <Badge color="red"><Archive size={10} aria-hidden="true" /> Inactivo</Badge>
                       {fbStr && (
                         <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}
-                              title={`Detectado como archivado el ${fbStr}`}>
-                          baja: {fbStr}
+                              title={`Detectado como inactivo el ${fbStr}`}>
+                          inactivo: {fbStr}
                         </span>
                       )}
                       {motivo && (
