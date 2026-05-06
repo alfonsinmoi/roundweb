@@ -111,22 +111,9 @@ export default function NotificacionesPage() {
           Notificaciones
         </h1>
       </div>
-      <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 12 }}>
+      <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 20 }}>
         Centro de retención y comunicación. Envía pushes a tus clientes via mynoofit y agrupa por sección.
       </p>
-
-      {/* Banner: estado integración OneSignal con mynoofit */}
-      <div style={{
-        padding: '10px 14px', borderRadius: 10, marginBottom: 16,
-        background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)',
-        fontSize: 12, color: 'var(--text-1)',
-      }}>
-        ⚠️ <strong>Estado integración mynoofit:</strong> NoofitPro aún no vincula a sus
-        clientes con OneSignal mediante <code style={{ background: 'var(--bg-3)', padding: '1px 5px', borderRadius: 4, fontSize: 11 }}>OneSignal.login(idCliente)</code>.
-        Hasta que lo hagan, los pushes con audiencia <strong>"un cliente"</strong> fallarán
-        porque OneSignal no sabe a qué dispositivo enviar. <strong>Broadcast</strong> sí funciona
-        si hay devices suscritos. La notificación se persiste igualmente para auditoría.
-      </div>
 
       {/* Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
