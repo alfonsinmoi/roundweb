@@ -7,7 +7,7 @@ import {
   Activity, Smartphone, Settings, Shield, Mail, Phone, Pencil, Dumbbell,
   BarChart3, TrendingUp, TrendingDown, Clock, Users, Download, Code, Copy, Check,
   Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2, Receipt, RefreshCw,
-  QrCode,
+  QrCode, Bell,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
@@ -23,7 +23,8 @@ import {
 } from '../../utils/api'
 import { useGympassMap } from '../../hooks/useGympassMap'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
-import { clienteFechas, getRoundIdentity } from '../../utils/configApi'
+import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate } from '../../utils/configApi'
+import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
 
@@ -32,6 +33,7 @@ const tabs = [
   { id: 'clases',   label: 'Clases realizadas', icon: CalendarCheck },
   { id: 'analisis', label: 'Análisis uso',      icon: BarChart3 },
   { id: 'cuotas',   label: 'Cuotas',            icon: Receipt },
+  { id: 'notificaciones', label: 'Notificaciones', icon: Bell },
   { id: 'erp',      label: 'Datos ERP',         icon: Send },
 ]
 
@@ -407,11 +409,12 @@ export default function ClientProfile() {
         ))}
       </div>
 
-      {tab === 'personal' && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
-      {tab === 'clases'   && <TabClases clienteId={cliente.id} />}
-      {tab === 'analisis' && <TabAnalisis cliente={cliente} />}
-      {tab === 'cuotas'   && <TabCuotas cliente={cliente} />}
-      {tab === 'erp'      && <TabERP clienteId={cliente.id} cliente={cliente} />}
+      {tab === 'personal'        && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
+      {tab === 'clases'          && <TabClases clienteId={cliente.id} />}
+      {tab === 'analisis'        && <TabAnalisis cliente={cliente} />}
+      {tab === 'cuotas'          && <TabCuotas cliente={cliente} />}
+      {tab === 'notificaciones'  && <TabNotificaciones cliente={cliente} />}
+      {tab === 'erp'             && <TabERP clienteId={cliente.id} cliente={cliente} />}
 
       {/* Dialogs */}
       <ConfirmDialog
@@ -633,6 +636,191 @@ function TabPersonal({ cliente, onClienteUpdate }) {
     </div>
   )
 }
+
+// ── Tab: Notificaciones recibidas por el cliente ──────────────────────────
+function TabNotificaciones({ cliente }) {
+  const { user } = useAuth()
+  const identity = (() => { try { return getRoundIdentity(user) } catch { return null } })()
+  const toast = useToast()
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filtros, setFiltros] = useState({ seccion: '', tipo: '' })
+  const [modalNuevo, setModalNuevo] = useState(false)
+
+  async function reload() {
+    if (!identity?.managerId) return
+    setLoading(true)
+    try {
+      const list = await notifPorCliente(identity, cliente.id, filtros)
+      setItems(list)
+    } catch (e) { toast.error(`Error: ${e.message}`) }
+    setLoading(false)
+  }
+  useEffect(() => { reload() /* eslint-disable-next-line */ }, [cliente?.id, filtros.seccion, filtros.tipo])
+
+  const fmt = (iso) => {
+    if (!iso) return '—'
+    try { return new Date(iso).toLocaleString('es-ES', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) }
+    catch { return '—' }
+  }
+
+  return (
+    <div role="tabpanel" aria-label="Notificaciones del cliente">
+      <Card style={{ padding: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+          <SectionTitle>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Bell size={16} aria-hidden="true" /> Notificaciones recibidas
+            </span>
+          </SectionTitle>
+          <Btn variant="primary" size="sm" onClick={() => setModalNuevo(true)}>
+            <Send size={13} /> Notificar
+          </Btn>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          <select value={filtros.seccion}
+                  onChange={e => setFiltros(f => ({ ...f, seccion: e.target.value, tipo: '' }))}
+                  style={selStyle} aria-label="Sección">
+            <option value="">Todas las secciones</option>
+            {NOTIF_SECCIONES.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+          </select>
+          <select value={filtros.tipo}
+                  onChange={e => setFiltros(f => ({ ...f, tipo: e.target.value }))}
+                  style={selStyle} aria-label="Tipo">
+            <option value="">Todos los tipos</option>
+            {(filtros.seccion ? tiposDeSeccion(filtros.seccion) : NOTIF_TIPOS)
+              .map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+          </select>
+        </div>
+
+        {loading ? (
+          <div style={{ display:'flex', justifyContent:'center', padding: 40 }}>
+            <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} />
+          </div>
+        ) : items.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-3)', textAlign: 'center', padding: 30 }}>
+            Sin notificaciones para este cliente.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {items.map(n => (
+              <div key={n.destinatario_id} style={{
+                padding: 12, borderRadius: 10, border: '1px solid var(--line)', background: 'var(--bg-1)',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Badge color={NOTIF_SECCIONES.find(s => s.id === n.seccion)?.color || 'gray'}>
+                      {NOTIF_SECCIONES.find(s => s.id === n.seccion)?.nombre || n.seccion}
+                    </Badge>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                      {NOTIF_TIPOS.find(t => t.id === n.tipo)?.nombre || n.tipo}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{fmt(n.fecha_envio || n.created_at)}</span>
+                </div>
+                <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)' }}>{n.titulo}</p>
+                {n.cuerpo && (
+                  <p style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>{n.cuerpo}</p>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                    Origen: {n.origen}{n.origen_ref ? ` · ${n.origen_ref}` : ''}
+                  </span>
+                  {n.leida ? (
+                    <Badge color="green">Leída · {fmt(n.fecha_lectura)}</Badge>
+                  ) : (
+                    <Badge color="gray">No leída</Badge>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {modalNuevo && (
+        <NotifNuevoModal cliente={cliente} identity={identity}
+                         onClose={() => setModalNuevo(false)}
+                         onCreated={() => { setModalNuevo(false); reload() }} />
+      )}
+    </div>
+  )
+}
+
+
+function NotifNuevoModal({ cliente, identity, onClose, onCreated }) {
+  const toast = useToast()
+  const [form, setForm] = useState({ seccion: 'cobros', tipo: '', titulo: '', cuerpo: '' })
+  const [saving, setSaving] = useState(false)
+  const tipos = tiposDeSeccion(form.seccion)
+  useEffect(() => {
+    if (!tipos.find(t => t.id === form.tipo)) setForm(f => ({ ...f, tipo: tipos[0]?.id || '' }))
+  // eslint-disable-next-line
+  }, [form.seccion])
+
+  const enviar = async () => {
+    if (!form.titulo) { toast.error('Título obligatorio'); return }
+    setSaving(true)
+    try {
+      const r = await notifEnvioCreate(identity, {
+        seccion: form.seccion, tipo: form.tipo,
+        titulo: form.titulo, cuerpo: form.cuerpo || null,
+        audience: { tipo: 'cliente', ref: cliente.id },
+      })
+      if (r.estado === 'fallida') toast.error(`Falló: ${r.error}`)
+      else toast.success('Notificación enviada')
+      onCreated()
+    } catch (e) { toast.error(`Error: ${e.message}`) }
+    setSaving(false)
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 20,
+    }} onClick={onClose}>
+      <Card style={{ padding: 0, maxWidth: 480, width: '100%' }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: 20, borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0, fontFamily: 'Outfit', fontSize: 16, fontWeight: 700 }}>
+            Notificar a {cliente.name} {cliente.surname}
+          </h3>
+          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-3)' }}><X size={14} /></button>
+        </div>
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <select value={form.seccion} onChange={e => setForm(f => ({ ...f, seccion: e.target.value }))} style={selStyle}>
+              {NOTIF_SECCIONES.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+            </select>
+            <select value={form.tipo} onChange={e => setForm(f => ({ ...f, tipo: e.target.value }))} style={selStyle}>
+              {tipos.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
+            </select>
+          </div>
+          <input value={form.titulo} onChange={e => setForm(f => ({ ...f, titulo: e.target.value }))}
+                 placeholder="Título *" style={inpStyle} />
+          <textarea value={form.cuerpo} onChange={e => setForm(f => ({ ...f, cuerpo: e.target.value }))}
+                    rows={3} placeholder="Mensaje" style={{ ...inpStyle, fontFamily: 'inherit' }} />
+        </div>
+        <div style={{ padding: 14, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancelar</Btn>
+          <Btn variant="primary" onClick={enviar} disabled={saving}>
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} Enviar
+          </Btn>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+const selStyle = {
+  padding: '8px 10px', borderRadius: 8, fontSize: 13,
+  background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)', cursor: 'pointer',
+}
+const inpStyle = {
+  width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 13,
+  background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+}
+
 
 // ── Card: Categoría + Fechas clave ─────────────────────────────────────────
 function CategoriaYFechasCard({ cliente }) {

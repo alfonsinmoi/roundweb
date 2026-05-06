@@ -70,6 +70,39 @@ BEGIN
     END;
   END IF;
 
+  -- centro_contacto: CIF + razón social del centro/empresa del trainer
+  -- (para validar que las facturas recibidas coincidan con la empresa).
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='centro_contacto') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='centro_contacto' AND column_name='cif') THEN
+      ALTER TABLE centro_contacto ADD COLUMN cif VARCHAR(40);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='centro_contacto' AND column_name='razon_social') THEN
+      ALTER TABLE centro_contacto ADD COLUMN razon_social VARCHAR(160);
+    END IF;
+  END IF;
+
+  -- gasto_documento: subtipo (ticket|factura) + receptor + flags doble auth
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='gasto_documento') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='gasto_documento' AND column_name='subtipo') THEN
+      ALTER TABLE gasto_documento ADD COLUMN subtipo VARCHAR(20);  -- 'ticket'|'factura'|'otro'
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='gasto_documento' AND column_name='recipiente_nombre') THEN
+      ALTER TABLE gasto_documento ADD COLUMN recipiente_nombre VARCHAR(160);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='gasto_documento' AND column_name='recipiente_vat') THEN
+      ALTER TABLE gasto_documento ADD COLUMN recipiente_vat VARCHAR(40);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='gasto_documento' AND column_name='requiere_autorizacion') THEN
+      ALTER TABLE gasto_documento ADD COLUMN requiere_autorizacion BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='gasto_documento' AND column_name='autorizado_doble') THEN
+      ALTER TABLE gasto_documento ADD COLUMN autorizado_doble BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='gasto_documento' AND column_name='autorizado_doble_by') THEN
+      ALTER TABLE gasto_documento ADD COLUMN autorizado_doble_by VARCHAR(80);
+    END IF;
+  END IF;
+
   -- Phase D: campos de qualification + scoring + lost_reason en lead_asignacion
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='lead_asignacion') THEN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='lead_asignacion' AND column_name='qualification') THEN
@@ -490,6 +523,240 @@ CREATE TABLE IF NOT EXISTS manager_config (
 CREATE INDEX IF NOT EXISTS idx_manager_config_activo ON manager_config(activo);
 
 
+-- ─── NOTIFICACIONES (push via OneSignal a la app mynoofit) ─────────────────
+-- Estructura:
+--  notif_envio        — 1 fila por envío conceptual (1 manda → N reciben).
+--                       Guarda título, cuerpo, sección, tipo, estado, audiencia,
+--                       y un onesignal_id si OneSignal aceptó el push masivo.
+--  notif_destinatario — 1 fila por cliente que recibió. Aquí va el tracking
+--                       individual (leida, fecha_lectura). La app llama a
+--                       PUT /notif/<id>/leida para marcarlo.
+--  notif_config       — config per (manager,trainer) de cuándo dispararse las
+--                       notificaciones automáticas (día del mes, on/off por
+--                       tipo, plantillas custom).
+--
+-- Catálogo de SECCIONES y TIPOS NO se guarda en BD: es un enum hardcoded en
+-- app.notif_catalog (Python) + espejo en frontend. Si se añade un tipo, va
+-- al deploy del código, no a la BD.
+CREATE TABLE IF NOT EXISTS notif_envio (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64),                       -- NULL = a nivel manager (broadcast manager-wide)
+  seccion                  VARCHAR(20) NOT NULL,              -- 'cobros'|'clases'|'centro'|'noticias'
+  tipo                     VARCHAR(40) NOT NULL,              -- ver notif_catalog.TIPOS
+  scope                    VARCHAR(20) NOT NULL,              -- 'cliente'|'lista'|'cluster'|'broadcast'
+  scope_ref                JSONB,                              -- cluster_id, lista de ids, filtros, NULL para broadcast
+  titulo                   VARCHAR(160) NOT NULL,
+  cuerpo                   TEXT,
+  cuerpo_html              TEXT,                               -- para noticias (webview)
+  url                      TEXT,                               -- deep link opcional
+  programada_at            TIMESTAMPTZ,                        -- futuro envío programado (si está, el cron lo dispara)
+  fecha_envio              TIMESTAMPTZ,                        -- cuando se envió a OneSignal
+  fecha_desaparicion       TIMESTAMPTZ,                        -- la app oculta la notif tras esto
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente',  -- 'pendiente'|'enviada'|'fallida'|'cancelada'
+  onesignal_id             VARCHAR(80),                        -- id devuelto por OneSignal /notifications
+  error                    TEXT,                               -- si falló envío
+  origen                   VARCHAR(40) NOT NULL DEFAULT 'manual',
+  origen_ref               VARCHAR(120),                       -- ej "recibo:1234" o "pago:789"
+  total_destinatarios      INTEGER NOT NULL DEFAULT 0,
+  created_by               VARCHAR(80),                        -- email del manager/trainer que creó
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT notif_envio_seccion_chk CHECK (seccion IN ('cobros','clases','centro','noticias')),
+  CONSTRAINT notif_envio_estado_chk  CHECK (estado IN ('pendiente','enviada','fallida','cancelada')),
+  CONSTRAINT notif_envio_scope_chk   CHECK (scope IN ('cliente','lista','cluster','broadcast','subscription'))
+);
+CREATE INDEX IF NOT EXISTS idx_notif_envio_manager      ON notif_envio(id_manager, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_envio_trainer      ON notif_envio(id_trainer, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_envio_seccion_tipo ON notif_envio(seccion, tipo);
+CREATE INDEX IF NOT EXISTS idx_notif_envio_estado       ON notif_envio(estado) WHERE estado IN ('pendiente','fallida');
+CREATE INDEX IF NOT EXISTS idx_notif_envio_programada   ON notif_envio(programada_at) WHERE programada_at IS NOT NULL AND estado = 'pendiente';
+
+CREATE TABLE IF NOT EXISTS notif_destinatario (
+  id                       SERIAL PRIMARY KEY,
+  envio_id                 INTEGER NOT NULL REFERENCES notif_envio(id) ON DELETE CASCADE,
+  id_manager               VARCHAR(64) NOT NULL,               -- denorm para queries rápidas
+  id_trainer               VARCHAR(64),                         -- denorm
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  leida                    BOOLEAN NOT NULL DEFAULT FALSE,
+  fecha_lectura            TIMESTAMPTZ,
+  onesignal_player_id      VARCHAR(80),                         -- opcional, si OneSignal devuelve player_ids
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_notif_dest_cliente ON notif_destinatario(cliente_idnoofit, leida, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_dest_envio   ON notif_destinatario(envio_id);
+CREATE INDEX IF NOT EXISTS idx_notif_dest_manager ON notif_destinatario(id_manager, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS notif_config (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64),                         -- NULL = config manager-wide (default)
+  -- Día del mes (1..31, 0=desactivado) en que el cron busca recibos efectivo impagados y avisa
+  dia_envio_impago_efectivo INTEGER NOT NULL DEFAULT 5,
+  -- Activadores per tipo automático (manager o trainer pueden silenciar)
+  auto_impago_efectivo     BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_devolucion          BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_enlace_pago         BOOLEAN NOT NULL DEFAULT TRUE,
+  auto_pago_alta           BOOLEAN NOT NULL DEFAULT TRUE,
+  -- Plantillas custom: { tipo: {titulo: '...', cuerpo: '...'} } sobreescriben los defaults
+  -- Variables soportadas: {{cliente_nombre}}, {{importe}}, {{fecha_emision}}, {{centro}}, etc.
+  plantillas               JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT notif_config_unique UNIQUE (id_manager, id_trainer),
+  CONSTRAINT notif_config_dia_chk CHECK (dia_envio_impago_efectivo BETWEEN 0 AND 31)
+);
+CREATE INDEX IF NOT EXISTS idx_notif_cfg_manager ON notif_config(id_manager);
+
+
+-- ─── CONTABILIDAD ──────────────────────────────────────────────────────────
+-- Sistema de gestión de gastos / nóminas / extractos / impuestos del centro.
+-- Round Config sirve como capa de UI + storage de archivos. La contabilidad
+-- real (apuntes, IVA, conciliación) vive en Odoo (round_facturacion). Cada
+-- documento validado crea/actualiza un account.move en Odoo y guardamos el
+-- odoo_move_id como puente.
+
+-- Toggle "se controla la contabilidad de este trainer".
+-- Si activo=false, la pestaña Contabilidad no aparece para ese trainer.
+CREATE TABLE IF NOT EXISTS trainer_contab_config (
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64) NOT NULL,
+  activo                   BOOLEAN NOT NULL DEFAULT FALSE,
+  notas                    TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id_trainer)
+);
+
+-- Catálogo de categorías de gasto per manager.
+-- Mapping a cuenta contable Odoo (account.account.code) — el manager puede
+-- editarlo para alinearse a su plan contable.
+CREATE TABLE IF NOT EXISTS gasto_categoria (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  codigo                   VARCHAR(40) NOT NULL,            -- ej 'luz', 'irpf', 'nomina'
+  nombre                   VARCHAR(120) NOT NULL,
+  tipo                     VARCHAR(20) NOT NULL,            -- 'gasto'|'nomina'|'banco'|'impuesto'|'otro'
+  periodicidad             VARCHAR(20),                      -- 'mensual'|'trimestral'|'anual'|null (one-shot)
+  proveedor_default        VARCHAR(120),
+  cuenta_contable_odoo     VARCHAR(20),                      -- ej '628000', '640000'
+  iva_default              NUMERIC(5,2),                     -- ej 21.00
+  color                    VARCHAR(20),
+  orden                    INTEGER DEFAULT 100,
+  activa                   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT gasto_cat_unique UNIQUE (id_manager, codigo),
+  CONSTRAINT gasto_cat_tipo_chk CHECK (tipo IN ('gasto','nomina','banco','impuesto','otro'))
+);
+CREATE INDEX IF NOT EXISTS idx_gasto_cat_manager ON gasto_categoria(id_manager);
+CREATE INDEX IF NOT EXISTS idx_gasto_cat_tipo    ON gasto_categoria(tipo);
+
+-- Visibilidad per (categoría, trainer). Si no hay fila → visible por default.
+CREATE TABLE IF NOT EXISTS gasto_categoria_visibilidad (
+  categoria_id             INTEGER NOT NULL REFERENCES gasto_categoria(id) ON DELETE CASCADE,
+  id_trainer               VARCHAR(64) NOT NULL,
+  visible                  BOOLEAN NOT NULL DEFAULT TRUE,
+  PRIMARY KEY (categoria_id, id_trainer)
+);
+
+-- Visibilidad de listados per trainer (mismo patrón).
+-- listado_id es enum hardcoded: 'facturas','totales_periodo','banco_sin_cuadrar',
+-- 'faltantes','resultados'.
+CREATE TABLE IF NOT EXISTS gasto_listado_visibilidad (
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64) NOT NULL,
+  listado_id               VARCHAR(40) NOT NULL,
+  visible                  BOOLEAN NOT NULL DEFAULT TRUE,
+  PRIMARY KEY (id_manager, id_trainer, listado_id)
+);
+
+-- Documento subido (factura, nómina, extracto, recibo impuesto…).
+-- Vive como archivo en disco + metadata aquí + odoo_move_id (puente).
+CREATE TABLE IF NOT EXISTS gasto_documento (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64),                       -- a quién se asigna; NULL = manager-wide
+  categoria_id             INTEGER REFERENCES gasto_categoria(id) ON DELETE SET NULL,
+  -- Datos del documento (rellena el LLM o el usuario)
+  proveedor                VARCHAR(160),
+  proveedor_vat            VARCHAR(40),                       -- CIF/NIF
+  num_factura              VARCHAR(80),
+  fecha_documento          DATE,
+  fecha_recepcion          DATE,
+  periodo                  VARCHAR(10),                       -- 'YYYY-MM' o 'YYYY-T1'..'YYYY-T4'
+  importe_base             NUMERIC(12,2),
+  importe_iva              NUMERIC(12,2),
+  importe_total            NUMERIC(12,2),
+  iva_pct                  NUMERIC(5,2),
+  concepto                 TEXT,
+  -- Storage
+  filename_original        VARCHAR(240),
+  storage_path             TEXT,                              -- absoluta en VPS
+  mime_type                VARCHAR(80),
+  tamaño_bytes             BIGINT,
+  hash_sha256              CHAR(64),
+  -- Estado del flujo
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'borrador',
+                                                              -- 'borrador'|'validado'|'rechazado'|'duplicado'
+  -- Puente Odoo
+  odoo_move_id             INTEGER,
+  odoo_move_state          VARCHAR(20),                       -- 'draft'|'posted'|'cancel'|'paid'
+  odoo_partner_id          INTEGER,
+  -- LLM
+  extraido_por_llm         BOOLEAN NOT NULL DEFAULT FALSE,
+  confianza_llm            NUMERIC(5,4),                      -- 0..1
+  llm_data                 JSONB,                             -- snapshot completo
+  -- Audit
+  notas                    TEXT,
+  motivo_rechazo           TEXT,
+  created_by               VARCHAR(80),
+  validado_by              VARCHAR(80),
+  validado_at              TIMESTAMPTZ,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT gasto_doc_estado_chk
+    CHECK (estado IN ('borrador','validado','rechazado','duplicado'))
+);
+CREATE INDEX IF NOT EXISTS idx_gasto_doc_manager   ON gasto_documento(id_manager, fecha_documento DESC);
+CREATE INDEX IF NOT EXISTS idx_gasto_doc_trainer   ON gasto_documento(id_trainer, fecha_documento DESC);
+CREATE INDEX IF NOT EXISTS idx_gasto_doc_categoria ON gasto_documento(categoria_id);
+CREATE INDEX IF NOT EXISTS idx_gasto_doc_estado    ON gasto_documento(estado);
+CREATE INDEX IF NOT EXISTS idx_gasto_doc_periodo   ON gasto_documento(id_manager, periodo);
+CREATE INDEX IF NOT EXISTS idx_gasto_doc_hash      ON gasto_documento(id_manager, hash_sha256) WHERE hash_sha256 IS NOT NULL;
+
+-- Movimiento bancario (importado de extracto). Vinculable a una factura.
+CREATE TABLE IF NOT EXISTS banco_movimiento (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64),
+  documento_origen_id      INTEGER REFERENCES gasto_documento(id) ON DELETE SET NULL,
+                                                              -- el extracto del que vino esta línea
+  banco                    VARCHAR(80),
+  cuenta_iban              VARCHAR(40),
+  fecha                    DATE NOT NULL,
+  fecha_valor              DATE,
+  concepto                 TEXT,
+  importe                  NUMERIC(12,2) NOT NULL,
+  saldo                    NUMERIC(14,2),
+  ref_externa              VARCHAR(80),
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'sin_cuadrar',
+                                                              -- 'sin_cuadrar'|'cuadrado'|'manual'|'ignorado'
+  factura_relacionada_id   INTEGER REFERENCES gasto_documento(id) ON DELETE SET NULL,
+  odoo_statement_line_id   INTEGER,                            -- puente a account.bank.statement.line
+  hash_dedupe              VARCHAR(64),                        -- para evitar duplicar líneas al re-importar
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT banco_estado_chk
+    CHECK (estado IN ('sin_cuadrar','cuadrado','manual','ignorado'))
+);
+CREATE INDEX IF NOT EXISTS idx_banco_mov_manager  ON banco_movimiento(id_manager, fecha DESC);
+CREATE INDEX IF NOT EXISTS idx_banco_mov_estado   ON banco_movimiento(id_manager, estado);
+CREATE INDEX IF NOT EXISTS idx_banco_mov_factura  ON banco_movimiento(factura_relacionada_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_banco_mov_dedupe
+  ON banco_movimiento(id_manager, hash_dedupe);
+
+
 -- ─── TRIGGER updated_at ──────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION trg_set_updated_at() RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -510,6 +777,12 @@ DROP TRIGGER IF EXISTS trg_social_post_upd  ON social_post;
 DROP TRIGGER IF EXISTS trg_categoria_upd     ON categoria;
 DROP TRIGGER IF EXISTS trg_cli_categoria_upd ON cliente_categoria;
 DROP TRIGGER IF EXISTS trg_manager_config_upd ON manager_config;
+DROP TRIGGER IF EXISTS trg_notif_envio_upd     ON notif_envio;
+DROP TRIGGER IF EXISTS trg_notif_config_upd    ON notif_config;
+DROP TRIGGER IF EXISTS trg_trainer_contab_upd  ON trainer_contab_config;
+DROP TRIGGER IF EXISTS trg_gasto_categoria_upd ON gasto_categoria;
+DROP TRIGGER IF EXISTS trg_gasto_documento_upd ON gasto_documento;
+DROP TRIGGER IF EXISTS trg_banco_mov_upd       ON banco_movimiento;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -541,6 +814,18 @@ CREATE TRIGGER trg_cli_categoria_upd BEFORE UPDATE ON cliente_categoria
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_manager_config_upd BEFORE UPDATE ON manager_config
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_notif_envio_upd     BEFORE UPDATE ON notif_envio
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_notif_config_upd    BEFORE UPDATE ON notif_config
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trainer_contab_upd  BEFORE UPDATE ON trainer_contab_config
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_gasto_categoria_upd BEFORE UPDATE ON gasto_categoria
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_gasto_documento_upd BEFORE UPDATE ON gasto_documento
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_banco_mov_upd       BEFORE UPDATE ON banco_movimiento
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 
 
@@ -554,6 +839,59 @@ DEFAULT_CATEGORIAS = [
     ('Trabajador',  'cyan',    True,  False),
     ('Invitado',    'amber',   True,  False),
 ]
+
+
+# Catálogo inicial de categorías de gasto. Plan contable PGC español adaptado
+# a un centro fitness. El manager puede editar libremente.
+DEFAULT_GASTO_CATEGORIAS = [
+    # (codigo,        nombre,                tipo,       periodicidad, cuenta,  iva,   color)
+    # ── Gastos generales del centro ──
+    ('luz',           'Luz / electricidad',  'gasto',    'mensual',    '628000', 21.00, 'amber'),
+    ('agua',          'Agua',                'gasto',    'mensual',    '628000', 10.00, 'blue'),
+    ('gas',           'Gas',                 'gasto',    'mensual',    '628000', 21.00, 'orange'),
+    ('alquiler',      'Alquiler local',      'gasto',    'mensual',    '621000',  0.00, 'purple'),
+    ('comunidad',     'Gastos comunidad',    'gasto',    'mensual',    '622000',  0.00, 'gray'),
+    ('seguros',       'Seguros',             'gasto',    'anual',      '625000',  0.00, 'cyan'),
+    ('mantenimiento', 'Mantenimiento / repar.', 'gasto', None,         '622000', 21.00, 'gray'),
+    ('limpieza',      'Limpieza',            'gasto',    'mensual',    '622000', 21.00, 'green'),
+    ('marketing',     'Marketing / publicidad','gasto',  None,         '627000', 21.00, 'red'),
+    ('suministros',   'Material / suministros','gasto',  None,         '602000', 21.00, 'amber'),
+    ('software',      'Software / licencias','gasto',    'mensual',    '629000', 21.00, 'cyan'),
+    ('telefono',      'Teléfono / internet', 'gasto',    'mensual',    '629000', 21.00, 'blue'),
+    ('asesoria',      'Asesoría / gestoría', 'gasto',    'mensual',    '623000', 21.00, 'gray'),
+    # ── Personal ──
+    ('nomina',        'Nómina',              'nomina',   'mensual',    '640000',  0.00, 'green'),
+    ('finiquito',     'Finiquito',           'nomina',   None,         '640000',  0.00, 'green'),
+    # ── Banco ──
+    ('extracto_banco','Extracto bancario',   'banco',    'mensual',    None,      0.00, 'blue'),
+    # ── Impuestos ──
+    ('iva_trim',      'IVA trimestral (modelo 303)', 'impuesto', 'trimestral', '475000', 0.00, 'red'),
+    ('irpf_retenciones','IRPF retenciones (modelo 111)', 'impuesto', 'trimestral', '475100', 0.00, 'red'),
+    ('seg_social',    'Seguridad Social',    'impuesto', 'mensual',    '476000',  0.00, 'red'),
+    ('soc_ss_autonomos','Cuota autónomos',   'impuesto', 'mensual',    '476000',  0.00, 'red'),
+    ('is_anual',      'Impuesto Sociedades (modelo 200)', 'impuesto', 'anual', '630000',  0.00, 'red'),
+    # ── Otros ──
+    ('otro',          'Otro gasto',          'otro',     None,         '629000', 21.00, 'gray'),
+]
+
+
+def seed_gasto_categorias_for_manager(id_manager: str) -> None:
+    """Siembra el catálogo de categorías de gasto si el manager no tiene ninguna."""
+    if not id_manager:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM gasto_categoria WHERE id_manager=%s LIMIT 1", (str(id_manager),))
+        if cur.fetchone():
+            return
+        for i, (codigo, nombre, tipo, periodicidad, cuenta, iva, color) in enumerate(DEFAULT_GASTO_CATEGORIAS):
+            cur.execute("""
+                INSERT INTO gasto_categoria
+                  (id_manager, codigo, nombre, tipo, periodicidad,
+                   cuenta_contable_odoo, iva_default, color, orden, activa)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, TRUE)
+                ON CONFLICT (id_manager, codigo) DO NOTHING
+            """, (str(id_manager), codigo, nombre, tipo, periodicidad,
+                  cuenta, iva, color, (i+1) * 10))
 
 
 def seed_categorias_for_manager(id_manager: str) -> None:

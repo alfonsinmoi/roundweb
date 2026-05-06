@@ -28,6 +28,8 @@ const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
 const CuotasClientes = lazy(() => import('./pages/CuotasClientes/CuotasClientes'))
 const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
 const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
+const NotificacionesPage = lazy(() => import('./pages/Notificaciones/NotificacionesPage'))
+const ContabilidadPage = lazy(() => import('./pages/Contabilidad/ContabilidadPage'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -83,6 +85,8 @@ function AppRoutes() {
           <Route path="/cuotas-clientes"     element={<CuotasClientes />} />
           <Route path="/crm"                 element={<CrmPage />} />
           <Route path="/agenda-social"       element={<SocialAgenda />} />
+          <Route path="/notificaciones"      element={<NotificacionesPage />} />
+          <Route path="/contabilidad"        element={<ContabilidadPage />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
         </Route>
 

@@ -288,12 +288,128 @@ escrito que no van a cambiar:
 
 ---
 
+## 16. **✅ RESUELTO (06/05/2026) — APNs config OneSignal de mynoofit (iOS)**
+
+**Estado actualizado:** push de prueba `6de449c8-...` enviado a iPhone15
+(subscription `353c98e4-...`) → **llegó al device** con app cerrada.
+APNs config está OK. La cadena Round → OneSignal → APNs → iPhone funciona.
+
+Causa probable de los fallos previos: app abierta en foreground (iOS
+silencia push por defecto) o lag transitorio de APNs.
+
+### (Original — referencia histórica)
+
+**Síntoma:** OneSignal acepta los envíos (`successful: 1` en `platform_delivery_stats.ios`)
+pero los pushes **nunca llegan al iPhone** del usuario, aunque:
+- El device está suscrito y `enabled: true`, `notification_types: 31`
+- iOS Settings → mynoofit → Notificaciones todo activado, sonidos, banners
+- App cerrada (foreground silencing descartado)
+- Sin Modo concentración / No molestar
+
+**Pruebas reproducidas (06/05/2026):**
+- iPhone15,4 iOS 26.3.1, subscription `353c98e4-ced6-47b1-8565-64c2ec572d7f`
+- 2 pushes enviados: ambos `successful: 1`, `received: 0`
+
+**Causa probable** (en orden de probabilidad):
+
+1. **Certificado APNs caducado o sandbox/production mismatch.**
+   En OneSignal Dashboard de la app `mynoofit` → `Settings → Apple iOS → APNs Authentication`:
+   - Si usan **APNs Auth Key (.p8)**: confirmar Team ID + Key ID coinciden con la app build.
+   - Si usan **certificado .p12**: caduca cada año. Si está caducado, APNs acepta los
+     pushes silenciosamente y los descarta.
+2. **Bundle ID mismatch**: el bundle ID de la app firmada debe coincidir
+   exactamente con el registrado en el certificado APNs.
+3. **App firmada con production pero certificado APNs es de sandbox**
+   (o al revés). Producción típica.
+
+**Acción requerida en NoofitPro:**
+
+> Acceder al panel OneSignal de la app `mynoofit` (App ID
+> `15462ceb-3d30-492d-9789-215a63c91818`), ir a **Settings → Apple iOS** y
+> verificar/regenerar la APNs Auth Key (recomendamos `.p8` que no caduca).
+> Confirmar que el Bundle ID y Team ID coinciden con la build de mynoofit
+> que tienen los usuarios.
+
+> Test rápido: desde el panel OneSignal hay un botón **"Send Test
+> Notification"** en `Audience → Subscriptions → tu device → Send Test`.
+> Si ese tampoco llega, es 100% APNs config. Si ese sí llega pero los
+> nuestros no, es config Round (avisar a alfonsinmoi).
+
+---
+
+## 15. **✅ RESUELTO (06/05/2026) — OneSignal.login() en mynoofit**
+
+**Estado actualizado:** verificado con device Android real (player
+`52fdffad-...`, external_id `1811337`, tags `idTrainer=17675`,
+`email=jesus1@rabox.org`). NoofitPro **sí implementa**
+`OneSignal.login(idCliente)` y además popula tags útiles
+(`idTrainer`, `email`, `platform`).
+
+Solo queda confirmar que también funciona en iOS (el device iPhone15 que
+testeamos antes tenía external_id vacío — puede ser que las builds iOS
+publicadas todavía no tengan el código, o que el user no haya hecho login
+todavía con esa app).
+
+### (Original — mantener como referencia histórica)
+
+
+
+**Estado actual:** Round tiene la integración OneSignal completa (App ID, REST
+API Key, modal de envío con audiencias, plantillas auto del cron impagos /
+PayComet callback / devolución SEPA). Pero **0 pushes a clientes individuales
+funcionan** porque NoofitPro **no llama a `OneSignal.login(idCliente)`** en
+la app mynoofit.
+
+**Síntoma:** cualquier `enviar_notificacion(audience={tipo:'cliente', ref:X})`
+devuelve error `All included players are not subscribed`.
+
+**Causa raíz:** en el dashboard OneSignal de la app `mynoofit` los user
+records tienen el campo **External ID vacío**. OneSignal no puede mapear
+nuestro `cliente_idnoofit` a ningún dispositivo suscrito.
+
+**Solución (1 línea de código en app mynoofit, donde haga login el user):**
+
+```kotlin
+// Android
+OneSignal.login(idCliente.toString())     // p.ej. "1779325"
+```
+```swift
+// iOS
+OneSignal.login(idCliente.toString())
+```
+```js
+// React Native / Cordova
+OneSignal.login(idCliente.toString())
+```
+
+Y también `OneSignal.logout()` cuando el user cierra sesión.
+
+**Impacto sin esto:**
+- ❌ Round no puede notificar impagos automáticos a clientes
+- ❌ Round no puede notificar "pago confirmado" tras callback PayComet
+- ❌ Round no puede notificar enlaces de pago
+- ❌ Round no puede notificar devoluciones SEPA
+- ❌ Round no puede mandar notif manual "un cliente concreto"
+- ✅ Solo funciona `broadcast` a todos los suscriptores
+
+**Workaround temporal en producción:** ninguno limpio. Las notif siguen
+persistiéndose en BD como `fallida` para auditoría, pero no llegan al móvil.
+
+---
+
 ## Resumen ejecutivo (para hablar con NoofitPro)
 
 **Cambios "urgentes" (afectan funcionalidad existente):**
-1. Persistir `gympassId` en `clientePlusv2` POST.
-2. Devolver `fechaCreacion` en `getClienteSimple`.
-3. Aclarar/eliminar el bloqueo `_MAK` que impide editar clientes sandbox.
+1. **🔴 BLOQUEANTE — APNs config OneSignal de mynoofit (sección 16)**.
+   Sin esto NINGÚN push llega a iPhones, ni siquiera con device suscrito y
+   permisos correctos. Probable certificado caducado o sandbox/production
+   mismatch.
+2. **🔴 BLOQUEANTE — Implementar `OneSignal.login(idCliente)` en mynoofit**
+   (sección 15 — sin esto el sistema de notificaciones de Round no llega al
+   cliente final aunque el push técnicamente funcione).
+3. Persistir `gympassId` en `clientePlusv2` POST.
+4. Devolver `fechaCreacion` en `getClienteSimple`.
+5. Aclarar/eliminar el bloqueo `_MAK` que impide editar clientes sandbox.
 
 **Cambios "evolutivos" (Round los mantiene local mientras tanto):**
 4. Categorías de cliente con `puede_reservar` y `tiene_cuota`.

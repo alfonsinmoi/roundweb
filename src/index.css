@@ -108,6 +108,35 @@ h1, h2, h3, h4, h5, h6 {
 /* ── Form inputs — use CSS for focus instead of inline JS ──────────────────── */
 .form-input:focus { border-color: var(--green) !important; outline: none; }
 
+/* ── Date / time pickers — calendar/clock icon visible en tema oscuro ────── */
+/* Por defecto el indicator de Chrome es negro y se pierde sobre fondo oscuro.
+   Lo invertimos para que se vea + le ponemos cursor pointer. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator,
+input[type="week"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7) brightness(1.4);
+  opacity: 0.85;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  transition: opacity 0.15s, background 0.15s;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover,
+input[type="week"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Permitir click en cualquier parte del input para abrir el picker (Chrome >= 99) */
+input[type="date"], input[type="datetime-local"], input[type="time"] {
+  cursor: pointer;
+}
+
 /* ── Interactive rows / links — hover + focus ──────────────────────────────── */
 .interactive-row:hover,
 .interactive-row:focus-visible { background: var(--bg-3); }

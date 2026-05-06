@@ -4,14 +4,85 @@ Todas operan sobre Odoo (round_facturacion) via XML-RPC.
 """
 import base64
 import logging
+import os
 from flask import Blueprint, request, jsonify, g, Response
 from ..auth import auth_required
 from ..odoo_cuotas import get_cuotas
 from ..odoo_alta import get_alta
+from ..notif_sender import enviar_notificacion
 from .. import config as cfg
 
 bp = Blueprint('cuotas_clientes', __name__)
 log = logging.getLogger(__name__)
+
+
+def _disparar_notif_pago_alta(oc, inv_id, callback_body):
+    """Tras un pago confirmado en PayComet, manda push al cliente.
+
+    Defensivo: si no encontramos cliente_idnoofit o auto_pago_alta=False,
+    salimos sin error. El callback ya marcó el recibo como pagado.
+    """
+    # 1) Leer factura + partner para identificar al cliente
+    inv = oc._call('account.move', 'read', [inv_id],
+                   ['partner_id', 'amount_total', 'currency_id', 'name'])[0]
+    partner_id = inv['partner_id'][0] if inv.get('partner_id') else None
+    if not partner_id:
+        log.info(f'notif pago_alta: factura {inv_id} sin partner')
+        return
+    partner = oc._call('res.partner', 'read', [partner_id],
+                       ['id_noofit', 'name', 'email'])[0]
+    cliente_idnoofit = (partner.get('id_noofit') or '').strip()
+    if not cliente_idnoofit:
+        log.info(f'notif pago_alta: partner {partner_id} sin id_noofit')
+        return
+
+    # 2) Resolver manager (hoy mono-tenant: env). Trainer NULL por defecto.
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
+    id_trainer = None  # TODO: derivar del partner.x_id_trainer cuando exista
+
+    # 3) Comprobar config (auto_pago_alta on/off)
+    from ..db import get_conn
+    auto_on = True
+    plantillas = {}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            # Buscar config trainer-specific o manager-wide
+            cur.execute("""
+                SELECT auto_pago_alta, plantillas FROM notif_config
+                 WHERE id_manager=%s
+                   AND (id_trainer IS NULL OR id_trainer=%s)
+                 ORDER BY (id_trainer IS NULL) ASC LIMIT 1
+            """, (id_manager, id_trainer or ''))
+            row = cur.fetchone()
+            if row is not None:
+                auto_on = bool(row['auto_pago_alta'])
+                plantillas = row.get('plantillas') or {}
+    except Exception:
+        pass
+    if not auto_on:
+        log.info('notif pago_alta: desactivado por config')
+        return
+
+    importe = inv.get('amount_total') or 0
+    plantilla_pago = (plantillas.get('pago_alta') or {}) if isinstance(plantillas, dict) else {}
+
+    res = enviar_notificacion(
+        id_manager=id_manager,
+        id_trainer=id_trainer,
+        seccion='cobros',
+        tipo='pago_alta',
+        titulo=plantilla_pago.get('titulo') or None,  # None = usar plantilla default catalog
+        cuerpo=plantilla_pago.get('cuerpo') or None,
+        plantilla_vars={
+            'importe': f'{importe:.2f}',
+            'cliente_nombre': partner.get('name', ''),
+            'recibo': inv.get('name', ''),
+        },
+        audience={'tipo': 'cliente', 'ref': cliente_idnoofit},
+        origen='paycomet_callback',
+        origen_ref=f'invoice:{inv_id}',
+    )
+    log.info(f'notif pago_alta inv={inv_id} cliente={cliente_idnoofit} → {res.get("estado")}')
 
 
 def _serialize(rec):
@@ -291,6 +362,16 @@ def paycomet_callback():
             'payment_date': inv.get('invoice_date') or False,
         })
         oc._call_ctx('account.payment.register','action_create_payments', ctx, [wiz])
+
+        # ── Notif automática al cliente: "pago_alta" ──
+        # Si la config del manager/trainer tiene auto_pago_alta=True, mandamos
+        # un push al cliente confirmándole el pago. Defensivo: cualquier error
+        # aquí NO debe romper el callback (el pago ya está marcado).
+        try:
+            _disparar_notif_pago_alta(oc, inv_id, d)
+        except Exception as e:
+            log.warning(f'paycomet_callback notif fallback: {e}')
+
         return jsonify({'ok': True, 'invoice_id': inv_id, 'paid': True})
     except Exception as e:
         log.exception('paycomet_callback')
@@ -300,17 +381,90 @@ def paycomet_callback():
 @bp.route('/devoluciones', methods=['POST'])
 @auth_required
 def devoluciones():
-    """Recibe { rows: [{invoice_ref, motivo}, ...] } y anula los pagos."""
+    """Recibe { rows: [{invoice_ref, motivo}, ...] } y anula los pagos.
+
+    Tras procesar, dispara notif automática al cliente afectado
+    (si auto_devolucion está activa en su config). Defensivo: el fallo
+    al notificar NO rompe el endpoint.
+    """
     try:
         d = request.get_json() or {}
         rows = d.get('rows') or []
         if not rows:
             return jsonify({'ok': False, 'error': 'Sin filas'}), 400
         result = get_cuotas().procesar_devoluciones(rows)
+
+        # ── Notif automática "devolucion" por cada procesada ──
+        notificadas = 0
+        for proc in result.get('procesadas', []):
+            try:
+                if _disparar_notif_devolucion(proc):
+                    notificadas += 1
+            except Exception as e:
+                log.warning(f'notif devolucion fallback: {e}')
+        result['notif_enviadas'] = notificadas
+
         return jsonify({'ok': True, **result})
     except Exception as e:
         log.exception('devoluciones')
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+def _disparar_notif_devolucion(proc: dict) -> bool:
+    """Manda notif "devolucion" al cliente si tiene id_noofit y auto_devolucion=True.
+
+    `proc` viene de procesar_devoluciones: incluye partner_idnoofit, importe,
+    motivo, invoice_ref, invoice_id.
+    Retorna True si se intentó el envío.
+    """
+    cliente_idnoofit = (proc.get('partner_idnoofit') or '').strip()
+    if not cliente_idnoofit:
+        return False
+
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
+    id_trainer = None  # TODO derivar del partner cuando exista x_id_trainer
+
+    # Comprobar config
+    from ..db import get_conn
+    auto_on = True
+    plantillas = {}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT auto_devolucion, plantillas FROM notif_config
+                 WHERE id_manager=%s
+                   AND (id_trainer IS NULL OR id_trainer=%s)
+                 ORDER BY (id_trainer IS NULL) ASC LIMIT 1
+            """, (id_manager, id_trainer or ''))
+            row = cur.fetchone()
+            if row is not None:
+                auto_on = bool(row['auto_devolucion'])
+                plantillas = row.get('plantillas') or {}
+    except Exception:
+        pass
+    if not auto_on:
+        return False
+
+    plantilla = (plantillas.get('devolucion') or {}) if isinstance(plantillas, dict) else {}
+    res = enviar_notificacion(
+        id_manager=id_manager,
+        id_trainer=id_trainer,
+        seccion='cobros',
+        tipo='devolucion',
+        titulo=plantilla.get('titulo') or None,
+        cuerpo=plantilla.get('cuerpo') or None,
+        plantilla_vars={
+            'importe': f'{(proc.get("importe") or 0):.2f}',
+            'cliente_nombre': proc.get('partner', ''),
+            'recibo': proc.get('invoice_ref', ''),
+            'motivo': proc.get('motivo', ''),
+        },
+        audience={'tipo': 'cliente', 'ref': cliente_idnoofit},
+        origen='devolucion_sepa',
+        origen_ref=f'invoice:{proc.get("invoice_id")}',
+    )
+    log.info(f'notif devolucion inv={proc.get("invoice_id")} cliente={cliente_idnoofit} → {res.get("estado")}')
+    return True
 
 
 @bp.route('/sepa/<int:attachment_id>', methods=['GET'])

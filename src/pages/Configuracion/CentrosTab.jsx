@@ -109,6 +109,8 @@ export default function CentrosTab({ identity: identityProp }) {
                          telefono: c?.telefono || '',
                          ciudad: c?.ciudad || '',
                          direccion: c?.direccion || '',
+                         cif: c?.cif || '',
+                         razon_social: c?.razon_social || '',
                          activo: c?.activo ?? true,
                          recibe_round_robin: c?.recibe_round_robin ?? true,
                          notas: c?.notas || '',
@@ -179,6 +181,14 @@ function CentroForm({ value, onChange, onSave, onDelete }) {
       <Field label="Dirección">
         <input value={value.direccion} onChange={e => set({ direccion: e.target.value })}
                placeholder="Calle…" style={inputStyle} />
+      </Field>
+      <Field label="Razón social (empresa)">
+        <input value={value.razon_social} onChange={e => set({ razon_social: e.target.value })}
+               placeholder="Round Training Center S.L." style={inputStyle} />
+      </Field>
+      <Field label="CIF / NIF">
+        <input value={value.cif} onChange={e => set({ cif: e.target.value })}
+               placeholder="B12345678" style={inputStyle} />
       </Field>
       <Field label="Notas internas">
         <input value={value.notas} onChange={e => set({ notas: e.target.value })}

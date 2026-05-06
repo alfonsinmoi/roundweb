@@ -54,8 +54,9 @@ def upsert(id_trainer):
             cur.execute("""
                 INSERT INTO centro_contacto
                   (id_manager, id_trainer, nombre_centro, slug, email, email_cc,
-                   telefono, ciudad, direccion, activo, recibe_round_robin, notas)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   telefono, ciudad, direccion, cif, razon_social,
+                   activo, recibe_round_robin, notas)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id_manager, id_trainer) DO UPDATE
                 SET nombre_centro       = EXCLUDED.nombre_centro,
                     slug                = EXCLUDED.slug,
@@ -64,6 +65,8 @@ def upsert(id_trainer):
                     telefono            = EXCLUDED.telefono,
                     ciudad              = EXCLUDED.ciudad,
                     direccion           = EXCLUDED.direccion,
+                    cif                 = EXCLUDED.cif,
+                    razon_social        = EXCLUDED.razon_social,
                     activo              = EXCLUDED.activo,
                     recibe_round_robin  = EXCLUDED.recibe_round_robin,
                     notas               = EXCLUDED.notas
@@ -74,6 +77,8 @@ def upsert(id_trainer):
                   d.get('email'),
                   d.get('email_cc') or None,
                   d.get('telefono'), d.get('ciudad'), d.get('direccion'),
+                  (d.get('cif') or '').strip().upper() or None,
+                  d.get('razon_social') or None,
                   bool(d.get('activo', True)),
                   bool(d.get('recibe_round_robin', True)),
                   d.get('notas')))

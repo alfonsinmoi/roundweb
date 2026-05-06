@@ -14,6 +14,8 @@ import EmailTab         from './EmailTab'
 import EmailTemplatesTab from './EmailTemplatesTab'
 import CuentasMetaTab    from './CuentasMetaTab'
 import CategoriasTab     from './CategoriasTab'
+import NotificacionesTab  from './NotificacionesTab'
+import ContabilidadTab    from './ContabilidadTab'
 
 const TABS_BASE = [
   { id: 'cuotas',         label: 'Cuotas',         comp: CuotasTab },
@@ -23,6 +25,8 @@ const TABS_BASE = [
   { id: 'periodicidad',   label: 'Periodicidad',   comp: PeriodicidadInfo },
 ]
 const TAB_CATEGORIAS = { id: 'categorias', label: 'Categorías clientes',   comp: CategoriasTab,     managerOnly: true }
+const TAB_NOTIF      = { id: 'notif',      label: 'Notificaciones',         comp: NotificacionesTab, managerOnly: true }
+const TAB_CONTAB     = { id: 'contab',     label: 'Contabilidad',           comp: ContabilidadTab,   managerOnly: true }
 const TAB_PASARELAS = { id: 'pasarelas', label: 'Pasarelas (PayComet)', comp: PasarelasTab, managerOnly: true }
 const TAB_CENTROS   = { id: 'centros',   label: 'Centros',                comp: CentrosTab,   managerOnly: true }
 const TAB_EMAIL     = { id: 'email',     label: 'Email (transaccional)',  comp: EmailTab,     managerOnly: true }
@@ -36,7 +40,7 @@ export default function Configuracion() {
   // Tabs solo visibles para el manager (no impersonando trainer)
   const TABS = isImpersonating
     ? TABS_BASE
-    : [...TABS_BASE, TAB_CATEGORIAS, TAB_CENTROS, TAB_PASARELAS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META]
+    : [...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_CENTROS, TAB_PASARELAS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META]
   const ActiveComp = TABS.find(t => t.id === activeTab)?.comp ?? CuotasTab
 
   return (

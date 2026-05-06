@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Loader2, Users, Clock, CalendarDays, Dumbbell,
-  TrendingUp, ChevronDown, ChevronRight, Layers, Filter, RefreshCw, Play, UserRound,
+  TrendingUp, ChevronDown, ChevronRight, Layers, Filter, RefreshCw, Play, UserRound, Bell,
 } from 'lucide-react'
 import { Card, Avatar, Btn, Badge, SectionTitle } from '../components/UI'
 import { runUsageClustering, DOW_LABELS, HOUR_BUCKETS, AGE_BUCKETS } from '../utils/clustering'
@@ -63,7 +63,7 @@ function GenderBar({ genderCount }) {
   )
 }
 
-function ClusterCard({ cluster, color, onClientClick }) {
+function ClusterCard({ cluster, color, onClientClick, onNotify }) {
   const [open, setOpen] = useState(false)
   const dowData  = DOW_LABELS.map((l, i) => ({ label: l, value: cluster.dowTotal[i] }))
   const hourData = HOUR_BUCKETS.map((b, i) => ({ label: b.label, value: cluster.hourTotal[i] }))
@@ -91,7 +91,20 @@ function ClusterCard({ cluster, color, onClientClick }) {
             </p>
           </div>
         </div>
-        <Badge color="gray"><Users size={10} aria-hidden="true" /> {cluster.size}</Badge>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Badge color="gray"><Users size={10} aria-hidden="true" /> {cluster.size}</Badge>
+          <button
+            onClick={() => onNotify?.(cluster)}
+            title="Enviar notificación a este cluster"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '6px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600,
+              cursor: 'pointer', border: '1px solid var(--green-border)',
+              background: 'var(--green-bg)', color: 'var(--green)',
+            }}>
+            <Bell size={11} aria-hidden="true" /> Notificar
+          </button>
+        </div>
       </div>
 
       {/* Distribuciones */}
@@ -389,7 +402,16 @@ export default function AnalisisClusters() {
                 <ClusterCard key={c.id}
                              cluster={c}
                              color={CLUSTER_COLORS[i % CLUSTER_COLORS.length]}
-                             onClientClick={id => navigate(`/clientes/${id}`)} />
+                             onClientClick={id => navigate(`/clientes/${id}`)}
+                             onNotify={cluster => navigate('/notificaciones', { state: {
+                               seccion: 'centro',
+                               presetTitle: `Cluster: ${cluster.name}`,
+                               audience: {
+                                 tipo: 'cluster',
+                                 cluster_id: cluster.id,
+                                 clientes: cluster.members.map(m => m.idClient),
+                               },
+                             }})} />
               ))}
             </div>
           )}

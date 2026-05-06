@@ -215,6 +215,158 @@ export const clienteFechas = (identity, idNoofit) =>
     fecha_creacion_noofit: d.fecha_creacion_noofit,
   }))
 
+// ── Notificaciones (OneSignal + BD local) ──────────────────────────────────
+async function _notifRequest(method, path, identity, body = null) {
+  const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+  const init = { method, headers: {
+    'Content-Type': 'application/json',
+    'X-Round-Token': TOKEN,
+    'X-Round-Manager-Id': identity?.managerId || '',
+  }}
+  if (identity?.trainerId) init.headers['X-Round-Trainer-Id'] = identity.trainerId
+  if (body) init.body = JSON.stringify(body)
+  const res = await fetch(`/api/notif${path}`, init)
+  const text = await res.text()
+  let data; try { data = JSON.parse(text) } catch { data = { error: text } }
+  if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`)
+  return data
+}
+
+export const notifCatalog = (identity) =>
+  _notifRequest('GET', '/catalog', identity).then(d => ({
+    secciones: d.secciones || [],
+    tipos: d.tipos || [],
+  }))
+
+export const notifEnviosList = (identity, filters = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  }
+  const path = qs.toString() ? `/envios?${qs}` : '/envios'
+  return _notifRequest('GET', path, identity).then(d => d.envios || [])
+}
+export const notifEnvioGet = (identity, id) =>
+  _notifRequest('GET', `/envios/${id}`, identity)
+export const notifEnvioCreate = (identity, data) =>
+  _notifRequest('POST', '/envios', identity, data)
+export const notifEnvioCancel = (identity, id) =>
+  _notifRequest('DELETE', `/envios/${id}`, identity)
+export const notifPorCliente = (identity, idNoofit, filters = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  }
+  const path = qs.toString() ? `/cliente/${idNoofit}?${qs}` : `/cliente/${idNoofit}`
+  return _notifRequest('GET', path, identity).then(d => d.notificaciones || [])
+}
+export const notifConfigGet = (identity) =>
+  _notifRequest('GET', '/config', identity).then(d => d.config)
+export const notifConfigPut = (identity, data) =>
+  _notifRequest('PUT', '/config', identity, data).then(d => d.config)
+
+// ── Contabilidad (gastos / nóminas / extractos / impuestos) ─────────────────
+async function _contabRequest(method, path, identity, body = null, isForm = false) {
+  const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+  const init = { method, headers: {
+    'X-Round-Token': TOKEN,
+    'X-Round-Manager-Id': identity?.managerId || '',
+  }}
+  if (identity?.trainerId) init.headers['X-Round-Trainer-Id'] = identity.trainerId
+  if (body && !isForm) {
+    init.headers['Content-Type'] = 'application/json'
+    init.body = JSON.stringify(body)
+  } else if (body && isForm) {
+    init.body = body  // FormData
+  }
+  const res = await fetch(`/api/contab${path}`, init)
+  const text = await res.text()
+  let data; try { data = JSON.parse(text) } catch { data = { error: text } }
+  if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`)
+  return data
+}
+
+// Toggle "controla contabilidad" per trainer
+export const contabConfigGet  = (identity) => _contabRequest('GET', '/config', identity).then(d => d.trainers || [])
+export const contabConfigPut  = (identity, idTrainer, data) =>
+  _contabRequest('PUT', `/config/${idTrainer}`, identity, data).then(d => d.config)
+
+// Listados visibilidad
+export const contabListadosGet = (identity) => _contabRequest('GET', '/config/listados', identity)
+export const contabListadoVisPut = (identity, idTrainer, listadoId, visible) =>
+  _contabRequest('PUT', `/config/listados/${idTrainer}/${listadoId}`, identity, { visible })
+
+// Categorías
+export const contabCatsList   = (identity) => _contabRequest('GET', '/categorias', identity)
+export const contabCatCreate  = (identity, data) => _contabRequest('POST', '/categorias', identity, data).then(d => d.categoria)
+export const contabCatUpdate  = (identity, id, data) => _contabRequest('PATCH', `/categorias/${id}`, identity, data).then(d => d.categoria)
+export const contabCatDelete  = (identity, id) => _contabRequest('DELETE', `/categorias/${id}`, identity)
+export const contabCatVisPut  = (identity, catId, idTrainer, visible) =>
+  _contabRequest('PUT', `/categorias/${catId}/visibilidad/${idTrainer}`, identity, { visible })
+
+// Documentos
+export const contabDocsList = (identity, filters = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  }
+  const path = qs.toString() ? `/documentos?${qs}` : '/documentos'
+  return _contabRequest('GET', path, identity).then(d => d.documentos || [])
+}
+export const contabDocGet     = (identity, id) => _contabRequest('GET', `/documentos/${id}`, identity).then(d => d.documento)
+export const contabDocUpload  = (identity, formData) => _contabRequest('POST', '/documentos', identity, formData, true).then(d => d.documento)
+export const contabDocPatch   = (identity, id, data) => _contabRequest('PATCH', `/documentos/${id}`, identity, data).then(d => d.documento)
+export const contabDocEscanear = (identity, id) =>
+  _contabRequest('POST', `/documentos/${id}/escanear`, identity, {})
+export const contabDocValidar = (identity, id, opts = {}) =>
+  _contabRequest('POST', `/documentos/${id}/validar`, identity, opts).then(d => d.documento)
+export const contabDocRechazar= (identity, id, motivo) => _contabRequest('POST', `/documentos/${id}/rechazar`, identity, { motivo }).then(d => d.documento)
+export const contabDocDelete  = (identity, id) => _contabRequest('DELETE', `/documentos/${id}`, identity)
+// Banco — extractos + matching
+export const contabBancoImportar = (identity, formData) =>
+  _contabRequest('POST', '/banco/importar', identity, formData, true)
+export const contabBancoMovs = (identity, filters = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  }
+  return _contabRequest('GET', `/banco/movimientos?${qs}`, identity).then(d => d.movimientos || [])
+}
+export const contabBancoLink = (identity, movId, data) =>
+  _contabRequest('PATCH', `/banco/movimientos/${movId}`, identity, data).then(d => d.movimiento)
+export const contabBancoMatching = (identity, autoApply = false) =>
+  _contabRequest('POST', '/banco/matching', identity, { auto_apply: autoApply })
+
+// Listados
+export const contabTotales = (identity, filters = {}) => {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  }
+  return _contabRequest('GET', `/listados/totales?${qs}`, identity)
+}
+export const contabFaltantes = (identity, meses = 6) =>
+  _contabRequest('GET', `/listados/faltantes?meses=${meses}`, identity).then(d => d.faltantes || [])
+export const contabResultados = (identity, desde, hasta) => {
+  const qs = new URLSearchParams()
+  if (desde) qs.set('desde', desde)
+  if (hasta) qs.set('hasta', hasta)
+  return _contabRequest('GET', `/listados/resultados?${qs}`, identity)
+}
+
+// URL para descargar/visualizar el binario. Como el navegador no manda
+// headers en un <a href>, pasamos auth via query string (auth_required acepta
+// ambas formas).
+export const contabDocFileUrl = (id, identity) => {
+  const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+  const qs = new URLSearchParams({
+    token: TOKEN,
+    manager: identity?.managerId || '',
+    ...(identity?.trainerId ? { trainer: identity.trainerId } : {}),
+  })
+  return `/api/contab/documentos/${id}/file?${qs}`
+}
+
 // ── Redes sociales (cuentas Meta + agenda de posts) ───────────────────────
 async function _socialRequest(method, path, identity, body = null) {
   const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''

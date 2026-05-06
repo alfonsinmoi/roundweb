@@ -345,6 +345,13 @@ class OdooAlta(OdooCuotas):
                 self._call('account.move','write',[invoice_id], {'narration': new_narration})
                 result['enlace_pago_url'] = url
                 log.info(f'PayComet link inv={invoice_id} ref={ref} amount={amount}')
+
+                # ── Notif automática "enlace_pago" al cliente (defensivo) ──
+                try:
+                    self._notif_enlace_pago(id_manager, id_trainer,
+                                            invoice_id, inv, amount, url)
+                except Exception as e:
+                    log.warning(f'notif enlace_pago fallback: {e}')
             except PayCometError as e:
                 result['error_pago'] = str(e)
                 log.error(f'PayComet alta inv={invoice_id}: {e}')
@@ -355,6 +362,59 @@ class OdooAlta(OdooCuotas):
 
         result['warning'] = f'forma_pago_alta desconocida: {forma_pago_alta}'
         return result
+
+    def _notif_enlace_pago(self, id_manager, id_trainer, invoice_id, inv, amount, url):
+        """Notifica al cliente que tiene un enlace de pago pendiente.
+
+        Defensivo: cualquier error sale como warning, no rompe el alta.
+        """
+        from .notif_sender import enviar_notificacion
+        from .db import get_conn
+        partner_id = inv.get('partner_id')
+        if isinstance(partner_id, list):
+            partner_id = partner_id[0]
+        if not partner_id:
+            return
+        partner = self._call('res.partner', 'read', [partner_id],
+                             ['id_noofit', 'name'])[0]
+        cliente_idnoofit = (partner.get('id_noofit') or '').strip()
+        if not cliente_idnoofit:
+            log.info(f'notif enlace_pago: partner {partner_id} sin id_noofit')
+            return
+        # Comprobar config auto_enlace_pago
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    SELECT auto_enlace_pago, plantillas FROM notif_config
+                     WHERE id_manager=%s
+                       AND (id_trainer IS NULL OR id_trainer=%s)
+                     ORDER BY (id_trainer IS NULL) ASC LIMIT 1
+                """, (str(id_manager or ''), str(id_trainer or '')))
+                row = cur.fetchone()
+                if row is not None and not row['auto_enlace_pago']:
+                    return
+                plantillas = (row.get('plantillas') if row else None) or {}
+        except Exception:
+            plantillas = {}
+        plantilla = (plantillas.get('enlace_pago') or {}) if isinstance(plantillas, dict) else {}
+        res = enviar_notificacion(
+            id_manager=str(id_manager or ''),
+            id_trainer=str(id_trainer or '') or None,
+            seccion='cobros',
+            tipo='enlace_pago',
+            titulo=plantilla.get('titulo') or None,
+            cuerpo=plantilla.get('cuerpo') or None,
+            url=url,
+            plantilla_vars={
+                'importe': f'{amount:.2f}',
+                'cliente_nombre': partner.get('name', ''),
+                'url': url,
+            },
+            audience={'tipo': 'cliente', 'ref': cliente_idnoofit},
+            origen='alta_enlace_pago',
+            origen_ref=f'invoice:{invoice_id}',
+        )
+        log.info(f'notif enlace_pago inv={invoice_id} cliente={cliente_idnoofit} → {res.get("estado")}')
 
     # ── Punto de entrada ─────────────────────────────────────────────────────
     def crear_alta_cliente(self, payload, id_manager=None, id_trainer=None):

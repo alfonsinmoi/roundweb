@@ -735,6 +735,12 @@ class OdooCuotas:
             inv_id = inv_ids[0]
             inv = self._call('account.move','read',[inv_id],
                 ['name','partner_id','amount_total','payment_state','narration'])[0]
+            # Leer id_noofit del partner para que el caller pueda mandar notif
+            partner_idnoofit = None
+            if inv.get('partner_id'):
+                pdata = self._call('res.partner','read', [inv['partner_id'][0]],
+                                   ['id_noofit'])
+                if pdata: partner_idnoofit = (pdata[0].get('id_noofit') or '').strip() or None
             try:
                 # Pagos reconciliados con esta factura
                 payments = self._call('account.payment','search',
@@ -758,6 +764,7 @@ class OdooCuotas:
                     'invoice_ref': ref,
                     'invoice_id': inv_id,
                     'partner': inv['partner_id'][1] if inv.get('partner_id') else '',
+                    'partner_idnoofit': partner_idnoofit,
                     'importe': inv.get('amount_total'),
                     'pagos_anulados': anulados,
                     'motivo': motivo,
