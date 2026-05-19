@@ -1,0 +1,220 @@
+<!--
+  Snippet WordPress (WPCode → tipo "HTML & JavaScript") para la página
+  /prueba-gratuita de roundtrainingcenter.com.
+
+  Funcionalidad:
+    1. Detecta el centro por ?centro=<slug> en la URL (default: malagacentro).
+    2. Llama a /api/crm/slots-disponibles?centro=<slug> y muestra:
+         · Selector de ACTIVIDAD (dropdown con las que el manager habilitó)
+         · Lista de SLOTS (días + horas con afluencia y plazas libres)
+    3. Al elegir actividad → re-llama con &actividad=<id> y filtra slots.
+    4. Al elegir slot + rellenar formulario → POST /api/crm/lead-prueba.
+
+  Cómo instalar:
+    1. WP Admin → Code Snippets (WPCode) → busca el snippet de
+       "Formulario prueba gratuita" o el más reciente que apunte a
+       round.wiemspro.com/api/crm.
+    2. Sustituye su contenido por este HTML+JS COMPLETO.
+    3. Guarda como tipo "HTML Snippet" y ubicación: shortcode personalizado
+       o página específica /prueba-gratuita.
+    4. (Si ya existe shortcode) refresca la página /prueba-gratuita.
+-->
+<style>
+  .rtc-form { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; }
+  .rtc-form h2 { font-size: 22px; margin-bottom: 8px; }
+  .rtc-row { margin-bottom: 14px; }
+  .rtc-row label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #333; }
+  .rtc-row input, .rtc-row select { width: 100%; padding: 10px 12px; font-size: 14px;
+    border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+  .rtc-slots { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .rtc-slot { padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; cursor: pointer;
+    transition: all 0.15s; background: #fff; text-align: left; font-size: 13px; }
+  .rtc-slot:hover { border-color: #2DD4A8; }
+  .rtc-slot.selected { border-color: #2DD4A8; background: #e6fbf3; box-shadow: 0 0 0 2px rgba(45,212,168,0.2); }
+  .rtc-slot .day { font-weight: 700; }
+  .rtc-slot .hour { font-size: 16px; font-weight: 600; color: #1a1a1a; }
+  .rtc-slot .name { color: #555; font-size: 12px; }
+  .rtc-slot .libres { font-size: 11px; color: #2DD4A8; margin-top: 4px; }
+  .rtc-slot.tranquila { border-color: #2DD4A8; }
+  .rtc-slot.normal    { border-color: #8b8b8b; }
+  .rtc-slot.concurrida{ border-color: #f59e0b; }
+  .rtc-error { background: #fee; border: 1px solid #fcc; padding: 10px; border-radius: 8px; color: #900; font-size: 13px; }
+  .rtc-success { background: #efe; border: 1px solid #cfc; padding: 14px; border-radius: 8px; color: #060; }
+  .rtc-btn { background: #2DD4A8; color: #fff; border: 0; padding: 12px 28px; font-size: 15px;
+    font-weight: 600; border-radius: 10px; cursor: pointer; }
+  .rtc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .rtc-loading { text-align: center; color: #888; padding: 30px; }
+  .rtc-empty { text-align: center; color: #888; padding: 20px; font-size: 13px; }
+</style>
+
+<div class="rtc-form" id="rtcForm">
+  <h2>🎯 Reserva tu prueba gratuita</h2>
+  <p style="color:#666;font-size:14px;margin-bottom:20px">
+    Elige la actividad que más te interesa y selecciona un horario disponible.
+    Te enviaremos un email para confirmar.
+  </p>
+
+  <div class="rtc-row">
+    <label for="rtcActividad">Actividad de tu interés</label>
+    <select id="rtcActividad">
+      <option value="">Cargando…</option>
+    </select>
+  </div>
+
+  <div class="rtc-row">
+    <label>Horarios disponibles</label>
+    <div id="rtcSlots" class="rtc-slots">
+      <div class="rtc-loading">Cargando horarios…</div>
+    </div>
+  </div>
+
+  <div class="rtc-row">
+    <label for="rtcNombre">Nombre completo *</label>
+    <input id="rtcNombre" type="text" required />
+  </div>
+  <div class="rtc-row">
+    <label for="rtcEmail">Email *</label>
+    <input id="rtcEmail" type="email" required />
+  </div>
+  <div class="rtc-row">
+    <label for="rtcMovil">Teléfono móvil *</label>
+    <input id="rtcMovil" type="tel" required />
+  </div>
+  <div class="rtc-row">
+    <label for="rtcDoc">DNI / NIE / Pasaporte *</label>
+    <input id="rtcDoc" type="text" required />
+  </div>
+
+  <div id="rtcMsg"></div>
+
+  <button class="rtc-btn" id="rtcSubmit" disabled>Reservar prueba</button>
+</div>
+
+<script>
+(function() {
+  var API = 'https://round.wiemspro.com';
+  var qs  = new URLSearchParams(window.location.search);
+  var centroSlug = (qs.get('centro') || 'malagacentro').toLowerCase();
+
+  var $act    = document.getElementById('rtcActividad');
+  var $slots  = document.getElementById('rtcSlots');
+  var $msg    = document.getElementById('rtcMsg');
+  var $submit = document.getElementById('rtcSubmit');
+
+  var slotElegido = null;
+
+  function fetchSlots(idActividad) {
+    var url = API + '/api/crm/slots-disponibles?centro=' + encodeURIComponent(centroSlug);
+    if (idActividad) url += '&actividad=' + encodeURIComponent(idActividad);
+    $slots.innerHTML = '<div class="rtc-loading">Cargando horarios…</div>';
+    return fetch(url).then(function(r) { return r.json(); });
+  }
+
+  function renderActividades(actividades) {
+    if (!actividades || actividades.length === 0) {
+      $act.innerHTML = '<option value="">— No hay actividades disponibles —</option>';
+      $act.disabled = true;
+      return;
+    }
+    $act.innerHTML = '<option value="">— Todas —</option>';
+    actividades.forEach(function(a) {
+      var opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.nombre + ' (' + a.n_clases + ' clases)';
+      $act.appendChild(opt);
+    });
+    $act.disabled = false;
+  }
+
+  function renderSlots(slots) {
+    slotElegido = null;
+    $submit.disabled = true;
+    if (!slots || slots.length === 0) {
+      $slots.innerHTML = '<div class="rtc-empty">No hay horarios disponibles para esta actividad. Prueba con otra opción o llama al centro.</div>';
+      return;
+    }
+    $slots.innerHTML = '';
+    slots.forEach(function(s) {
+      var div = document.createElement('div');
+      div.className = 'rtc-slot ' + (s.nivel || 'normal');
+      div.setAttribute('data-id', s.id_sala);
+      div.innerHTML =
+        '<div class="day">' + s.dia_nombre + ' ' + (s.fecha_local || '').split('-').reverse().slice(0,2).join('/') + '</div>' +
+        '<div class="hour">' + s.hora + '</div>' +
+        '<div class="name">' + (s.actividad || s.nombre || '') + '</div>' +
+        '<div class="libres">✓ ' + s.libres + ' plaza' + (s.libres !== 1 ? 's' : '') + ' libre' + (s.libres !== 1 ? 's' : '') + '</div>';
+      div.addEventListener('click', function() {
+        $slots.querySelectorAll('.rtc-slot').forEach(function(el) { el.classList.remove('selected'); });
+        div.classList.add('selected');
+        slotElegido = s;
+        $submit.disabled = false;
+      });
+      $slots.appendChild(div);
+    });
+  }
+
+  // Cargar inicialmente: actividades + slots sin filtro
+  fetchSlots(null).then(function(d) {
+    if (!d.ok) {
+      $msg.innerHTML = '<div class="rtc-error">Error al cargar horarios: ' + (d.error || 'desconocido') + '</div>';
+      return;
+    }
+    renderActividades(d.actividades);
+    renderSlots(d.slots);
+  }).catch(function(e) {
+    $msg.innerHTML = '<div class="rtc-error">Error de red. Vuelve a intentarlo.</div>';
+  });
+
+  // Cuando cambia la actividad, recargar slots
+  $act.addEventListener('change', function() {
+    fetchSlots($act.value || null).then(function(d) {
+      if (d.ok) renderSlots(d.slots);
+    });
+  });
+
+  // Submit
+  $submit.addEventListener('click', function() {
+    if (!slotElegido) return;
+    var nombre = document.getElementById('rtcNombre').value.trim();
+    var email  = document.getElementById('rtcEmail').value.trim();
+    var movil  = document.getElementById('rtcMovil').value.trim();
+    var doc    = document.getElementById('rtcDoc').value.trim();
+    if (!nombre || !email || !movil || !doc) {
+      $msg.innerHTML = '<div class="rtc-error">Rellena todos los campos.</div>';
+      return;
+    }
+    $submit.disabled = true;
+    $msg.innerHTML = '<div class="rtc-loading">Enviando…</div>';
+
+    fetch(API + '/api/crm/lead-prueba', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        centro: centroSlug,
+        slot_id: slotElegido.id_sala,
+        nombre: nombre,
+        email:  email,
+        movil:  movil,
+        documento: doc,
+        actividad_id: $act.value || null,
+        actividad_nombre: $act.options[$act.selectedIndex] ? $act.options[$act.selectedIndex].text : '',
+      }),
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) {
+        document.getElementById('rtcForm').innerHTML =
+          '<div class="rtc-success">' +
+            '<h3>✅ ¡Reserva recibida!</h3>' +
+            '<p>Te hemos enviado un email a <strong>' + email + '</strong> para confirmar tu plaza. ' +
+              'Si no lo encuentras, revisa la carpeta de spam.</p>' +
+          '</div>';
+      } else {
+        $submit.disabled = false;
+        $msg.innerHTML = '<div class="rtc-error">' + (d.error || 'Error al reservar.') + '</div>';
+      }
+    }).catch(function() {
+      $submit.disabled = false;
+      $msg.innerHTML = '<div class="rtc-error">Error de red.</div>';
+    });
+  });
+})();
+</script>

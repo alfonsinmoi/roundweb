@@ -259,6 +259,9 @@ def get_config():
                 'auto_devolucion': True,
                 'auto_enlace_pago': True,
                 'auto_pago_alta': True,
+                'auto_link_devolucion': True,
+                'auto_link_impago_efectivo': True,
+                'auto_link_efectivo_dia': 0,
                 'plantillas': {},
                 '_default': True,
             }
@@ -276,6 +279,9 @@ def put_config():
         dia = int(d.get('dia_envio_impago_efectivo', 5))
         if dia < 0 or dia > 31:
             return jsonify({'ok': False, 'error': 'dia_invalido'}), 400
+        dia_link = int(d.get('auto_link_efectivo_dia', 0))
+        if dia_link < 0 or dia_link > 31:
+            return jsonify({'ok': False, 'error': 'dia_link_invalido'}), 400
         plantillas = d.get('plantillas') or {}
         if not isinstance(plantillas, dict):
             return jsonify({'ok': False, 'error': 'plantillas_invalido'}), 400
@@ -285,14 +291,20 @@ def put_config():
                     id_manager, id_trainer,
                     dia_envio_impago_efectivo,
                     auto_impago_efectivo, auto_devolucion,
-                    auto_enlace_pago, auto_pago_alta, plantillas
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    auto_enlace_pago, auto_pago_alta,
+                    auto_link_devolucion, auto_link_impago_efectivo,
+                    auto_link_efectivo_dia,
+                    plantillas
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                 ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
                     dia_envio_impago_efectivo = EXCLUDED.dia_envio_impago_efectivo,
                     auto_impago_efectivo = EXCLUDED.auto_impago_efectivo,
                     auto_devolucion = EXCLUDED.auto_devolucion,
                     auto_enlace_pago = EXCLUDED.auto_enlace_pago,
                     auto_pago_alta = EXCLUDED.auto_pago_alta,
+                    auto_link_devolucion = EXCLUDED.auto_link_devolucion,
+                    auto_link_impago_efectivo = EXCLUDED.auto_link_impago_efectivo,
+                    auto_link_efectivo_dia = EXCLUDED.auto_link_efectivo_dia,
                     plantillas = EXCLUDED.plantillas
                 RETURNING *
             """, (
@@ -302,6 +314,9 @@ def put_config():
                 bool(d.get('auto_devolucion', True)),
                 bool(d.get('auto_enlace_pago', True)),
                 bool(d.get('auto_pago_alta', True)),
+                bool(d.get('auto_link_devolucion', True)),
+                bool(d.get('auto_link_impago_efectivo', True)),
+                dia_link,
                 __import__('json').dumps(plantillas),
             ))
             row = cur.fetchone()

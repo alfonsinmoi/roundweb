@@ -1,6 +1,8 @@
 import { useLocation } from 'react-router-dom'
 import { Menu } from 'lucide-react'
 import { navItems } from '../config/routes'
+import ThemeToggle from './ThemeToggle'
+import TrainerFilterBar from './TrainerFilterBar'
 
 export default function Header({ onMenuClick }) {
   const { pathname } = useLocation()
@@ -24,6 +26,10 @@ export default function Header({ onMenuClick }) {
       <h1 style={{ fontFamily: 'Outfit', fontSize: 20, fontWeight: 600, color: 'var(--text-0)' }}>
         {title}
       </h1>
+      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <TrainerFilterBar />
+        <ThemeToggle />
+      </div>
     </header>
   )
 }

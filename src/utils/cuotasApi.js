@@ -69,6 +69,23 @@ export const procesarDevoluciones = (identity, rows) =>
 export const emitirRemesa = (identity, mes) =>
   _request('POST', `/emitir/${mes}`, identity)
 
+// ── v2 (modo α: recibo + trimestral) ──────────────────────────────────────
+export const preemisionV2Generar = (identity, mes) =>
+  _request('POST', `/preemision-v2/${mes}`, identity)
+export const preemisionV2Listar = (identity, mes) =>
+  _request('GET', `/preemision-v2/${mes}`, identity)
+export const preemisionV2BorrarRecibo = (identity, mes, rid) =>
+  _request('DELETE', `/preemision-v2/${mes}/recibo/${rid}`, identity)
+export const emitirV2 = (identity, mes) =>
+  _request('POST', `/emitir-v2/${mes}`, identity)
+
+// ── Facturación trimestral ────────────────────────────────────────────────
+export const facturacionTrimestrePreview = (identity, trim) =>
+  _request('GET', `/facturacion-trimestre/${trim}`, identity)
+export const facturacionTrimestreFacturar = (identity, trim, recibo_ids, agrupar = true) =>
+  _request('POST', `/facturacion-trimestre/${trim}/facturar`, identity,
+           { recibo_ids, agrupar_por_cliente: agrupar })
+
 export function urlDescargaSepa(attachmentId) {
   // El endpoint requiere headers de auth; el usuario lo abre vía fetch + blob (helper abajo)
   return `${BASE}/sepa/${attachmentId}`

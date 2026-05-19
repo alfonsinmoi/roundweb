@@ -23,3 +23,24 @@ __pycache__/
 build/
 *.log
 .vscode/
+
+# Scripts de diagnóstico / migración ad-hoc (no van al repo)
+_tmp_*.py
+_tmp_*.xlsx
+_tmp_*.json
+
+# Excels generados/descargados durante operación (no van al repo)
+clientes_apellidos_revisar.xlsx
+clientes_con_match.xlsx
+clientes_roundgestion.xlsx
+clientes_activos_*.xlsx
+discrepancias_*.xlsx
+duplicados_*.xlsx
+migrar_clientes_*.xlsx
+nf_no_en_gp.xlsx
+plan_correccion_*.xlsx
+propuesta_*.xlsx
+validacion_*.xlsx
+
+# Scripts de migración GP→NF (ad-hoc, no forman parte del producto)
+migracion/

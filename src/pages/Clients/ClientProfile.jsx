@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft, User, CalendarCheck, Send,
@@ -7,7 +7,7 @@ import {
   Activity, Smartphone, Settings, Shield, Mail, Phone, Pencil, Dumbbell,
   BarChart3, TrendingUp, TrendingDown, Clock, Users, Download, Code, Copy, Check,
   Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2, Receipt, RefreshCw,
-  QrCode, Bell,
+  QrCode, Bell, MessageCircle, Zap,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
@@ -21,20 +21,29 @@ import {
   postERPDatosCliente, apiPostRaw, apiGetRaw, loginEasy,
   getSalasByRange, getUsuariosBySala,
 } from '../../utils/api'
-import { useGympassMap } from '../../hooks/useGympassMap'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
+import AltaClienteModal from '../../components/AltaClienteModal'
+import ClienteNotasTab from '../../components/notas/ClienteNotasTab'
+import CuotasClienteCard from '../../components/subs/CuotasClienteCard'
+import DescuentosClienteCard from '../../components/subs/DescuentosClienteCard'
+import ModificacionesClienteCard from '../../components/subs/ModificacionesClienteCard'
+import FamiliaresClienteCard from '../../components/subs/FamiliaresClienteCard'
 import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate } from '../../utils/configApi'
 import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
 
+// Tab "Datos ERP" eliminado: la gestión de cuotas/descuentos/forma de pago
+// del cliente vive ahora en "Datos personales → Cuota y fechas" (componente
+// CuotasClienteCard). El alta-cliente nuevo se hace desde el banner
+// "Cliente esperando cobro" (BannerNuevosClientes → AltaClienteModal).
 const tabs = [
   { id: 'personal', label: 'Datos personales', icon: User },
+  { id: 'notas',    label: 'Notas',             icon: MessageCircle },
   { id: 'clases',   label: 'Clases realizadas', icon: CalendarCheck },
   { id: 'analisis', label: 'Análisis uso',      icon: BarChart3 },
-  { id: 'cuotas',   label: 'Cuotas',            icon: Receipt },
+  { id: 'cuotas',   label: 'Recibos',           icon: Receipt },
   { id: 'notificaciones', label: 'Notificaciones', icon: Bell },
-  { id: 'erp',      label: 'Datos ERP',         icon: Send },
 ]
 
 function calcEdad(birthdate) {
@@ -134,6 +143,56 @@ function GenderField({ label, value, editing, editForm, setEditForm }) {
     )
   }
   return <Field label={label} value={value === 'F' ? 'Femenino' : value === 'M' ? 'Masculino' : value} />
+}
+
+// Editable categoría selector (catálogo del manager)
+function CategoriaField({ label, categorias, valueId, editing, editForm, setEditForm }) {
+  if (editing && editForm && setEditForm) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
+        <dt style={{ fontSize: 13, color: 'var(--text-3)', flexShrink: 0 }}>{label}</dt>
+        <dd>
+          <select
+            value={editForm.categoriaId ?? ''}
+            onChange={e => setEditForm(f => ({
+              ...f,
+              categoriaId: e.target.value === '' ? null : Number(e.target.value),
+            }))}
+            className="form-input"
+            style={{
+              width: '100%', maxWidth: 240, padding: '8px 12px', borderRadius: 10, fontSize: 13,
+              background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+              textAlign: 'right',
+            }}
+          >
+            <option value="">— Sin categoría —</option>
+            {(categorias || []).filter(c => c.activa !== false).map(c => (
+              <option key={c.id} value={c.id}>{c.nombre}</option>
+            ))}
+          </select>
+        </dd>
+      </div>
+    )
+  }
+  const cat = (categorias || []).find(c => c.id === valueId)
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 16, padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
+      <dt style={{ fontSize: 13, color: 'var(--text-3)', flexShrink: 0 }}>{label}</dt>
+      <dd style={{ fontSize: 13, color: 'var(--text-1)', textAlign: 'right', wordBreak: 'break-word' }}>
+        {cat ? (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '3px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500,
+            background: cat.color ? `${cat.color}22` : 'var(--bg-3)',
+            color: cat.color || 'var(--text-1)',
+            border: `1px solid ${cat.color ? `${cat.color}55` : 'var(--line)'}`,
+          }}>
+            {cat.nombre}
+          </span>
+        ) : '—'}
+      </dd>
+    </div>
+  )
 }
 
 // ── Auth modal ─────────────────────────────────────────────────────────────────
@@ -410,11 +469,13 @@ export default function ClientProfile() {
       </div>
 
       {tab === 'personal'        && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
+      {tab === 'notas'           && <ClienteNotasTab cliente={cliente} />}
       {tab === 'clases'          && <TabClases clienteId={cliente.id} />}
       {tab === 'analisis'        && <TabAnalisis cliente={cliente} />}
       {tab === 'cuotas'          && <TabCuotas cliente={cliente} />}
       {tab === 'notificaciones'  && <TabNotificaciones cliente={cliente} />}
-      {tab === 'erp'             && <TabERP clienteId={cliente.id} cliente={cliente} />}
+      {/* Compatibilidad: enlaces antiguos ?tab=erp → redirigen a personal */}
+      {tab === 'erp'             && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
 
       {/* Dialogs */}
       <ConfirmDialog
@@ -488,6 +549,22 @@ export default function ClientProfile() {
 }
 
 // ── Tab: Datos personales ──────────────────────────────────────────────────────
+// Cache de autorización (10 min) — evita reintroducir contraseña por cada edición
+const EDIT_AUTH_TTL_MS = 10 * 60 * 1000
+const EDIT_AUTH_KEY = 'round.editAuth.until'
+
+function isEditAuthValid() {
+  try {
+    const until = Number(localStorage.getItem(EDIT_AUTH_KEY) || 0)
+    return until > Date.now()
+  } catch { return false }
+}
+
+function setEditAuth() {
+  try { localStorage.setItem(EDIT_AUTH_KEY, String(Date.now() + EDIT_AUTH_TTL_MS)) }
+  catch { /* ignore */ }
+}
+
 function TabPersonal({ cliente, onClienteUpdate }) {
   const toast = useToast()
   const [editing, setEditing] = useState(false)
@@ -495,28 +572,27 @@ function TabPersonal({ cliente, onClienteUpdate }) {
   const [authOpen, setAuthOpen] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // Gympass: lo guardamos en NUESTRA BD, no en NoofitPro
-  const { mapa: gympassMap, setGympass } = useGympassMap()
-  const gympassActual = cliente
-    ? (gympassMap[String(cliente.id)] || cliente.gympassId || '')
-    : ''
+  // Categoría: la guardamos en NUESTRA BD, no en NoofitPro
+  const { categorias, getCategoria, setCategoria } = useCategoriasMap()
+  const catActual = cliente ? getCategoria(cliente) : null
+  const catActualId = catActual ? catActual.id : null
 
   const startEdit = () => {
-    setEditForm({ ...cliente, gympassId: gympassActual })
+    setEditForm({ ...cliente, categoriaId: catActualId })
     setEditing(true)
   }
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      // Gympass se guarda separadamente en nuestra BD
-      const newGympass = (editForm.gympassId || '').trim()
-      if (newGympass !== gympassActual) {
-        try { await setGympass(cliente.id, newGympass) }
-        catch (e) { console.warn('gympass save:', e.message) }
+      // Categoría se guarda separadamente en nuestra BD
+      const newCategoriaId = editForm.categoriaId ?? null
+      if (newCategoriaId !== catActualId) {
+        try { await setCategoria(cliente.id, newCategoriaId) }
+        catch (e) { console.warn('categoria save:', e.message) }
       }
-      // El resto de campos sí van a NoofitPro (sin gympassId que lo descarta)
-      const { gympassId: _gymp, ...payload } = editForm
+      // El resto de campos sí van a NoofitPro (sin categoriaId que lo descarta)
+      const { categoriaId: _cat, ...payload } = editForm
       await postClientes([payload])
       onClienteUpdate({ ...editForm })
       setEditing(false)
@@ -553,7 +629,10 @@ function TabPersonal({ cliente, onClienteUpdate }) {
       </Btn>
     </div>
   ) : (
-    <Btn variant="secondary" size="sm" onClick={() => setAuthOpen(true)}>
+    <Btn variant="secondary" size="sm" onClick={() => {
+      if (isEditAuthValid()) { startEdit() }
+      else { setAuthOpen(true) }
+    }}>
       <Pencil size={14} aria-hidden="true" /> Editar
     </Btn>
   )
@@ -563,7 +642,9 @@ function TabPersonal({ cliente, onClienteUpdate }) {
   return (
     <div role="tabpanel" aria-label="Datos personales">
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))', gap: 20 }}>
+      <div style={{ display: 'grid',
+                     gridTemplateColumns: 'repeat(auto-fit, minmax(min(360px, 100%), 1fr))',
+                     gap: 20 }}>
 
         {/* Contact card — editable with auth */}
         <Card style={{ padding: 24 }}>
@@ -588,7 +669,7 @@ function TabPersonal({ cliente, onClienteUpdate }) {
             <Field label="Nombre"         value={cliente.name}      fieldKey="name"       {...ep} />
             <Field label="Apellidos"      value={cliente.surname}   fieldKey="surname"    {...ep} />
             <Field label="Alias"          value={cliente.alias}     fieldKey="alias"      {...ep} />
-            <Field label="Gympass ID"     value={gympassActual}     fieldKey="gympassId"  {...ep} />
+            <CategoriaField label="Categoría" categorias={categorias} valueId={catActualId} editing={editing} editForm={editForm} setEditForm={setEditForm} />
             <Field label="Email"          value={cliente.email}     fieldKey="email"      type="email" {...ep} />
             <Field label="Teléfono"       value={cliente.cellPhone} fieldKey="cellPhone"  type="tel"   {...ep} />
             <Field label="DNI"            value={cliente.dni}       fieldKey="dni"        {...ep} />
@@ -602,8 +683,18 @@ function TabPersonal({ cliente, onClienteUpdate }) {
           </dl>
         </Card>
 
-        {/* Categoría + fechas clave (alta / primera alta / inactivo) */}
-        <CategoriaYFechasCard cliente={cliente} />
+        {/* Columna 2 del grid padre: Categoría + Descuentos + Modificaciones
+            apiladas verticalmente. Forma una "celda" del grid auto-fit, así
+            cabe junto a "Datos contacto" y "Cuota y fechas". */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <CategoriaYFechasCard cliente={cliente} />
+          <DescuentosClienteCard cliente={cliente} />
+          <ModificacionesClienteCard cliente={cliente} />
+          <FamiliaresClienteCard cliente={cliente} />
+        </div>
+
+        {/* Columna 3: Cuota y fechas (la card grande con sus subs) */}
+        <CuotasClienteCard cliente={cliente} />
 
         {/* Estado */}
         <Card style={{ padding: 24 }}>
@@ -630,7 +721,7 @@ function TabPersonal({ cliente, onClienteUpdate }) {
       <AuthModal
         open={authOpen}
         onClose={() => setAuthOpen(false)}
-        onAuthorized={() => { setAuthOpen(false); startEdit() }}
+        onAuthorized={() => { setEditAuth(); setAuthOpen(false); startEdit() }}
         clienteName={`${cliente.name} ${cliente.surname}`}
       />
     </div>
@@ -1198,11 +1289,42 @@ function Kpi({ label, value, hint, color = 'var(--text-0)' }) {
 
 function TabAnalisis({ cliente }) {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const identity = useMemo(() => getRoundIdentity(user), [user])
   const [trainings, setTrainings] = useState(null)
   const [coAttendees, setCoAttendees] = useState(null)
+  const [retosCliente, setRetosCliente] = useState(null)  // [{reto, valorAcumulado, ...}]
   const [loading, setLoading] = useState(true)
   const [loadingCo, setLoadingCo] = useState(true)
   const [error, setError] = useState('')
+
+  // Cargar retos del cliente
+  useEffect(() => {
+    if (!identity?.managerId) return
+    import('../../utils/configApi').then(mod => mod.retosList(identity))
+      .then(arr => {
+        // Filtra los retos en los que el cliente participa
+        const out = []
+        const idStr = String(cliente.id)
+        for (const r of (arr || [])) {
+          const part = (r.participantes || []).find(p =>
+            String(p?.idClient || p?.clienteId) === idStr)
+          if (!part) continue
+          const rk = (r.rankingIndividual || []).find(x =>
+            String(x?.idClient || x?.clienteId) === idStr)
+          out.push({
+            reto: r,
+            valorAcumulado: rk?.valorAcumulado ?? part.valorAcumulado ?? 0,
+            numRegistros:   rk?.numRegistros   ?? part.numRegistros   ?? 0,
+            ranking:        rk?.rankingIndividual ?? null,
+            activo:         part.activo,
+            terminado:      Number(r.estado) === 2 || (typeof r.fechaFin === 'number' && r.fechaFin > 1e10 && r.fechaFin < Date.now()),
+          })
+        }
+        setRetosCliente(out)
+      })
+      .catch(() => setRetosCliente([]))
+  }, [cliente.id, identity?.managerId])
 
   useEffect(() => {
     let active = true
@@ -1460,6 +1582,69 @@ function TabAnalisis({ cliente }) {
             </div>
           ))}
         </div>
+      </Card>
+
+      {/* Retos del cliente */}
+      <Card style={{ padding: 24 }}>
+        <SectionTitle>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Zap size={16} aria-hidden="true" /> Retos NoofitPro
+          </span>
+        </SectionTitle>
+        {retosCliente == null ? (
+          <div style={{ padding: 20, textAlign: 'center' }}>
+            <Loader2 size={18} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
+          </div>
+        ) : retosCliente.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-3)', padding: '12px 0' }}>
+            Este cliente no participa en ningún reto. Cuando se apunte a uno aparecerá aquí.
+          </p>
+        ) : (
+          <>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 12 }}>
+              {retosCliente.length} reto{retosCliente.length !== 1 ? 's' : ''} (
+              {retosCliente.filter(x => !x.terminado).length} activo{retosCliente.filter(x => !x.terminado).length !== 1 ? 's' : ''} ·{' '}
+              {retosCliente.filter(x => x.terminado).length} terminado{retosCliente.filter(x => x.terminado).length !== 1 ? 's' : ''})
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {retosCliente.map(({ reto, valorAcumulado, numRegistros, ranking, activo, terminado }) => {
+                const metricLabel = ({ 1: 'sesiones', 2: 'km', 3: 'min', 4: 'kcal' }[reto.tipoMetrica] || '')
+                const valTxt = typeof valorAcumulado === 'number'
+                  ? (Number.isInteger(valorAcumulado) ? valorAcumulado : valorAcumulado.toFixed(2))
+                  : valorAcumulado
+                return (
+                  <div key={reto.id} style={{
+                    padding: '10px 14px', borderRadius: 10,
+                    background: terminado ? 'var(--bg-2)' : 'var(--green-bg)',
+                    border: `1px solid ${terminado ? 'var(--line)' : 'var(--green-border)'}`,
+                    opacity: !activo ? 0.6 : 1,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-0)' }}>
+                        {reto.nombre}
+                      </span>
+                      {terminado
+                        ? <Badge color="gray">Terminado</Badge>
+                        : <Badge color="green">Activo</Badge>}
+                      {!activo && <Badge color="red">Abandonó</Badge>}
+                      {ranking != null && (
+                        <Badge color={ranking <= 3 ? 'amber' : 'blue'}>
+                          Puesto #{ranking}
+                        </Badge>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 14, fontSize: 11.5, color: 'var(--text-2)', flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, color: 'var(--text-0)' }}>
+                        🏆 {valTxt} {metricLabel}
+                      </span>
+                      <span>📊 {numRegistros} sesiones</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
       </Card>
 
       {/* Compañeros de horario */}
@@ -1870,7 +2055,58 @@ function EnviarFacturaBtn({ invoiceId }) {
 }
 
 
+// Pestaña ERP del perfil — flujo guiado de alta-cliente.
+// Sustituye al formulario MCP/Wiems heredado (que sigue como TabERPLegacy
+// más abajo, sin uso, conservado por si hace falta consultarlo).
 function TabERP({ clienteId, cliente }) {
+  const [showModal, setShowModal] = useState(false)
+  const { categorias: cats, mapa: catMap, loaded: catLoaded } = useCategoriasMap()
+  const catActual = catMap[String(clienteId)]
+  const subCli = cliente.id ? cliente : { id: clienteId, ...cliente }
+
+  return (
+    <div style={{ paddingTop: 14 }}>
+      <Card style={{ padding: 28, marginBottom: 16 }}>
+        <p style={{ fontSize: 12, color: 'var(--text-3)', textTransform: 'uppercase',
+                    letterSpacing: '0.05em', marginBottom: 8 }}>Datos ERP</p>
+        <h2 style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-0)', marginBottom: 12 }}>
+          Alta del cliente
+        </h2>
+        <p style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.6, marginBottom: 18 }}>
+          Procesa el alta del cliente en un solo paso: categoría, cuotas, forma de pago,
+          primer recibo. La suscripción quedará activa para los recibos automáticos
+          futuros y el primer recibo se marcará como pagado según la forma de pago elegida.
+        </p>
+
+        {catLoaded && catActual && (
+          <div style={{ padding: 10, marginBottom: 14, borderRadius: 10,
+                        background: 'var(--bg-2)', border: '1px solid var(--line)',
+                        fontSize: 13, color: 'var(--text-2)' }}>
+            Categoría actual: <strong style={{ color: 'var(--text-0)' }}>{catActual.nombre}</strong>
+            {catActual.tiene_cuota
+              ? <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--green)' }}>· con cuota</span>
+              : <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--text-3)' }}>· sin cuota</span>}
+          </div>
+        )}
+
+        <Btn variant="primary" size="md" onClick={() => setShowModal(true)}>
+          <Send size={14} aria-hidden="true" /> Procesar alta de cliente
+        </Btn>
+      </Card>
+
+      {showModal && (
+        <AltaClienteModal cliente={subCli}
+                          onClose={() => setShowModal(false)}
+                          onSaved={() => { setShowModal(false); window.location.reload() }} />
+      )}
+    </div>
+  )
+}
+
+
+// Componente legacy — formulario dinámico MCP/Wiems. No se usa, conservado
+// como referencia por si hace falta consultarlo.
+function TabERPLegacy({ clienteId, cliente }) {
   const toast = useToast()
 
   // Lista canónica de campos (fuente de verdad para el envío al MCP)

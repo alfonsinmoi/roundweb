@@ -127,7 +127,20 @@ export default function Clases() {
     setSelActividad(act)
     setLoadingPanel(true)
     setUsuarios([])
-    try { setUsuarios(await getUsuariosBySala(sala.id)) }
+    try {
+      const [users, leadsResp] = await Promise.all([
+        getUsuariosBySala(sala.id),
+        fetch(`/api/crm/leads-en-sala/${sala.id}`).then(r => r.json()).catch(() => ({ leads: [] })),
+      ])
+      const leadsMap = new Map((leadsResp?.leads || []).map(l => [String(l.idnoofit), l]))
+      const enriched = (users || []).map(u => {
+        const lead = leadsMap.get(String(u.idClient)) || null
+        return { ...u, lead, esLead: !!lead }
+      })
+      // Leads primero
+      enriched.sort((a, b) => (b.esLead ? 1 : 0) - (a.esLead ? 1 : 0))
+      setUsuarios(enriched)
+    }
     catch { toast.error('Error cargando asistentes') }
     finally { setLoadingPanel(false) }
   }
@@ -707,8 +720,11 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
             {usuarios.map(u => (
               <div key={u.id} style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 14,
-                background: u.verify ? 'rgba(45,212,168,0.06)' : 'var(--bg-3)',
-                border: `1px solid ${u.verify ? 'rgba(45,212,168,0.2)' : 'var(--line)'}`,
+                background: u.esLead
+                  ? 'linear-gradient(90deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.04) 100%)'
+                  : (u.verify ? 'rgba(45,212,168,0.06)' : 'var(--bg-3)'),
+                border: `1.5px solid ${u.esLead ? 'rgba(245,158,11,0.7)' : (u.verify ? 'rgba(45,212,168,0.2)' : 'var(--line)')}`,
+                position: 'relative',
               }}>
                 <button onClick={() => setFotoPreview({ imgUrl: u.pictureClient, nombre: u.nameClient || `#${u.idClient}` })}
                         title="Ampliar foto"
@@ -717,15 +733,34 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
                   <Avatar nombre={u.nameClient || '?'} size={34} imgUrl={u.pictureClient} />
                 </button>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {u.esLead && (
+                      <span title="Lead — reserva de prueba gratuita" style={{
+                        fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+                        background: '#f59e0b', color: '#fff', letterSpacing: '0.04em',
+                      }}>LEAD</span>
+                    )}
                     {u.nameClient || `#${u.idClient}`}
                   </p>
-                  <div style={{ marginTop: 3 }}>
+                  <div style={{ marginTop: 3, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {u.verify
                       ? <Badge color="green"><CheckCircle2 size={9} aria-hidden="true" /> Asistió</Badge>
                       : <Badge color="gray"><XCircle size={9} aria-hidden="true" /> Sin confirmar</Badge>
                     }
+                    {u.esLead && (
+                      <Badge color="amber" title={`Reserva ${u.lead?.estado || 'pendiente'}`}>
+                        Reserva {u.lead?.estado || 'pendiente'}
+                      </Badge>
+                    )}
                   </div>
+                  {u.esLead && (u.lead?.email || u.lead?.telefono) && (
+                    <p style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 3,
+                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {u.lead?.email && <span>📧 {u.lead.email}</span>}
+                      {u.lead?.email && u.lead?.telefono && <span> · </span>}
+                      {u.lead?.telefono && <span>📱 {u.lead.telefono}</span>}
+                    </p>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                   <Btn variant={u.verify ? 'danger' : 'primary'} size="sm"

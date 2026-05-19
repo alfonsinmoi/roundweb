@@ -17,7 +17,10 @@ import {
   contabDocRechazar, contabDocDelete, contabDocFileUrl, contabListadosGet,
   contabDocEscanear, contabTotales, contabFaltantes, contabResultados,
   contabBancoImportar, contabBancoMovs, contabBancoLink, contabBancoMatching,
+  contabFaltanteIgnorar, contabFaltanteRestaurar, contabResultadosDisponibles,
+  contabDocAsiento, contabDocABorrador,
 } from '../../utils/configApi'
+import AsientoModal from './AsientoModal'
 
 export default function ContabilidadPage() {
   const { user, isImpersonating } = useAuth()
@@ -31,28 +34,78 @@ export default function ContabilidadPage() {
     const pad = n => String(n).padStart(2, '0')
     const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`
     const hoy = new Date()
-    const desde = new Date(hoy.getFullYear(), 0, 1)  // 1 de enero del año actual
+    // Rango por defecto: desde 1-enero del año anterior. Cubre 12 a 24 meses
+    // según el mes en que estemos. Así no se "pierden" docs cuando el LLM
+    // extrae mal el año (problema típico con nóminas).
+    const desde = new Date(hoy.getFullYear() - 1, 0, 1)
     return { desde: fmt(desde), hasta: fmt(hoy), estado: '', categoria_id: '', q: '' }
   })
   const [showUpload, setShowUpload] = useState(false)
   const [listadosVis, setListadosVis] = useState({})
+  const [asientoDoc, setAsientoDoc] = useState(null)  // doc cuyo asiento se muestra
+  const [verRechazados, setVerRechazados] = useState(false)  // toggle "ver rechazados"
   const [tab, setTab] = useState('docs')   // docs | totales | faltantes | resultados
+  // Filtro grid de períodos para Documentos (alternativo a desde/hasta)
+  const [docsModo, setDocsModo] = useState('mes')
+  const [docsPeriodos, setDocsPeriodos] = useState([])
+  const [docsDisp, setDocsDisp] = useState({ meses: [], trimestres: [] })
+  const [docsShowGrid, setDocsShowGrid] = useState(false)
+  useEffect(() => {
+    contabResultadosDisponibles(identity)
+      .then(d => setDocsDisp({ meses: d.meses || [], trimestres: d.trimestres || [] }))
+      .catch(() => {})
+  // eslint-disable-next-line
+  }, [identity?.managerId])
+
+  // Si hay períodos seleccionados, computamos rango envolvente para el query
+  const filtrosEfectivos = useMemo(() => {
+    if (docsPeriodos.length === 0) return filtros
+    const rangos = docsPeriodos.map(periodoARango).filter(Boolean)
+    if (rangos.length === 0) return filtros
+    const desde = rangos.map(r => r.desde).sort()[0]
+    const hasta = rangos.map(r => r.hasta).sort().slice(-1)[0]
+    return { ...filtros, desde, hasta }
+  }, [filtros, docsPeriodos])
 
   async function reload() {
     setLoading(true)
     try {
       const [c, d] = await Promise.all([
         contabCatsList(identity).catch(() => ({ categorias: [] })),
-        contabDocsList(identity, filtros).catch(() => []),
+        contabDocsList(identity, filtrosEfectivos).catch(() => []),
       ])
       setCats(c.categorias || [])
-      setDocs(d || [])
+      // Si hay periodos múltiples, filtrar local los docs cuya fecha esté
+      // dentro de algún rango específico (evita docs de meses intermedios).
+      // OJO: el backend devuelve fechas como string RFC ("Fri, 15 May 2026...")
+      // o ISO según endpoint — normalizamos a YYYY-MM-DD antes de comparar.
+      let docs = d || []
+      const toIsoDate = (v) => {
+        if (!v) return ''
+        const s = String(v)
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+        try {
+          const dt = new Date(s)
+          if (isNaN(dt)) return ''
+          const y = dt.getFullYear(), m = String(dt.getMonth()+1).padStart(2,'0'), d2 = String(dt.getDate()).padStart(2,'0')
+          return `${y}-${m}-${d2}`
+        } catch { return '' }
+      }
+      if (docsPeriodos.length > 1) {
+        const rangos = docsPeriodos.map(periodoARango).filter(Boolean)
+        docs = docs.filter(doc => {
+          const f = toIsoDate(doc.fecha_documento)
+          if (!f) return false
+          return rangos.some(r => f >= r.desde && f <= r.hasta)
+        })
+      }
+      setDocs(docs)
     } catch (e) { toast.error(`Error: ${e.message}`) }
     setLoading(false)
   }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [
-    identity.managerId, filtros.desde, filtros.hasta, filtros.estado,
-    filtros.categoria_id, filtros.q,
+    identity.managerId, filtrosEfectivos.desde, filtrosEfectivos.hasta,
+    filtros.estado, filtros.categoria_id, filtros.q, docsPeriodos,
   ])
 
   // Listados visibles para el trainer impersonando (manager ve todos)
@@ -165,29 +218,93 @@ export default function ContabilidadPage() {
         </Btn>
       </div>
 
+      {/* Botón toggle filtro grid de períodos */}
+      <div style={{ marginBottom: 14 }}>
+        <button onClick={() => setDocsShowGrid(s => !s)}
+                style={{
+                  background: 'none', border: '1px solid var(--line)', borderRadius: 8,
+                  padding: '6px 12px', cursor: 'pointer', color: 'var(--text-2)',
+                  fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}>
+          {docsShowGrid ? '▾' : '▸'} Filtrar por períodos (mes/trimestre)
+          {docsPeriodos.length > 0 && (
+            <Badge color="green">{docsPeriodos.length}</Badge>
+          )}
+        </button>
+      </div>
+      {docsShowGrid && (
+        <Card style={{ padding: 14, marginBottom: 14 }}>
+          <PeriodoGridMultiSelect
+            seleccionados={docsPeriodos}
+            setSeleccionados={setDocsPeriodos}
+            modo={docsModo}
+            setModo={setDocsModo}
+            disponibles={docsDisp} />
+        </Card>
+      )}
+
       {showUpload && (
         <UploadModal cats={cats} identity={identity}
                      onClose={() => setShowUpload(false)}
                      onUploaded={() => { setShowUpload(false); reload() }} />
       )}
 
-      {loading ? (
-        <Spinner />
-      ) : docs.length === 0 ? (
-        <EmptyState title="Sin documentos"
-                    description="Sube tu primera factura, nómina o extracto." />
-      ) : (
-        <DocsTable docs={docs} identity={identity}
+      {/* Toggle ver rechazados */}
+      {!loading && stats.rechazado > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 4,
+                      padding: '8px 12px', borderRadius: 8, background: 'var(--bg-3)',
+                      border: '1px solid var(--line)', fontSize: 12, color: 'var(--text-2)' }}>
+          <span>
+            Hay <strong style={{ color: 'var(--red)' }}>{stats.rechazado}</strong> documento{stats.rechazado !== 1 ? 's' : ''} rechazado{stats.rechazado !== 1 ? 's' : ''} ocultos.
+          </span>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginLeft: 'auto' }}>
+            <input type="checkbox" checked={verRechazados}
+                   onChange={e => setVerRechazados(e.target.checked)} />
+            Ver rechazados
+          </label>
+        </div>
+      )}
+
+      {(() => {
+        // Filtrar localmente los rechazados a menos que el toggle esté activo
+        // o el usuario haya elegido específicamente el filtro 'rechazado'.
+        const docsVisibles = (verRechazados || filtros.estado === 'rechazado')
+          ? docs
+          : docs.filter(d => d.estado !== 'rechazado')
+        if (loading) return <Spinner />
+        if (docsVisibles.length === 0) return (
+          <EmptyState title="Sin documentos"
+                      description={docs.length > 0
+                        ? 'Todos los documentos del rango están rechazados. Activa "Ver rechazados" para mostrarlos.'
+                        : 'Sube tu primera factura, nómina o extracto.'} />
+        )
+        return (
+        <DocsTable docs={docsVisibles} identity={identity}
                    onAction={async (action, doc, extra) => {
                      try {
                        if (action === 'validar') { await contabDocValidar(identity, doc.id); toast.success('Validado') }
                        else if (action === 'rechazar') { await contabDocRechazar(identity, doc.id, extra?.motivo); toast.success('Rechazado') }
                        else if (action === 'borrar') { await contabDocDelete(identity, doc.id); toast.success('Borrado') }
+                       else if (action === 'ver_asiento') { setAsientoDoc(doc); return }
+                       else if (action === 'a_borrador') {
+                         const r = await contabDocABorrador(identity, doc.id, extra?.motivo)
+                         if (r?.warning) toast.error('Pasado a borrador con aviso: ' + r.warning)
+                         else if (r?.odoo_action === 'draft') toast.success('Pasado a borrador. Asiento Odoo → draft.')
+                         else if (r?.odoo_action === 'cancelled') toast.success('Pasado a borrador. Asiento Odoo cancelado.')
+                         else toast.success('Pasado a borrador')
+                       }
                        reload()
                      } catch (e) { toast.error(`Error: ${e.message}`) }
                    }} />
-      )}
+        )
+      })()}
       </>)}
+
+      {/* Modal asiento contable */}
+      {asientoDoc && (
+        <AsientoModal doc={asientoDoc} identity={identity}
+                      onClose={() => setAsientoDoc(null)} />
+      )}
 
       {tab === 'banco'      && <BancoPanel identity={identity} />}
       {tab === 'totales'    && <TotalesPanel identity={identity} />}
@@ -205,7 +322,7 @@ function BancoPanel({ identity }) {
   const [importing, setImporting] = useState(false)
   const [matching, setMatching] = useState(false)
   const [matchResult, setMatchResult] = useState(null)
-  const [filtros, setFiltros] = useState({ estado: 'sin_cuadrar', q: '' })
+  const [filtros, setFiltros] = useState({ estado: 'sin_cuadrar', q: '', banco: '' })
 
   async function reload() {
     setLoading(true)
@@ -215,7 +332,7 @@ function BancoPanel({ identity }) {
     } catch (e) { toast.error(`Error: ${e.message}`) }
     setLoading(false)
   }
-  useEffect(() => { reload() /* eslint-disable-next-line */ }, [identity?.managerId, filtros.estado, filtros.q])
+  useEffect(() => { reload() /* eslint-disable-next-line */ }, [identity?.managerId, filtros.estado, filtros.q, filtros.banco])
 
   const onImport = async (e) => {
     const f = e.target.files?.[0]
@@ -262,6 +379,13 @@ function BancoPanel({ identity }) {
     return { sc, cd, ig }
   }, [movs])
 
+  // Bancos distintos en los movimientos cargados (para popular el filtro)
+  const bancosDisp = useMemo(() => {
+    const set = new Set()
+    for (const m of movs) if (m.banco) set.add(m.banco)
+    return [...set].sort()
+  }, [movs])
+
   const fmtDate = d => d ? new Date(d).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit' }) : '—'
 
   return (
@@ -282,6 +406,12 @@ function BancoPanel({ identity }) {
               <option value="sin_cuadrar">Sin cuadrar</option>
               <option value="cuadrado">Cuadrados</option>
               <option value="ignorado">Ignorados</option>
+            </select>
+          </Lbl>
+          <Lbl text="Banco">
+            <select value={filtros.banco} onChange={e => setFiltros(f => ({ ...f, banco: e.target.value }))} style={inp}>
+              <option value="">Todos los bancos</option>
+              {bancosDisp.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
           </Lbl>
           <Lbl text="Buscar">
@@ -327,19 +457,22 @@ function BancoPanel({ identity }) {
                     description="Importa un extracto bancario CSV o XLSX para empezar." />
       ) : (
         <Card style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '0.6fr 2fr 0.9fr 0.9fr 1fr 1.4fr 100px',
+          <div style={{ display: 'grid', gridTemplateColumns: '0.6fr 0.9fr 1.8fr 0.9fr 0.9fr 1fr 1.2fr 100px',
                          padding: '10px 16px', background: 'var(--bg-3)', fontSize: 11,
                          color: 'var(--text-3)', textTransform: 'uppercase' }}>
-            <span>Fecha</span><span>Concepto</span><span>Importe</span><span>Saldo</span>
+            <span>Fecha</span><span>Banco</span><span>Concepto</span><span>Importe</span><span>Saldo</span>
             <span>Estado</span><span>Factura</span><span></span>
           </div>
           {movs.map((m, i) => (
             <div key={m.id} style={{
-              display: 'grid', gridTemplateColumns: '0.6fr 2fr 0.9fr 0.9fr 1fr 1.4fr 100px',
+              display: 'grid', gridTemplateColumns: '0.6fr 0.9fr 1.8fr 0.9fr 0.9fr 1fr 1.2fr 100px',
               padding: '10px 16px', alignItems: 'center', fontSize: 12,
               borderTop: i > 0 ? '1px solid var(--line)' : 'none',
             }}>
               <span style={{ fontFamily: 'monospace' }}>{fmtDate(m.fecha)}</span>
+              <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+                {m.banco || '—'}
+              </span>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.concepto}>
                 {m.concepto}
               </span>
@@ -397,14 +530,60 @@ function TotalesPanel({ identity }) {
   })
   const [data, setData] = useState({ filas: [] })
   const [loading, setLoading] = useState(true)
+  // Estado para expandir filas y ver los documentos del grupo
+  const [expanded, setExpanded] = useState(null)        // string id del grupo expandido
+  const [docsCache, setDocsCache] = useState({})        // { grupo: [docs] | 'loading' | 'error' }
+
   useEffect(() => {
     setLoading(true)
+    setExpanded(null); setDocsCache({})    // reset al cambiar filtros
     contabTotales(identity, { ...filtros, group_by: groupBy, estado })
       .then(d => setData(d || { filas: [] }))
       .catch(e => toast.error(`Error: ${e.message}`))
       .finally(() => setLoading(false))
   // eslint-disable-next-line
   }, [identity?.managerId, groupBy, estado, filtros.desde, filtros.hasta])
+
+  // Carga perezosa de los documentos al expandir una fila.
+  const cargarDocsDelGrupo = async (fila) => {
+    const key = fila.grupo
+    if (docsCache[key] && docsCache[key] !== 'error') return
+    setDocsCache(prev => ({ ...prev, [key]: 'loading' }))
+    try {
+      const filtrosDocs = { estado: estado || undefined }
+      if (groupBy === 'mes') {
+        // grupo='YYYY-MM' → rango del mes (recortado por filtros globales)
+        const [yy, mm] = key.split('-')
+        const desdeMes = `${yy}-${mm}-01`
+        const lastDay = new Date(parseInt(yy), parseInt(mm), 0).getDate()
+        const hastaMes = `${yy}-${mm}-${String(lastDay).padStart(2,'0')}`
+        filtrosDocs.desde = filtros.desde > desdeMes ? filtros.desde : desdeMes
+        filtrosDocs.hasta = filtros.hasta < hastaMes ? filtros.hasta : hastaMes
+      } else {
+        // Para categoria/proveedor/trainer/tipo: filtros globales + filtro de grupo si se puede
+        filtrosDocs.desde = filtros.desde
+        filtrosDocs.hasta = filtros.hasta
+        if (groupBy === 'tipo')      filtrosDocs.doc_type   = fila.grupo_id || fila.grupo
+        if (groupBy === 'proveedor') filtrosDocs.proveedor  = fila.grupo
+        if (groupBy === 'trainer')   filtrosDocs.id_trainer = fila.grupo_id || ''
+        if (groupBy === 'categoria') filtrosDocs.categoria_id = fila.grupo_id || ''
+      }
+      const docs = await contabDocsList(identity, filtrosDocs)
+      setDocsCache(prev => ({ ...prev, [key]: docs }))
+    } catch (e) {
+      toast.error(`Error cargando docs: ${e.message}`)
+      setDocsCache(prev => ({ ...prev, [key]: 'error' }))
+    }
+  }
+
+  const toggleExpand = (fila) => {
+    if (expanded === fila.grupo) {
+      setExpanded(null)
+    } else {
+      setExpanded(fila.grupo)
+      cargarDocsDelGrupo(fila)
+    }
+  }
 
   const total = data.filas.reduce((a, r) => a + parseFloat(r.importe_total || 0), 0)
   return (
@@ -435,29 +614,108 @@ function TotalesPanel({ identity }) {
         <EmptyState title="Sin datos en el rango" />
       ) : (
         <Card style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
+          <div style={{ display: 'grid', gridTemplateColumns: '24px 2fr 1fr 1fr 1fr 1fr',
                          padding: '10px 16px', background: 'var(--bg-3)',
-                         fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase' }}>
+                         fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', gap: 8 }}>
+            <span></span>
             <span>{groupBy}</span><span>Base</span><span>IVA</span><span>Total</span><span>Docs</span>
           </div>
-          {data.filas.map((r, i) => (
-            <div key={i} style={{
-              display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
-              padding: '10px 16px', alignItems: 'center', fontSize: 13,
-              borderTop: i > 0 ? '1px solid var(--line)' : 'none',
-            }}>
-              <span style={{ fontWeight: 500 }}>{r.grupo}</span>
-              <span style={{ fontFamily: 'monospace' }}>{parseFloat(r.importe_base).toFixed(2)} €</span>
-              <span style={{ fontFamily: 'monospace' }}>{parseFloat(r.importe_iva).toFixed(2)} €</span>
-              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{parseFloat(r.importe_total).toFixed(2)} €</span>
-              <span>{r.n_docs}</span>
+          {data.filas.map((r, i) => {
+            const isOpen = expanded === r.grupo
+            return (
+            <div key={i} style={{ borderTop: i > 0 ? '1px solid var(--line)' : 'none' }}>
+              <div
+                role="button"
+                tabIndex={0}
+                aria-expanded={isOpen}
+                onClick={() => toggleExpand(r)}
+                onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleExpand(r))}
+                style={{
+                  display: 'grid', gridTemplateColumns: '24px 2fr 1fr 1fr 1fr 1fr',
+                  padding: '10px 16px', alignItems: 'center', fontSize: 13, gap: 8,
+                  cursor: 'pointer',
+                  background: isOpen ? 'var(--bg-2)' : 'transparent',
+                  transition: 'background 0.1s',
+                }}>
+                <span style={{ color: 'var(--text-3)', display: 'flex', alignItems: 'center',
+                               transition: 'transform 0.15s',
+                               transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                      aria-hidden="true">▶</span>
+                <span style={{ fontWeight: 500 }}>{r.grupo}</span>
+                <span style={{ fontFamily: 'monospace' }}>{parseFloat(r.importe_base).toFixed(2)} €</span>
+                <span style={{ fontFamily: 'monospace' }}>{parseFloat(r.importe_iva).toFixed(2)} €</span>
+                <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{parseFloat(r.importe_total).toFixed(2)} €</span>
+                <span>{r.n_docs}</span>
+              </div>
+              {isOpen && (
+                <div style={{ padding: '6px 16px 12px 48px', background: 'var(--bg-2)' }}>
+                  {docsCache[r.grupo] === 'loading' ? (
+                    <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Cargando documentos…</p>
+                  ) : docsCache[r.grupo] === 'error' ? (
+                    <p style={{ fontSize: 12, color: 'var(--red)' }}>Error al cargar documentos</p>
+                  ) : !Array.isArray(docsCache[r.grupo]) || docsCache[r.grupo].length === 0 ? (
+                    <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Sin documentos en este grupo</p>
+                  ) : (
+                    <div>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: '110px 1fr 1.4fr 100px 100px 110px 100px',
+                        padding: '8px 10px', fontSize: 10.5, color: 'var(--text-3)',
+                        textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600,
+                        borderBottom: '1px solid var(--line)', gap: 8,
+                      }}>
+                        <span>Fecha</span>
+                        <span>Tipo / Nº</span>
+                        <span>Proveedor / Concepto</span>
+                        <span style={{ textAlign: 'right' }}>Base</span>
+                        <span style={{ textAlign: 'right' }}>IVA</span>
+                        <span style={{ textAlign: 'right' }}>Total</span>
+                        <span style={{ textAlign: 'right' }}>Estado</span>
+                      </div>
+                      {docsCache[r.grupo].map((d, di) => (
+                        <div key={d.id || di} style={{
+                          display: 'grid', gridTemplateColumns: '110px 1fr 1.4fr 100px 100px 110px 100px',
+                          padding: '8px 10px', alignItems: 'center', fontSize: 12, gap: 8,
+                          borderBottom: di < docsCache[r.grupo].length - 1 ? '1px solid var(--line)' : 'none',
+                        }}>
+                          <span style={{ color: 'var(--text-2)', fontFamily: 'monospace' }}>
+                            {d.fecha || d.fecha_doc || '—'}
+                          </span>
+                          <span style={{ color: 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {d.doc_type || d.tipo || '—'}{d.numero ? ` · ${d.numero}` : ''}
+                          </span>
+                          <span style={{ color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {d.proveedor || d.concepto || d.descripcion || '—'}
+                          </span>
+                          <span style={{ fontFamily: 'monospace', textAlign: 'right', color: 'var(--text-2)' }}>
+                            {parseFloat(d.importe_base || 0).toFixed(2)} €
+                          </span>
+                          <span style={{ fontFamily: 'monospace', textAlign: 'right', color: 'var(--text-2)' }}>
+                            {parseFloat(d.importe_iva || 0).toFixed(2)} €
+                          </span>
+                          <span style={{ fontFamily: 'monospace', textAlign: 'right', fontWeight: 600, color: 'var(--text-0)' }}>
+                            {parseFloat(d.importe_total || 0).toFixed(2)} €
+                          </span>
+                          <span style={{ textAlign: 'right', fontSize: 10.5,
+                                         color: d.estado === 'validado' ? 'var(--green)'
+                                                : d.estado === 'borrador' ? 'var(--amber)'
+                                                : 'var(--text-3)' }}>
+                            {d.estado || '—'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          ))}
+            )
+          })}
           <div style={{
-            display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
+            display: 'grid', gridTemplateColumns: '24px 2fr 1fr 1fr 1fr 1fr',
             padding: '12px 16px', borderTop: '2px solid var(--line)',
-            background: 'var(--bg-3)', fontSize: 13, fontWeight: 700,
+            background: 'var(--bg-3)', fontSize: 13, fontWeight: 700, gap: 8,
           }}>
+            <span></span>
             <span>TOTAL</span>
             <span></span><span></span>
             <span style={{ fontFamily: 'monospace' }}>{total.toFixed(2)} €</span>
@@ -473,48 +731,112 @@ function TotalesPanel({ identity }) {
 function FaltantesPanel({ identity }) {
   const toast = useToast()
   const [meses, setMeses] = useState(6)
-  const [items, setItems] = useState([])
+  const [tipoDet, setTipoDet] = useState('detectado')   // detectado|estimado|all
+  const [incluirIgnorados, setIncluirIgnorados] = useState(false)
+  const [data, setData] = useState({ faltantes: [], stats: {} })
   const [loading, setLoading] = useState(true)
-  useEffect(() => {
+
+  const reload = () => {
     setLoading(true)
-    contabFaltantes(identity, meses)
-      .then(setItems)
+    contabFaltantes(identity, { meses, tipo_deteccion: tipoDet, incluir_ignorados: incluirIgnorados })
+      .then(d => setData(d || { faltantes: [], stats: {} }))
       .catch(e => toast.error(`Error: ${e.message}`))
       .finally(() => setLoading(false))
-  // eslint-disable-next-line
-  }, [identity?.managerId, meses])
+  }
+  useEffect(reload, /* eslint-disable-next-line */ [identity?.managerId, meses, tipoDet, incluirIgnorados])
+
+  const archivar = async (f) => {
+    const motivo = prompt(`Archivar faltante "${f.nombre} · ${f.periodo_faltante}"?\nMotivo (opcional):`)
+    if (motivo === null) return
+    try { await contabFaltanteIgnorar(identity, f.categoria_id, f.periodo_faltante, motivo); toast.success('Archivado'); reload() }
+    catch (e) { toast.error(`Error: ${e.message}`) }
+  }
+  const restaurar = async (f) => {
+    try { await contabFaltanteRestaurar(identity, f.categoria_id, f.periodo_faltante); toast.success('Restaurado'); reload() }
+    catch (e) { toast.error(`Error: ${e.message}`) }
+  }
+
+  const items = data.faltantes || []
+  const stats = data.stats || {}
 
   return (
     <div>
       <Card style={{ padding: 14, marginBottom: 14 }}>
-        <Lbl text="Ventana (meses atrás)">
-          <input type="number" min={1} max={24} value={meses}
-                 onChange={e => setMeses(parseInt(e.target.value) || 6)}
-                 style={{ ...inp, width: 100 }} />
-        </Lbl>
-        <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
-          Categorías con periodicidad cuyo período no tiene ningún documento.
-          Solo aparecen las que tienen periodicidad mensual / trimestral / anual.
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <Lbl text="Ventana (meses atrás)">
+            <input type="number" min={1} max={24} value={meses}
+                   onChange={e => setMeses(parseInt(e.target.value) || 6)}
+                   style={{ ...inp, width: 90 }} />
+          </Lbl>
+          <Lbl text="Tipo">
+            <select value={tipoDet} onChange={e => setTipoDet(e.target.value)} style={inp}>
+              <option value="detectado">Detectados (con historial)</option>
+              <option value="estimado">Estimados (sin historial)</option>
+              <option value="all">Todos</option>
+            </select>
+          </Lbl>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-2)', cursor: 'pointer', marginBottom: 5 }}>
+            <input type="checkbox" checked={incluirIgnorados}
+                   onChange={e => setIncluirIgnorados(e.target.checked)} />
+            Incluir archivados
+          </label>
+          <div style={{ flex: 1 }} />
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 5 }}>
+            <strong style={{ color: 'var(--green)' }}>{stats.detectados || 0}</strong> detectados ·
+            {' '}<strong style={{ color: 'var(--amber)' }}>{stats.estimados || 0}</strong> estimados
+            {incluirIgnorados && <> · <strong style={{ color: 'var(--text-3)' }}>{stats.ignorados || 0}</strong> archivados</>}
+          </div>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 10 }}>
+          <strong>Detectado</strong>: la categoría ya tiene historial — el faltante es real.
+          <strong style={{ marginLeft: 12 }}>Estimado</strong>: la categoría nunca tuvo doc — quizá no aplique a tu negocio.
         </p>
       </Card>
       {loading ? <Spinner /> : items.length === 0 ? (
         <Card style={{ padding: 30, textAlign: 'center' }}>
           <CheckCircle2 size={28} style={{ color: 'var(--green)', margin: '0 auto 8px' }} />
           <p style={{ fontSize: 14, color: 'var(--text-1)' }}>¡Al día!</p>
-          <p style={{ fontSize: 12, color: 'var(--text-3)' }}>No faltan documentos en la ventana seleccionada.</p>
+          <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            No hay faltantes con los filtros seleccionados.
+          </p>
         </Card>
       ) : (
         <Card style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 0.8fr 0.8fr 0.8fr 100px',
+                         padding: '10px 16px', background: 'var(--bg-3)',
+                         fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase' }}>
+            <span>Periodo</span><span>Categoría</span><span>Tipo</span><span>Periodicidad</span><span>Detección</span><span></span>
+          </div>
           {items.map((f, i) => (
-            <div key={i} style={{
-              display: 'grid', gridTemplateColumns: '1fr 2fr 1fr 1fr',
+            <div key={`${f.categoria_id}-${f.periodo_faltante}`} style={{
+              display: 'grid', gridTemplateColumns: '1fr 2fr 0.8fr 0.8fr 0.8fr 100px',
               padding: '10px 16px', alignItems: 'center', fontSize: 13,
               borderTop: i > 0 ? '1px solid var(--line)' : 'none',
+              opacity: f.ignorado ? 0.55 : 1,
             }}>
               <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{f.periodo_faltante}</span>
-              <span><Badge color={f.color || 'gray'}>{f.nombre}</Badge></span>
-              <span style={{ color: 'var(--text-3)' }}>{f.tipo}</span>
+              <span>
+                <Badge color={f.color || 'gray'}>{f.nombre}</Badge>
+                {f.ignorado && (
+                  <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-3)' }}
+                        title={f.ignored_motivo || ''}>· archivado</span>
+                )}
+              </span>
+              <span style={{ color: 'var(--text-3)', fontSize: 11 }}>{f.tipo}</span>
               <span style={{ color: 'var(--text-3)', fontSize: 11 }}>{f.periodicidad}</span>
+              <Badge color={f.tipo_deteccion === 'detectado' ? 'green' : 'amber'}>
+                {f.tipo_deteccion === 'detectado' ? 'Detectado' : 'Estimado'}
+              </Badge>
+              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                {f.ignorado ? (
+                  <button onClick={() => restaurar(f)} title="Restaurar" style={iconBtn}>↩</button>
+                ) : (
+                  <button onClick={() => archivar(f)} title="Archivar — no me interesa estudiar este"
+                          style={{ ...iconBtn, color: 'var(--amber)' }}>
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </Card>
@@ -524,58 +846,257 @@ function FaltantesPanel({ identity }) {
 }
 
 
+// ── Componente reutilizable: grid multi-select de meses/trimestres últimos 5 años ──
+function PeriodoGridMultiSelect({ seleccionados, setSeleccionados, modo, setModo, disponibles }) {
+  const ANIOS = useMemo(() => {
+    const y = new Date().getFullYear()
+    return [y, y-1, y-2, y-3, y-4]
+  }, [])
+  const dispSet = useMemo(
+    () => new Set(modo === 'mes' ? (disponibles?.meses || []) : (disponibles?.trimestres || [])),
+    [modo, disponibles]
+  )
+  const toggle = (p) => setSeleccionados(arr => arr.includes(p) ? arr.filter(x => x !== p) : [...arr, p])
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Vista:</span>
+        <div role="group" style={{ display: 'flex', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--line)' }}>
+          {['mes', 'trimestre'].map(m => (
+            <button key={m} onClick={() => { setModo(m); setSeleccionados([]) }}
+                    style={{
+                      padding: '6px 14px', fontSize: 12, fontWeight: 500, cursor: 'pointer', border: 'none',
+                      background: modo === m ? 'var(--green-bg)' : 'var(--bg-2)',
+                      color: modo === m ? 'var(--green)' : 'var(--text-2)',
+                    }}>
+              {m === 'mes' ? 'Meses' : 'Trimestres'}
+            </button>
+          ))}
+        </div>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-3)' }}>
+          {seleccionados.length} {modo === 'mes' ? 'mes' + (seleccionados.length === 1 ? '' : 'es') : 'trimestre' + (seleccionados.length === 1 ? '' : 's')} seleccionados
+          {seleccionados.length > 0 && (
+            <button onClick={() => setSeleccionados([])}
+                    style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer',
+                             color: 'var(--text-3)', fontSize: 11, textDecoration: 'underline' }}>
+              limpiar
+            </button>
+          )}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {ANIOS.map(y => {
+          const items = modo === 'mes'
+            ? Array.from({ length: 12 }, (_, i) => ({
+                id: `${y}-${String(i+1).padStart(2,'0')}`,
+                label: ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][i],
+              }))
+            : Array.from({ length: 4 }, (_, i) => ({ id: `${y}-T${i+1}`, label: `T${i+1}` }))
+          return (
+            <div key={y} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ width: 50, fontSize: 12, fontWeight: 600, color: 'var(--text-1)', fontFamily: 'monospace' }}>{y}</span>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${items.length}, 1fr)`, gap: 4, flex: 1 }}>
+                {items.map(it => {
+                  const sel = seleccionados.includes(it.id)
+                  const disp = dispSet.has(it.id)
+                  const futuro = (modo === 'mes' ? it.id > new Date().toISOString().slice(0,7) : false)
+                  return (
+                    <button key={it.id} onClick={() => toggle(it.id)}
+                            disabled={futuro}
+                            title={futuro ? 'Futuro' : disp ? 'Con datos' : 'Sin datos'}
+                            style={{
+                              padding: '6px 4px', fontSize: 11, cursor: futuro ? 'not-allowed' : 'pointer',
+                              border: sel ? '1px solid var(--green)' : '1px solid var(--line)',
+                              background: sel ? 'var(--green-bg)' : disp ? 'var(--bg-2)' : 'transparent',
+                              color: sel ? 'var(--green)' : disp ? 'var(--text-1)' : 'var(--text-3)',
+                              fontWeight: sel ? 700 : disp ? 500 : 400,
+                              opacity: futuro ? 0.3 : 1,
+                              borderRadius: 6, position: 'relative',
+                            }}>
+                      {it.label}
+                      {disp && !sel && (
+                        <span style={{ position: 'absolute', top: 2, right: 3, width: 4, height: 4,
+                                        borderRadius: '50%', background: 'var(--green)' }} />
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8 }}>
+        • Verde = seleccionado · Punto verde = períodos con datos · Click para añadir/quitar
+      </p>
+    </div>
+  )
+}
+
+
+// Convierte 'YYYY-MM' o 'YYYY-Tn' a {desde, hasta} ISO
+function periodoARango(p) {
+  if (/^\d{4}-T[1-4]$/.test(p)) {
+    const [y, t] = p.split('-T')
+    const yy = parseInt(y), tt = parseInt(t)
+    const m_ini = (tt - 1) * 3 + 1
+    const m_fin = tt * 3
+    const lastDay = [31,28,31,30,31,30,31,31,30,31,30,31][m_fin-1]
+    return { desde: `${yy}-${String(m_ini).padStart(2,'0')}-01`,
+             hasta: `${yy}-${String(m_fin).padStart(2,'0')}-${lastDay}` }
+  }
+  if (/^\d{4}-\d{2}$/.test(p)) {
+    const [y, m] = p.split('-')
+    const yy = parseInt(y), mm = parseInt(m)
+    const lastDay = mm === 2
+      ? (yy % 4 === 0 ? 29 : 28)
+      : [31,28,31,30,31,30,31,31,30,31,30,31][mm-1]
+    return { desde: `${y}-${m}-01`, hasta: `${y}-${m}-${lastDay}` }
+  }
+  return null
+}
+
+
 function ResultadosPanel({ identity }) {
   const toast = useToast()
-  const [filtros, setFiltros] = useState(() => {
-    const pad = n => String(n).padStart(2, '0')
-    const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`
-    const hoy = new Date()
-    const desde = new Date(hoy.getFullYear(), 0, 1)
-    return { desde: fmt(desde), hasta: fmt(hoy) }
-  })
+  const [modo, setModo] = useState('mes')
+  const [seleccionados, setSeleccionados] = useState([])
+  const [disponibles, setDisponibles] = useState({ meses: [], trimestres: [] })
   const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+  // Modo de cálculo de ingresos: 'reales' (recibos cobrados, default) o
+  // 'facturados' (facturas Odoo posteadas — incluye no cobradas).
+  const [modoIngresos, setModoIngresos] = useState('reales')
+  // Incluir movimientos bancarios sin cuadrar como ingresos
+  const [incluirNoContab, setIncluirNoContab] = useState(false)
+
   useEffect(() => {
+    contabResultadosDisponibles(identity)
+      .then(d => setDisponibles({ meses: d.meses || [], trimestres: d.trimestres || [] }))
+      .catch(() => {})
+  // eslint-disable-next-line
+  }, [identity?.managerId])
+
+  useEffect(() => {
+    if (seleccionados.length > 0) return
+    const hoy = new Date()
+    const y = hoy.getFullYear()
+    const m = String(hoy.getMonth() + 1).padStart(2, '0')
+    const t = Math.floor(hoy.getMonth() / 3) + 1
+    setSeleccionados(modo === 'mes' ? [`${y}-${m}`] : [`${y}-T${t}`])
+  // eslint-disable-next-line
+  }, [modo])
+
+  useEffect(() => {
+    if (seleccionados.length === 0) { setData(null); return }
     setLoading(true)
-    contabResultados(identity, filtros.desde, filtros.hasta)
+    contabResultados(identity, {
+      periodos: seleccionados,
+      ingresos: modoIngresos,
+      incluir_no_contabilizados: incluirNoContab,
+    })
       .then(setData)
       .catch(e => toast.error(`Error: ${e.message}`))
       .finally(() => setLoading(false))
   // eslint-disable-next-line
-  }, [identity?.managerId, filtros.desde, filtros.hasta])
+  }, [identity?.managerId, seleccionados, modoIngresos, incluirNoContab])
 
   return (
     <div>
       <Card style={{ padding: 14, marginBottom: 14 }}>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <Lbl text="Desde"><input type="date" value={filtros.desde} onChange={e => setFiltros(f => ({ ...f, desde: e.target.value }))} style={inp} /></Lbl>
-          <Lbl text="Hasta"><input type="date" value={filtros.hasta} onChange={e => setFiltros(f => ({ ...f, hasta: e.target.value }))} style={inp} /></Lbl>
+        <PeriodoGridMultiSelect
+          seleccionados={seleccionados}
+          setSeleccionados={setSeleccionados}
+          modo={modo}
+          setModo={setModo}
+          disponibles={disponibles} />
+      </Card>
+
+      {/* Selector ingresos reales vs facturados */}
+      <Card style={{ padding: 12, marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600,
+                          textTransform: 'uppercase', letterSpacing: 0.4 }}>
+            Ingresos
+          </span>
+          <div style={{ display: 'flex', borderRadius: 10, overflow: 'hidden',
+                         border: '1.5px solid var(--line)', background: 'var(--bg-2)' }}>
+            {[
+              { id: 'reales',     label: 'Reales (cobrados)' },
+              { id: 'facturados', label: 'Facturados' },
+            ].map(({ id, label }) => (
+              <button key={id}
+                      onClick={() => setModoIngresos(id)}
+                      aria-pressed={modoIngresos === id}
+                      style={{
+                        padding: '8px 14px', fontSize: 12.5, fontWeight: 700,
+                        background: modoIngresos === id ? 'var(--green)' : 'transparent',
+                        color: modoIngresos === id ? '#fff' : 'var(--text-1)',
+                        border: 'none', cursor: 'pointer',
+                      }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <span style={{ fontSize: 11.5, color: 'var(--text-3)', flex: 1, minWidth: 200 }}>
+            {modoIngresos === 'reales'
+              ? 'Suma de recibos cobrados en el período (estado=pagado, por fecha de pago).'
+              : 'Suma de facturas emitidas en Odoo en el período, cobradas o no.'}
+          </span>
+        </div>
+        {/* Toggle: incluir ingresos no contabilizados */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10,
+                       paddingTop: 10, borderTop: '1px dashed var(--line)' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8,
+                           cursor: 'pointer', fontSize: 12.5, color: 'var(--text-1)' }}>
+            <input type="checkbox" checked={incluirNoContab}
+                   onChange={e => setIncluirNoContab(e.target.checked)} />
+            <strong>Añadir ingresos no contabilizados</strong>
+          </label>
+          <span style={{ fontSize: 11.5, color: 'var(--text-3)', flex: 1, minWidth: 200 }}>
+            Movimientos bancarios entrantes en el período aún sin vincular a recibo o factura
+            (estado <code style={{ fontSize: 11 }}>sin_cuadrar</code> y <code style={{ fontSize: 11 }}>importe &gt; 0</code> en banco_movimiento).
+          </span>
+          {data?.total?.no_contabilizado > 0 && incluirNoContab && (
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--amber)',
+                           padding: '3px 8px', borderRadius: 6,
+                           background: 'rgba(251,191,36,0.12)',
+                           border: '1px solid rgba(251,191,36,0.3)' }}>
+              + {data.total.no_contabilizado.toFixed(2)} €
+            </span>
+          )}
         </div>
       </Card>
-      {loading ? <Spinner /> : !data ? <EmptyState title="Sin datos" /> : (
+
+      {loading ? <Spinner /> : !data ? <EmptyState title="Selecciona al menos un período" /> : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 14 }}>
-            <StatBox label="Ingresos (Odoo)" value={`${data.total.ingresos.toFixed(2)} €`} color="var(--green)" />
+            <StatBox label={
+                       (modoIngresos === 'reales' ? 'Ingresos (cobrados)' : 'Ingresos (facturados)')
+                       + (incluirNoContab && data.total.no_contabilizado > 0 ? ' + banco s/cuadrar' : '')
+                     }
+                     value={`${data.total.ingresos.toFixed(2)} €`} color="var(--green)" />
             <StatBox label="Gastos" value={`${data.total.gastos.toFixed(2)} €`} color="var(--red)" />
             <StatBox label="Beneficio" value={`${data.total.beneficio.toFixed(2)} €`}
                      color={data.total.beneficio >= 0 ? 'var(--green)' : 'var(--red)'} />
           </div>
-          {data.filas.length === 0 ? (
-            <EmptyState title="Sin movimientos en el rango" />
+          {(!data.filas || data.filas.length === 0) ? (
+            <EmptyState title="Sin movimientos en los períodos" />
           ) : (
             <Card style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
                              padding: '10px 16px', background: 'var(--bg-3)',
                              fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase' }}>
-                <span>Mes</span><span>Ingresos</span><span>Gastos</span><span>Beneficio</span>
+                <span>Período</span><span>Ingresos</span><span>Gastos</span><span>Beneficio</span>
               </div>
               {data.filas.map((r, i) => (
-                <div key={r.mes} style={{
+                <div key={r.periodo || r.mes} style={{
                   display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr',
                   padding: '10px 16px', alignItems: 'center', fontSize: 13,
                   borderTop: i > 0 ? '1px solid var(--line)' : 'none',
                 }}>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{r.mes}</span>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{r.periodo || r.mes}</span>
                   <span style={{ fontFamily: 'monospace', color: 'var(--green)' }}>{r.ingresos.toFixed(2)} €</span>
                   <span style={{ fontFamily: 'monospace', color: 'var(--red)' }}>{r.gastos.toFixed(2)} €</span>
                   <span style={{ fontFamily: 'monospace', fontWeight: 700,
@@ -637,18 +1158,58 @@ function DocsTable({ docs, identity, onAction }) {
               <a href={contabDocFileUrl(d.id, identity)} target="_blank" rel="noreferrer" style={iconBtn} title="Ver archivo">
                 <Eye size={12} />
               </a>
+              <button onClick={() => onAction('ver_asiento', d)}
+                      title={d.odoo_move_id ? 'Ver asiento contable (Odoo)' : 'Ver asiento contable propuesto'}
+                      style={{...iconBtn, color: d.odoo_move_id ? 'var(--blue)' : 'var(--text-2)'}}>
+                <Calculator size={12} />
+              </button>
               {d.estado === 'borrador' && (
                 <>
-                  <button onClick={() => onAction('validar', d)} title="Validar" style={{...iconBtn, color: 'var(--green)'}}>
+                  <button onClick={() => {
+                    const ok = window.confirm(
+                      `¿Validar definitivo?\n\n` +
+                      `Proveedor: ${d.proveedor || '—'}\n` +
+                      `Importe: ${d.importe_total || '—'} €\n` +
+                      `Periodo: ${d.periodo || '—'}\n\n` +
+                      `Esto marcará el documento como validado y creará el ` +
+                      `asiento contable en Odoo (account.move).`
+                    )
+                    if (ok) onAction('validar', d)
+                  }} title="Validar definitivo" style={{...iconBtn, color: 'var(--green)'}}>
                     <Check size={12} />
                   </button>
                   <button onClick={() => {
-                    const m = prompt('Motivo del rechazo (opcional):') || ''
+                    const m = window.prompt(
+                      `¿Anulamos este documento?\n\n` +
+                      `Proveedor: ${d.proveedor || '—'}\n` +
+                      `Importe: ${d.importe_total || '—'} €\n\n` +
+                      `Quedará marcado como rechazado. Motivo (opcional):`
+                    )
+                    if (m === null) return  // canceló
                     onAction('rechazar', d, { motivo: m })
-                  }} title="Rechazar" style={{...iconBtn, color: 'var(--amber)'}}>
+                  }} title="Anular / rechazar" style={{...iconBtn, color: 'var(--amber)'}}>
                     <X size={12} />
                   </button>
                 </>
+              )}
+              {d.estado === 'validado' && (
+                <button onClick={() => {
+                  const m = window.prompt(
+                    `¿Devolver este documento a BORRADOR?\n\n` +
+                    `Proveedor: ${d.proveedor || '—'}\n` +
+                    `Importe: ${d.importe_total || '—'} €\n` +
+                    `Asiento Odoo: ${d.odoo_move_id || 'ninguno'}\n\n` +
+                    `El documento volverá a estado borrador y se podrá editar de nuevo.\n` +
+                    (d.odoo_move_id
+                      ? `Se intentará pasar el asiento Odoo a draft (o cancelarlo).\n\n`
+                      : '\n') +
+                    `Motivo (opcional):`
+                  )
+                  if (m === null) return  // canceló
+                  onAction('a_borrador', d, { motivo: m })
+                }} title="Volver a borrador" style={{...iconBtn, color: 'var(--blue)'}}>
+                  <RefreshCw size={12} />
+                </button>
               )}
               {d.estado !== 'validado' && !d.odoo_move_id && !identity.trainerId && (
                 <button onClick={() => confirm(`Borrar documento ${d.proveedor || ''} ${d.num_factura || ''}?`) && onAction('borrar', d)}
@@ -716,17 +1277,58 @@ function UploadModal({ cats, identity, onClose, onUploaded }) {
 
   // ── Fase 1: subir archivo + lanzar escaneo LLM ──
   const subirYEscanear = async () => {
-    if (!archivo) { toast.error('Selecciona un archivo'); return }
+    console.log('[contab] subirYEscanear click', { archivo: archivo?.name, size: archivo?.size })
+    if (!archivo) {
+      toast.error('Selecciona primero un archivo (input "Archivo *")')
+      return
+    }
     setFase('scanning')
+    toast.success(`Subiendo ${archivo.name}…`)
     try {
       // 1. Upload (mínimo, sin metadata aún)
       const fd = new FormData()
       fd.append('file', archivo)
-      const doc = await contabDocUpload(identity, fd)
-      setDocId(doc.id)
-      // 2. Llamar a escanear → LLM rellena la fila
+      let doc, isExisting = false
       try {
-        const r = await contabDocEscanear(identity, doc.id)
+        // El backend devuelve {documento, existing: true} si ya estaba subido.
+        // _contabRequest no expone toda la respuesta, así que llamamos directo.
+        const fdRes = await fetch('/api/contab/documentos', {
+          method: 'POST',
+          headers: {
+            'X-Round-Token': import.meta.env.VITE_CONFIG_API_TOKEN || '',
+            'X-Round-Manager-Id': identity?.managerId || '',
+            ...(identity?.trainerId ? { 'X-Round-Trainer-Id': identity.trainerId } : {}),
+          },
+          body: fd,
+        })
+        const txt = await fdRes.text()
+        let resData; try { resData = JSON.parse(txt) } catch { resData = { error: txt } }
+        if (!fdRes.ok || resData?.ok === false) {
+          throw new Error(resData?.error || `HTTP ${fdRes.status}`)
+        }
+        doc = resData.documento
+        isExisting = !!resData.existing
+        console.log('[contab] upload OK', { doc, isExisting })
+      } catch (upErr) {
+        console.error('[contab] upload FAIL', upErr)
+        toast.error(`Subida falló: ${upErr.message}`)
+        setFase('pick')
+        return
+      }
+      setDocId(doc.id)
+      if (isExisting) {
+        toast.success(`Ya existía (id=${doc.id}). Abriendo original…`)
+      } else {
+        toast.success('Subida OK. Analizando con IA (puede tardar 1-3 min)…')
+      }
+      // 2. Si el doc YA tenía datos del LLM, no re-escaneamos: cargamos directo.
+      //    Solo escaneamos si es nuevo o el escaneo anterior falló.
+      const yaEscaneado = isExisting && doc.extraido_por_llm
+      try {
+        const r = yaEscaneado
+          ? { documento: doc, extraction: { confidence: doc.confianza_llm } }
+          : await contabDocEscanear(identity, doc.id)
+        console.log('[contab] escanear OK', r, { yaEscaneado })
         setExtraction(r.extraction)
         setWarning(r.warning || null)
         // Cargar los datos al form. Convertir fecha (puede venir RFC o ISO).
@@ -898,7 +1500,7 @@ function UploadModal({ cats, identity, onClose, onUploaded }) {
             </div>
             <div style={{ padding: 14, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-              <Btn variant="primary" onClick={subirYEscanear} disabled={!archivo}>
+              <Btn variant="primary" onClick={subirYEscanear}>
                 <Upload size={14} /> Subir y escanear
               </Btn>
             </div>

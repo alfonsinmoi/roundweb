@@ -20,7 +20,10 @@ from . import noofit_client as nc
 log = logging.getLogger(__name__)
 
 DIA_NOMBRES = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom']
-DIAS_EXCLUIDOS = {0, 1}  # 0=Lunes, 1=Martes (datetime.weekday())
+# Días excluidos por defecto si el centro no configura nada en `dias_permitidos`.
+# El manager puede sobrescribir esto desde Configuración → Centros.
+# Default actual: solo miércoles y jueves disponibles para pruebas.
+DIAS_EXCLUIDOS = {0, 1, 4, 5, 6}
 
 # Margen mínimo desde ahora para que el lead pueda llegar
 ANTELACION_MINIMA_HORAS = 24
@@ -79,6 +82,8 @@ def _serialize(sala, score, occ_proyectada, capacidad_libre):
         'id_sala':       sala.get('id'),
         'id_trainer':    sala.get('idTrainer'),
         'nombre':        sala.get('name'),
+        'id_actividad':  sala.get('idActividad'),
+        'actividad':     sala.get('actividad') or sala.get('nameActividad') or '',
         'fecha_iso':     dt.isoformat() if dt else None,
         'fecha_local':   dt.astimezone().strftime('%Y-%m-%d') if dt else None,
         'hora':          dt.astimezone().strftime('%H:%M') if dt else None,
@@ -99,13 +104,44 @@ def _nivel(score):
     return 'casi_llena'
 
 
-def slots_disponibles(id_trainer, dias_adelante=14, max_resultados=12):
+def slots_disponibles(id_trainer, dias_adelante=14, max_resultados=12,
+                      id_actividad=None, devolver_actividades=False,
+                      dias_permitidos=None, actividades_permitidas=None):
     """Devuelve los slots con menor afluencia para reserva de prueba.
 
     id_trainer: id del centro/trainer en NoofitPro (ej. 17675)
     dias_adelante: cuántos días al futuro mirar
     max_resultados: cuántos slots devolver (los más vacíos)
+    id_actividad: si se pasa, filtra solo clases de esa actividad NoofitPro
+    devolver_actividades: si True, devuelve también la lista de actividades
+                          únicas disponibles en la ventana (para selector web)
+    dias_permitidos: set/list de int 0-6 (lun=0...dom=6). Si se pasa, sólo se
+                     muestran clases en esos días. Si None o lista vacía, se
+                     usa el default DIAS_EXCLUIDOS.
+    actividades_permitidas: set/list de id_actividad. Si se pasa y no vacía,
+                            sólo se muestran clases de esas actividades.
+
+    Retorna:
+        - lista de slots si devolver_actividades=False (compat)
+        - dict {slots, actividades} si devolver_actividades=True
     """
+    # Normalizar dias_permitidos → set de excluidos
+    if dias_permitidos:
+        try:
+            dp = {int(x) for x in dias_permitidos if 0 <= int(x) <= 6}
+            dias_excluidos = {0,1,2,3,4,5,6} - dp if dp else DIAS_EXCLUIDOS
+        except (TypeError, ValueError):
+            dias_excluidos = DIAS_EXCLUIDOS
+    else:
+        dias_excluidos = DIAS_EXCLUIDOS
+
+    # Normalizar actividades_permitidas → set de int (vacío = todas)
+    actividades_filtro = set()
+    if actividades_permitidas:
+        try:
+            actividades_filtro = {int(x) for x in actividades_permitidas if str(x).strip()}
+        except (TypeError, ValueError):
+            actividades_filtro = set()
     ahora = datetime.now(timezone.utc)
     futuro = ahora + timedelta(days=dias_adelante)
     pasado_4w = ahora - timedelta(weeks=4)
@@ -148,12 +184,13 @@ def slots_disponibles(id_trainer, dias_adelante=14, max_resultados=12):
             return 0.6 * s4 + 0.4 * s12
         return s4 if s4 is not None else (s12 if s12 is not None else 0.5)
 
-    # 4) Filtrar futuras: aforo válido, no llenas, antelación mínima, sin lun/mar
+    # 4) Filtrar futuras: aforo válido, no llenas, antelación mínima, días permitidos
     candidatas = []
+    actividades_set = {}    # id_actividad → {id, nombre, n_clases}
     for s in futuras:
         dt = _ms_to_dt(s.get('dateStart'))
         if not dt: continue
-        if dt.weekday() in DIAS_EXCLUIDOS: continue
+        if dt.weekday() in dias_excluidos: continue
         if (dt - ahora) < timedelta(hours=ANTELACION_MINIMA_HORAS): continue
         aforo = s.get('aforo') or 0
         if aforo <= 0: continue
@@ -161,6 +198,26 @@ def slots_disponibles(id_trainer, dias_adelante=14, max_resultados=12):
         ocupados = sum(1 for u in users if u.get('enabled', True))
         libres = aforo - ocupados
         if libres < 1: continue
+        # Filtrar por whitelist de actividades del centro (config admin)
+        act_id_int = s.get('idActividad')
+        try: act_id_int = int(act_id_int) if act_id_int is not None else None
+        except (TypeError, ValueError): act_id_int = None
+        if actividades_filtro and act_id_int not in actividades_filtro:
+            continue
+        # Recopilar actividades disponibles ANTES de aplicar filtro id_actividad
+        # (para que el selector frontend muestre las opciones reales)
+        act_id = s.get('idActividad')
+        act_name = s.get('actividad') or s.get('nameActividad') or s.get('name') or ''
+        if act_id is not None:
+            key = str(act_id)
+            if key not in actividades_set:
+                actividades_set[key] = {
+                    'id': act_id, 'nombre': act_name, 'n_clases': 0,
+                }
+            actividades_set[key]['n_clases'] += 1
+        # Filtrar por actividad si se pidió (parámetro URL ?actividad=)
+        if id_actividad is not None and str(s.get('idActividad') or '') != str(id_actividad):
+            continue
         candidatas.append((s, _score(s), libres))
 
     # 5) Ordenar por afluencia ascendente y luego por fecha
@@ -169,6 +226,10 @@ def slots_disponibles(id_trainer, dias_adelante=14, max_resultados=12):
     out = []
     for sala, sc, libres in candidatas[:max_resultados]:
         out.append(_serialize(sala, sc, None, libres))
+
+    if devolver_actividades:
+        actividades = sorted(actividades_set.values(), key=lambda a: a['nombre'])
+        return {'slots': out, 'actividades': actividades}
     return out
 
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Loader2, CheckCircle2 } from 'lucide-react'
+import { Loader2, CheckCircle2, Tag } from 'lucide-react'
 import { Btn } from './UI'
 import Modal from './Modal'
 import { useToast } from './Toast'
@@ -8,6 +8,7 @@ import { getERPDatosCliente, postERPDatosCliente } from '../utils/api'
 import { validarIBAN, validarDNI, validarEmail, validarTelefono } from '../utils/validators'
 import { getRoundIdentity, cuotasList as cfgCuotasList, descuentosList } from '../utils/configApi'
 import { altaCliente } from '../utils/cuotasApi'
+import { useCategoriasMap } from '../hooks/useCategoriasMap'
 
 // Selectores fijos para los nuevos campos Odoo
 const PERIODICIDAD_OPTS = [
@@ -68,6 +69,22 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
   const [cuotas, setCuotas] = useState([])
   const [descuentos, setDescuentos] = useState([])
 
+  // Categoría de cliente (obligatoria — se asigna o confirma desde aquí)
+  const { categorias, mapa: catMapa, loaded: catLoaded, setCategoria } = useCategoriasMap()
+  const [categoriaId, setCategoriaId] = useState('')
+  const [categoriaInicial, setCategoriaInicial] = useState('')
+
+  // Sincronizar la categoría actual del cliente cuando se abre el modal
+  useEffect(() => {
+    if (!cliente || !catLoaded) return
+    const actual = catMapa[String(cliente.id)]
+    const idActual = actual?.id ? String(actual.id) : ''
+    setCategoriaInicial(idActual)
+    setCategoriaId(idActual)
+  }, [cliente?.id, catLoaded, catMapa])
+
+  const categoriasActivas = (categorias || []).filter(c => c.activa)
+
   const campos = erpConfig?.campos ?? []
 
   // Cargar cuotas + descuentos del manager para dropdowns
@@ -110,6 +127,7 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
   }, [cliente, erpConfig])
 
   const validate = () => {
+    if (!categoriaId) return 'Categoría es obligatoria — selecciona una para clasificar al cliente'
     for (const campo of campos) {
       const val = form[campo.nombreCampo]
       const isEmpty = val === '' || val == null
@@ -161,6 +179,17 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
         await postERPDatosCliente(cliente.id, data)
       } catch (e) {
         console.warn('save legacy ERP wiems:', e?.message)
+      }
+
+      // 1b) Persistir categoría si cambió (la pestaña ERP es ahora el sitio
+      //     canónico para asignar categoría de cliente).
+      if (categoriaId && categoriaId !== categoriaInicial) {
+        try {
+          await setCategoria(cliente.id, parseInt(categoriaId, 10))
+        } catch (e) {
+          console.warn('save categoria cliente:', e?.message)
+          toast.warning('No se pudo guardar la categoría: ' + (e?.message || ''))
+        }
       }
 
       // 2) Mapear los campos a la estructura Odoo y crear alta-cliente
@@ -263,6 +292,49 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
             <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} aria-hidden="true" />
           </div>
         ) : (
+          <>
+          {/* Selector de categoría — obligatorio antes de cualquier otro dato */}
+          <div style={{
+            padding: '14px 16px', marginBottom: 20, borderRadius: 12,
+            background: 'var(--bg-1)', border: '1px solid var(--line)',
+          }}>
+            <label htmlFor="erp-categoria" style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              fontSize: 13, fontWeight: 600, color: 'var(--text-0)', marginBottom: 6,
+            }}>
+              <Tag size={14} aria-hidden="true" style={{ color: 'var(--green)' }} />
+              Categoría del cliente
+              <span style={{ color: 'var(--red)', marginLeft: 2 }} aria-label="obligatorio">*</span>
+            </label>
+            <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '0 0 10px' }}>
+              Tipo de cliente. Determina si tiene cuota mensual, si puede reservar clases, etc.
+            </p>
+            <select id="erp-categoria"
+                    value={categoriaId}
+                    onChange={e => setCategoriaId(e.target.value)}
+                    aria-required="true"
+                    aria-invalid={error && error.toLowerCase().includes('categoría') ? 'true' : undefined}
+                    style={{
+                      width: '100%', padding: '10px 14px', borderRadius: 10, fontSize: 14,
+                      background: 'var(--bg-2)', border: '1px solid var(--line)',
+                      color: 'var(--text-0)', outline: 'none',
+                    }}>
+              <option value="">— selecciona una categoría —</option>
+              {categoriasActivas.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre}
+                  {c.tiene_cuota ? ' · cuota' : ''}
+                  {!c.puede_reservar ? ' · sin reserva' : ''}
+                </option>
+              ))}
+            </select>
+            {!categoriaInicial && (
+              <p style={{ fontSize: 11, color: 'var(--amber)', margin: '8px 0 0' }}>
+                Este cliente todavía no tiene categoría asignada.
+              </p>
+            )}
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px 24px' }}>
             {campos.sort((a, b) => a.orden - b.orden).map(campo => {
               const key = campo.nombreCampo
@@ -335,6 +407,7 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
               )
             })}
           </div>
+          </>
         )}
       </div>
 

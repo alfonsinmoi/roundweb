@@ -18,24 +18,37 @@ log = logging.getLogger(__name__)
 
 
 def _get_config(id_manager, id_trainer=None):
-    """Resuelve config de email con prioridad por trainer:
+    """Resuelve config de email con prioridad:
        1) (id_manager, id_trainer) si trainer especificado y hay fila
-       2) (id_manager, NULL) — config global del manager (fallback)
+       2) (id_manager, NULL) — config global del manager
+       3) Fallback: primer email_proveedor activo del sistema
+          (cubre el caso de gestor multi-manager sin config propia).
     """
-    if not id_manager: return None
+    if not id_manager: id_manager = ''
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            if id_trainer:
+            if id_manager and id_trainer:
                 cur.execute("""SELECT * FROM email_proveedor
                                 WHERE id_manager=%s AND id_trainer=%s AND active=TRUE
                                 LIMIT 1""",
                             (str(id_manager), str(id_trainer)))
                 row = cur.fetchone()
                 if row: return row
+            if id_manager:
+                cur.execute("""SELECT * FROM email_proveedor
+                                WHERE id_manager=%s AND id_trainer IS NULL AND active=TRUE
+                                LIMIT 1""", (str(id_manager),))
+                row = cur.fetchone()
+                if row: return row
+            # Fallback global (no fail-soft anterior)
             cur.execute("""SELECT * FROM email_proveedor
-                            WHERE id_manager=%s AND id_trainer IS NULL AND active=TRUE
-                            LIMIT 1""", (str(id_manager),))
-            return cur.fetchone()
+                            WHERE active=TRUE
+                            ORDER BY id_trainer NULLS FIRST
+                            LIMIT 1""")
+            row = cur.fetchone()
+            if row:
+                log.info(f'_get_config: usando fallback global (manager={id_manager} sin config propia)')
+            return row
     except Exception as e:
         log.error(f'_get_config email: {e}')
         return None

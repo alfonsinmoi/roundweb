@@ -4,15 +4,37 @@ import { QRCodeSVG } from 'qrcode.react'
 import {
   Zap, LogOut, Settings, ChevronDown, ChevronRight,
   PanelLeftClose, PanelLeftOpen, QrCode, ChevronUp,
-  ArrowLeftRight, Loader2, Eye, EyeOff, X,
+  ArrowLeftRight, Loader2, Eye, EyeOff, X, KeyRound,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { navItems, managerItems, configItems } from '../config/routes'
+import { canAccessSection } from '../config/permissions'
 import { useClaseEnCurso } from '../hooks/useClaseEnCurso'
 import { formatHora } from '../utils/formatters'
 import { Avatar } from './UI'
+import { requestResetUsuarioWeb } from '../utils/authUsuarioApi'
+import { useToast } from './Toast'
 import { getEntrenadores } from '../utils/api'
 import { prefetchRoute } from '../utils/prefetch'
+
+// Filtra items del menú según los permisos del perfil del usuario web.
+// Manager NoofitPro (kind != 'usuario_web') ve todo siempre.
+function filterByPerms(items, user) {
+  if (!user || user.kind !== 'usuario_web') return items
+  const perfil = user.perfil
+  return items
+    .map(item => {
+      if (!item.perm) return item
+      if (item.children) {
+        // Filtrar hijos primero
+        const childrenAllowed = item.children.filter(c => !c.perm || canAccessSection(perfil, c.perm))
+        if (!childrenAllowed.length) return null
+        return { ...item, children: childrenAllowed }
+      }
+      return canAccessSection(perfil, item.perm) ? item : null
+    })
+    .filter(Boolean)
+}
 
 export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
   const { logout, user, loginAsTrainer, switchBackToManager, isImpersonating } = useAuth()
@@ -101,7 +123,60 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
     navigate('/dashboard')
   }
 
-  const NavItem = ({ to, icon: Icon, label }) => {
+  const NavItem = ({ to, icon: Icon, label, children }) => {
+    // Si tiene children → renderizar como grupo desplegable
+    if (children && children.length > 0) {
+      const anyActive = children.some(c => pathname === c.to || pathname.startsWith(c.to))
+      const [open, setOpen] = useState(anyActive)
+      return (
+        <div>
+          <button
+            onClick={() => setOpen(o => !o)}
+            title={collapsed ? label : undefined}
+            className="nav-link"
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: collapsed ? 0 : 14,
+              padding: collapsed ? '12px 0' : '12px 16px',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+              borderRadius: 14, fontSize: 14, fontWeight: 500, textDecoration: 'none',
+              color: anyActive ? 'var(--green)' : 'var(--text-2)',
+              background: anyActive ? 'var(--green-bg)' : 'transparent',
+              border: 'none', cursor: 'pointer', textAlign: 'left',
+              transition: 'all 0.1s ease',
+            }}>
+            <Icon size={19} strokeWidth={anyActive ? 2 : 1.6} aria-hidden="true" />
+            {!collapsed && (
+              <>
+                <span style={{ flex: 1 }}>{label}</span>
+                <span style={{ fontSize: 10, opacity: 0.7 }}>{open ? '▾' : '▸'}</span>
+              </>
+            )}
+          </button>
+          {open && !collapsed && (
+            <div style={{ marginLeft: 14, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {children.map(c => {
+                const cActive = pathname === c.to || (c.to !== '/dashboard' && pathname.startsWith(c.to))
+                return (
+                  <NavLink key={c.to} to={c.to}
+                    onClick={e => { if (cActive) e.preventDefault(); else onNavigate() }}
+                    onMouseEnter={() => prefetchRoute(c.to)}
+                    style={{
+                      padding: '8px 16px 8px 24px', borderRadius: 10, fontSize: 13,
+                      textDecoration: 'none',
+                      color: cActive ? 'var(--green)' : 'var(--text-2)',
+                      background: cActive ? 'var(--green-bg)' : 'transparent',
+                      borderLeft: cActive ? '2px solid var(--green)' : '2px solid var(--line)',
+                    }}>
+                    {c.label}
+                  </NavLink>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )
+    }
+    // Item normal sin children
     const active = pathname === to || (to !== '/dashboard' && pathname.startsWith(to))
     return (
       <NavLink
@@ -371,7 +446,7 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
 
       {/* ── Nav ─────────────────────────────────────────────────────────── */}
       <nav style={{ flex: 1, padding: '0 10px', display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', overflowX: 'hidden' }}>
-        {navItems.map(item => <NavItem key={item.to} {...item} />)}
+        {filterByPerms(navItems, user).map(item => <NavItem key={item.id || item.to} {...item} />)}
 
         {/* Items solo para el gestor (sin impersonar) */}
         {!isImpersonating && managerItems.length > 0 && (
@@ -452,48 +527,176 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
       )}
 
       {/* ── Footer ──────────────────────────────────────────────────────── */}
-      <div style={{ padding: '0 10px', marginTop: 8, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
-        {user && !collapsed && (
-          <div style={{ padding: '0 10px', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ position: 'relative', flexShrink: 0 }}>
-              <Avatar nombre={`${user.nombre || ''} ${user.apellidos || ''}`} size={26} imgUrl={user.imgUrl} />
-              {isImpersonating && (
-                <div style={{
-                  position: 'absolute', bottom: -2, right: -2,
-                  width: 9, height: 9, borderRadius: '50%',
-                  background: '#f59e0b',
-                  border: '1.5px solid var(--bg-1)',
-                }} title="Sesión de trainer activa" />
-              )}
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <p style={{
-                fontSize: 11, fontWeight: 500,
-                color: isImpersonating ? '#f59e0b' : 'var(--text-1)',
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }} title={`${user.nombre} ${user.apellidos}`}>
-                {user.nombre} {user.apellidos}
-              </p>
-              <p style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                 title={user.email}>
-                {user.email}
-              </p>
-            </div>
-          </div>
-        )}
-        <button onClick={logout} aria-label="Cerrar sesión" title={collapsed ? 'Cerrar sesión' : undefined}
-          className="nav-link"
-          style={{
-            display: 'flex', alignItems: 'center', gap: collapsed ? 0 : 10,
-            justifyContent: collapsed ? 'center' : 'flex-start',
-            width: '100%', padding: collapsed ? '8px 0' : '7px 10px', borderRadius: 10,
-            fontSize: 12, fontWeight: 500, cursor: 'pointer',
-            color: 'var(--text-3)', background: 'transparent', border: 'none', transition: 'all 0.1s',
-          }}>
-          <LogOut size={15} strokeWidth={1.6} aria-hidden="true" />
-          {!collapsed && 'Cerrar sesión'}
-        </button>
+      <div style={{ padding: '0 10px', marginTop: 8, paddingTop: 10, borderTop: '1px solid var(--line)', position: 'relative' }}>
+        <UserCard user={user} isImpersonating={isImpersonating} collapsed={collapsed}
+                  logout={logout} />
       </div>
     </aside>
   )
+}
+
+
+// ── Footer card del usuario logueado ────────────────────────────────────────
+// Muestra el centro (línea 1) y el usuario logueado (línea 2) al mismo tamaño.
+// Click → popover con: cerrar sesión + cambiar contraseña (envía email).
+function UserCard({ user, isImpersonating, collapsed, logout }) {
+  const [open, setOpen] = useState(false)
+  const [sending, setSending] = useState(false)
+  const ref = useRef(null)
+  const toast = useToast()
+
+  // Cerrar el popover al pulsar fuera
+  useEffect(() => {
+    if (!open) return
+    const onClickOut = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', onClickOut)
+    return () => document.removeEventListener('mousedown', onClickOut)
+  }, [open])
+
+  if (!user) return null
+
+  // Línea 1 (centro / contexto activo): nombre del trainer / centro / manager
+  const linea1 = `${user.nombre || ''} ${user.apellidos || ''}`.trim() || (user.email || '')
+
+  // Línea 2 (usuario realmente logueado):
+  //   - Si está impersonando → originalSession (el gestor real)
+  //   - Si no → email del propio user (manager o usuario_web)
+  const realUser = isImpersonating ? user.originalSession : null
+  const linea2Nombre = realUser
+    ? `${realUser.nombre || ''} ${realUser.apellidos || ''}`.trim() || realUser.email
+    : (user.email || '')
+
+  const handleChangePassword = async () => {
+    if (sending) return
+    if (user.kind === 'usuario_web' && user.email) {
+      setSending(true)
+      try {
+        await requestResetUsuarioWeb(user.email)
+        toast.success('Te hemos enviado un email para cambiar la contraseña')
+      } catch (e) {
+        toast.error('No se pudo enviar el email: ' + (e.body?.error || e.message))
+      } finally { setSending(false); setOpen(false) }
+    } else {
+      toast.info?.('Cambia tu contraseña desde NoofitPro (pro.wiemspro.com)') ||
+        toast.success('Cambia tu contraseña desde NoofitPro (pro.wiemspro.com)')
+      setOpen(false)
+    }
+  }
+
+  if (collapsed) {
+    // Modo colapsado: solo avatar clickable
+    return (
+      <div ref={ref} style={{ position: 'relative' }}>
+        <button type="button" onClick={() => setOpen(o => !o)}
+                aria-label="Cuenta y sesión"
+                title={`${linea1} · ${linea2Nombre}`}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: '100%', padding: '6px 0', borderRadius: 10,
+                  background: 'none', border: 'none', cursor: 'pointer',
+                }}>
+          <div style={{ position: 'relative' }}>
+            <Avatar nombre={linea1} size={26} imgUrl={user.imgUrl} />
+            {isImpersonating && (
+              <div style={{
+                position: 'absolute', bottom: -2, right: -2,
+                width: 9, height: 9, borderRadius: '50%',
+                background: '#f59e0b', border: '1.5px solid var(--bg-1)',
+              }} />
+            )}
+          </div>
+        </button>
+        {open && <UserMenu onClose={() => setOpen(false)} onLogout={logout}
+                            onChangePassword={handleChangePassword} sending={sending}
+                            collapsed />}
+      </div>
+    )
+  }
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+              aria-label="Cuenta y sesión"
+              style={{
+                width: '100%', padding: '6px 10px', borderRadius: 10,
+                display: 'flex', alignItems: 'center', gap: 8,
+                background: open ? 'var(--bg-3)' : 'transparent',
+                border: '1px solid transparent',
+                cursor: 'pointer', textAlign: 'left',
+                transition: 'background 0.15s',
+              }}>
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <Avatar nombre={linea1} size={26} imgUrl={user.imgUrl} />
+          {isImpersonating && (
+            <div style={{
+              position: 'absolute', bottom: -2, right: -2,
+              width: 9, height: 9, borderRadius: '50%',
+              background: '#f59e0b', border: '1.5px solid var(--bg-1)',
+            }} title="Modo trainer activo" />
+          )}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <p style={{
+            fontSize: 11, fontWeight: 500,
+            color: isImpersonating ? '#f59e0b' : 'var(--text-1)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }} title={linea1}>
+            {linea1}
+          </p>
+          <p style={{
+            fontSize: 11, fontWeight: 400, marginTop: 2,
+            color: 'var(--text-2)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }} title={linea2Nombre}>
+            {linea2Nombre}
+          </p>
+        </div>
+        <ChevronUp size={12} style={{ color: 'var(--text-3)',
+                                        transform: open ? 'rotate(0deg)' : 'rotate(180deg)',
+                                        transition: 'transform 0.15s' }} aria-hidden="true" />
+      </button>
+      {open && <UserMenu onClose={() => setOpen(false)} onLogout={logout}
+                          onChangePassword={handleChangePassword} sending={sending} />}
+    </div>
+  )
+}
+
+
+function UserMenu({ onLogout, onChangePassword, sending, collapsed }) {
+  return (
+    <div role="menu" style={{
+      position: 'absolute',
+      bottom: 'calc(100% + 6px)',
+      left: collapsed ? 8 : 10,
+      right: collapsed ? 'auto' : 10,
+      minWidth: collapsed ? 200 : 'auto',
+      background: 'var(--bg-1)', border: '1px solid var(--line)',
+      borderRadius: 12, boxShadow: 'var(--shadow-lg)',
+      overflow: 'hidden', zIndex: 200,
+    }}>
+      <button type="button" onClick={onChangePassword} disabled={sending}
+              style={menuBtnStyle}
+              onMouseOver={e => e.currentTarget.style.background = 'var(--bg-3)'}
+              onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
+        {sending ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                 : <KeyRound size={14} aria-hidden="true" />}
+        Cambiar contraseña
+      </button>
+      <button type="button" onClick={onLogout}
+              style={{ ...menuBtnStyle, color: 'var(--red)', borderTop: '1px solid var(--line)' }}
+              onMouseOver={e => e.currentTarget.style.background = 'var(--bg-3)'}
+              onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
+        <LogOut size={14} aria-hidden="true" />
+        Cerrar sesión
+      </button>
+    </div>
+  )
+}
+
+const menuBtnStyle = {
+  display: 'flex', alignItems: 'center', gap: 10,
+  width: '100%', padding: '10px 14px',
+  background: 'transparent', border: 'none', cursor: 'pointer',
+  fontSize: 13, color: 'var(--text-1)', textAlign: 'left',
+  transition: 'background 0.1s',
 }

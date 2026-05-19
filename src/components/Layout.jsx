@@ -5,13 +5,22 @@ import Header from './Header'
 import Breadcrumbs from './Breadcrumbs'
 import ErrorBoundary from './ErrorBoundary'
 import BannerNuevosClientes from './BannerNuevosClientes'
+import NotasBanner from './notas/NotasBanner'
+import BannerTrimestre from './BannerTrimestre'
 import { prefetchPopularRoutes } from '../utils/prefetch'
+import { useTrainerFilter } from '../contexts/TrainerFilterContext'
+import { invalidateCache } from '../utils/api'
 
 export default function Layout() {
   const { pathname } = useLocation()
+  const { selectedTrainerId } = useTrainerFilter()
   // Prefetch en idle de chunks + datos de las rutas más visitadas
   // (clientes, crm, clases, cuotas) → el primer click al menú es instantáneo.
   useEffect(() => { prefetchPopularRoutes() }, [])
+  // Invalidar caches al cambiar el filtro para que los datos se recarguen
+  useEffect(() => {
+    invalidateCache()    // sin argumento = clear all
+  }, [selectedTrainerId])
   const [sidebarOpen, setSidebarOpen] = useState(false)
   // pinned: usuario forzó expandir/colapsar manualmente; sobreescribe hover.
   const [pinned, setPinned] = useState(false)
@@ -56,6 +65,8 @@ export default function Layout() {
 
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <Header onMenuClick={() => setSidebarOpen(true)} />
+        <BannerTrimestre />
+        <NotasBanner />
         <BannerNuevosClientes />
         <main style={{
           flex: 1, overflowY: 'auto',
@@ -64,10 +75,10 @@ export default function Layout() {
           // page actually reaches the TOP of the scroll viewport, so content
           // scrolling underneath is fully hidden behind it.
           padding: '0 clamp(20px, 4vw, 48px) clamp(20px, 4vw, 48px)',
-        }} key={pathname}>
+        }} key={pathname + ':' + (selectedTrainerId || 'all')}>
           <div className="anim-enter" style={{ maxWidth: 1500, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
             <Breadcrumbs />
-            <ErrorBoundary key={pathname}>
+            <ErrorBoundary key={pathname + ':' + (selectedTrainerId || 'all')}>
               <Outlet />
             </ErrorBoundary>
           </div>

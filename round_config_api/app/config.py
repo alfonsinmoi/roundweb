@@ -31,7 +31,7 @@ CORS_ORIGINS = [
 FORMAS_PAGO = ['sepa', 'tpv', 'efectivo', 'tokenizacion']
 PERIODICIDADES = ['mensual', 'bimensual', 'trimestral', 'semestral', 'anual']
 TIPOS_MODIFICACION = ['descuento', 'cargo_extra', 'precio_alternativo']
-TIPOS_DESCUENTO = ['porcentaje', 'importe']
+TIPOS_DESCUENTO = ['porcentaje', 'importe', 'precio_combo', 'varias_cuotas', 'familiares']
 
 def conn_string():
     return (f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} "

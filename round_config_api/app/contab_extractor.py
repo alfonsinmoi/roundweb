@@ -85,14 +85,13 @@ JSON (sin markdown, sin texto explicativo), con esta forma exacta:
   "iva_pct": 21.00,
   "concepto": "<descripción breve, máx 200 chars>",
   "confidence": 0.85,
-  "notes": "<dudas/observaciones, vacío si todo OK>"
+  "notes": "<dudas/observaciones, vacío si todo OK>",
+  "trabajadores": null
 }}
 
 Reglas:
 - importe_base + importe_iva == importe_total (±0.05). Si no cuadra, marca
   confidence < 0.7 y explica en notes.
-- Para nóminas: importe_base = bruto, importe_iva = retenciones (suma IRPF +
-  SS empleado), importe_total = líquido a cobrar.
 - Para extractos bancarios: deja casi todos los campos null y escribe en
   notes "extracto: N movimientos del DD/MM/YYYY al DD/MM/YYYY".
 - Si no encuentras un campo, ponlo a null (no inventes).
@@ -102,6 +101,31 @@ Reglas:
 - subtipo: marca "ticket" SOLO si el documento NO identifica al receptor
   (no aparece nombre/razón social ni CIF del cliente). Si aparece cualquier
   dato del receptor, márcalo como "factura".
+
+REGLAS ESPECIALES PARA NÓMINAS (tipo_documento='nomina'):
+- El documento puede contener UNA o VARIAS nóminas (una por trabajador) en
+  un único PDF. Extrae TODAS.
+- Rellena los totales así (suma de TODOS los trabajadores del documento):
+    importe_base  = SUMA de bruto/total devengo de cada trabajador
+    importe_iva   = 0
+    importe_total = SUMA de bruto + SS empresa + base accidente (=cargo a 640+642)
+- Añade el array "trabajadores" con UN objeto por cada trabajador:
+  "trabajadores": [
+    {{
+      "nombre": "<nombre completo del trabajador>",
+      "bruto": 0.00,                          // total devengo (suma columna devengo)
+      "base_contingencias_comunes": 0.00,     // debe coincidir con bruto
+      "ss_trabajador": 0.00,                  // deducción cont. comunes + AT del empleado
+      "ss_empresa": 0.00,                     // aportación empresa cont. comunes
+      "base_accidente": 0.00,                 // base de accidente (opcional)
+      "irpf": 0.00,                           // retención IRPF
+      "liquido": 0.00                         // líquido a percibir
+    }}
+  ]
+- Validar para cada trabajador: bruto - ss_trabajador - irpf == liquido (±0.05)
+- Si solo hay UN trabajador en el documento, sigue rellenando "trabajadores"
+  con 1 elemento (no lo dejes a null).
+- proveedor: razón social del PAGADOR (la empresa empleadora), no del trabajador.
 
 Responde SOLO con el JSON. Sin texto antes ni después."""
 

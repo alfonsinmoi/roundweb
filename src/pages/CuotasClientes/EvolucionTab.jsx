@@ -9,7 +9,40 @@ import {
 import { Card, Btn, SectionTitle } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { cuotasList, FORMA_PAGO_LABELS } from '../../utils/cuotasApi'
+import { recibosList } from '../../utils/configApi'
 import { getClientes } from '../../utils/api'
+
+// Mapea el metodo_pago de la BD local (recibo.metodo_pago) a la clave que
+// usa FORMA_PAGO_LABELS para mostrar etiqueta legible.
+const METODO_TO_FORMA = {
+  sepa: 'sepa',
+  tarjeta_tok: 'tarjeta_token',
+  caja_efectivo: 'efectivo',
+  caja_tpv_fisico: 'efectivo',
+  caja_tpv_virtual: 'efectivo',
+  enlace_pago: 'enlace_pago',
+}
+
+// Convierte un recibo local (tabla `recibo`) al shape que espera el
+// resto del componente (que originalmente leía facturas Odoo).
+function adaptarReciboLocal(r) {
+  const estado = r.estado || ''
+  const payment_state =
+    (estado === 'pagado' || estado === 'facturado') ? 'paid'
+    : estado === 'devuelto'                          ? 'reversed'
+    : 'not_paid'
+  return {
+    ...r,
+    state: 'posted',         // todos los locales se consideran emitidos
+    payment_state,
+    amount_total:  Number(r.importe_total || 0),
+    partner_idnoofit: r.cliente_idnoofit,
+    partner_id:    r.cliente_idnoofit ? { id: r.cliente_idnoofit } : null,
+    forma_pago:    METODO_TO_FORMA[r.metodo_pago] || r.metodo_pago || '—',
+    // cuota_codigo y periodicidad ya vienen igual
+    cuota_actividades: r.cuota_descripcion || null,
+  }
+}
 
 // Paleta consistente
 const COLORS = ['#2DD4A8','#5B9CF6','#A78BFA','#FBBF24','#FB923C','#F87171','#10B981','#3B82F6','#8B5CF6']
@@ -53,10 +86,29 @@ function bucketEdad(edad) {
   return '65+'
 }
 
-// Normaliza nombre de actividad a partir del texto libre
+// Clase (granular): el código completo de la cuota ("RT LX 0815", "I MYGYM"…)
+function claseKey(s) {
+  if (!s) return 'Sin clase'
+  return String(s).trim()
+}
+
+// Actividad (familia): primera palabra del código.
+//   RT LX 0815  → RT
+//   RT MJ 1030  → RT
+//   I MYGYM     → I MYGYM (palabra clave "I" + "MYGYM" se considera única)
+//   Ciclo 15:05 → Ciclo
+//   WOD pecho   → WOD
+// Heurística específica de Round: si empieza por "I " (Independiente) lo
+// tratamos como su propio grupo "I MYGYM" o lo que sea; si empieza por una
+// letra/clase corta lo agrupamos por la primera palabra.
 function actividadKey(s) {
-  if (!s) return 'Sin actividad'
-  return s.trim()
+  const c = (s || '').trim()
+  if (!c) return 'Sin actividad'
+  const partes = c.split(/\s+/)
+  if (partes.length === 1) return partes[0]
+  // Casos "I MYGYM", "I CICLO" → mantener "I MYGYM" (no agrupar por "I")
+  if (partes[0] === 'I' && partes.length >= 2) return `${partes[0]} ${partes[1]}`
+  return partes[0]
 }
 
 export default function EvolucionTab({ identity }) {
@@ -70,18 +122,21 @@ export default function EvolucionTab({ identity }) {
   async function reload() {
     setLoading(true)
     try {
+      // Tira de la BD local `recibo` (incluye los importados de GestPlus).
+      // El endpoint Odoo antiguo filtraba por round_subscription_id, lo que
+      // dejaba fuera los recibos migrados que no tienen ese campo.
       const [clientesData, ...recibosPorMes] = await Promise.all([
         getClientes().catch(() => []),
-        ...meses.map(m => cuotasList(identity, { mes: m }).catch(() => [])),
+        ...meses.map(m =>
+          recibosList(identity, { periodo: m, limit: 500 }).catch(() => [])),
       ])
       const map = {}
       for (const c of clientesData) map[String(c.id)] = c
       setClientesById(map)
-      // Aplanar y filtrar solo emitidos
       const flat = []
       meses.forEach((m, i) => {
         for (const r of recibosPorMes[i] || []) {
-          if (r.state === 'posted') flat.push({ ...r, _mes: m })
+          flat.push({ ...adaptarReciboLocal(r), _mes: m })
         }
       })
       setRecibos(flat)
@@ -143,8 +198,8 @@ export default function EvolucionTab({ identity }) {
       .sort((a, b) => b._total - a._total)
   }
 
-  const porCuota         = useMemo(() => pivotByDimension(r => r.cuota_codigo || '—'), [recibosEnriched])
-  const porActividad     = useMemo(() => pivotByDimension(r => actividadKey(r.cuota_actividades)), [recibosEnriched])
+  const porClase         = useMemo(() => pivotByDimension(r => claseKey(r.cuota_codigo)),     [recibosEnriched])
+  const porActividad     = useMemo(() => pivotByDimension(r => actividadKey(r.cuota_codigo)),  [recibosEnriched])
   const porSexo          = useMemo(() => pivotByDimension(r => GENDER_LABELS[r.gender] || 'Sin sexo'), [recibosEnriched])
   const porEdad          = useMemo(() => pivotByDimension(r => r.edadBucket), [recibosEnriched])
   const porFormaPago     = useMemo(() => pivotByDimension(r => FORMA_PAGO_LABELS[r.forma_pago] || r.forma_pago || '—'), [recibosEnriched])
@@ -234,8 +289,8 @@ export default function EvolucionTab({ identity }) {
 
         {/* Grid de gráficas pie/donut + tabla pivot */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 16 }}>
-          <DimensionCard title="Por cuota"          icon={Tag}       data={porCuota}        meses={meses} />
           <DimensionCard title="Por actividad"      icon={Activity}  data={porActividad}    meses={meses} />
+          <DimensionCard title="Por clase"          icon={Tag}       data={porClase}        meses={meses} />
           <DimensionCard title="Por forma de pago"  icon={CreditCard} data={porFormaPago}    meses={meses} />
           <DimensionCard title="Por periodicidad"   icon={TrendingUp} data={porPeriodicidad} meses={meses} />
           <DimensionCard title="Por sexo"           icon={Users}     data={porSexo}         meses={meses} />

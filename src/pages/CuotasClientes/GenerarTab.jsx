@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Loader2, Play, Send, Download, Trash2, Edit2, Check, X, AlertTriangle, Filter, Search } from 'lucide-react'
+import { Loader2, Play, Send, Download, Trash2, Edit2, Check, X, AlertTriangle, Filter, Search, ShieldCheck, FileWarning } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import {
@@ -44,6 +44,41 @@ export default function GenerarTab({ identity }) {
   const [emitting, setEmitting] = useState(false)
   const [emitResult, setEmitResult] = useState(null)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [validResult, setValidResult] = useState(null)
+  const [validating, setValidating] = useState(false)
+
+  const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+  const _hdrs = () => ({
+    'X-Round-Token': TOKEN,
+    'X-Round-Manager-Id': String(identity?.managerId || ''),
+    ...(identity?.trainerId ? { 'X-Round-Trainer-Id': String(identity.trainerId) } : {}),
+  })
+
+  async function abrirValidacion() {
+    if (!mes) return
+    setValidating(true); setValidResult(null)
+    try {
+      const r = await fetch(`/api/cuotas/preemision/${mes}/validar`, { headers: _hdrs() })
+      const d = await r.json()
+      if (!d.ok) throw new Error(d.error || 'Error validando')
+      setValidResult(d)
+    } catch (e) { toast.error(e.message) }
+    finally { setValidating(false) }
+  }
+
+  async function descargarValidacionExcel() {
+    if (!mes) return
+    try {
+      const r = await fetch(`/api/cuotas/preemision/${mes}/validar/excel`, { headers: _hdrs() })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `validacion_emision_${mes}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { toast.error(e.message) }
+  }
 
   async function reload() {
     if (!mes) return
@@ -149,6 +184,9 @@ export default function GenerarTab({ identity }) {
                    }} />
           </div>
           <div style={{ flex: 1 }} />
+          <Btn variant="secondary" onClick={() => abrirValidacion()} disabled={!mes}>
+            <ShieldCheck size={14} /> Validar antes de emitir
+          </Btn>
           <Btn variant="secondary" onClick={generar} disabled={generating || !mes}>
             {generating ? <><Loader2 size={14} className="animate-spin" /> Generando…</> : <><Play size={14} /> Generar borradores</>}
           </Btn>
@@ -251,6 +289,111 @@ export default function GenerarTab({ identity }) {
           <EmitidosTable recibos={emitidos} />
         </Card>
       )}
+
+      {/* Modal validación */}
+      {(validating || validResult) && (
+        <ValidacionModal
+          mes={mes}
+          loading={validating}
+          result={validResult}
+          onClose={() => { setValidResult(null); setValidating(false) }}
+          onDescargar={descargarValidacionExcel}
+        />
+      )}
+    </div>
+  )
+}
+
+
+function ValidacionModal({ mes, loading, result, onClose, onDescargar }) {
+  return (
+    <div role="dialog" aria-modal="true"
+         onClick={e => { if (e.target === e.currentTarget) onClose() }}
+         style={{
+           position: 'fixed', inset: 0, zIndex: 1000,
+           display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+           background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
+           overflowY: 'auto', padding: '40px 20px',
+         }}>
+      <div style={{
+        width: '100%', maxWidth: 700, background: 'var(--bg-2)',
+        border: '1px solid var(--line)', borderRadius: 24,
+        display: 'flex', flexDirection: 'column',
+      }}>
+        <div style={{ padding: '24px 32px', borderBottom: '1px solid var(--line)',
+                       display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontFamily: 'Outfit', fontSize: 20, fontWeight: 600, color: 'var(--text-0)' }}>
+            Validación pre-emisión · {mes}
+          </h3>
+          <button onClick={onClose} aria-label="Cerrar" style={{
+            padding: 10, borderRadius: 12, cursor: 'pointer',
+            background: 'var(--bg-3)', border: '1px solid var(--line)',
+            color: 'var(--text-3)',
+          }}><X size={18} /></button>
+        </div>
+
+        <div style={{ padding: 24 }}>
+          {loading && (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>
+              <Loader2 size={20} className="animate-spin" />
+              <p style={{ marginTop: 8 }}>Validando…</p>
+            </div>
+          )}
+          {result && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+                <div style={{ padding: 16, borderRadius: 12, background: 'var(--green-bg)',
+                                border: '1px solid var(--green-border)' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Coherentes (OK)</div>
+                  <div style={{ fontSize: 32, fontWeight: 700, color: 'var(--green)' }}>
+                    {result.coherentes}
+                  </div>
+                </div>
+                <div style={{ padding: 16, borderRadius: 12,
+                                background: result.incoherencias > 0 ? 'var(--red-bg)' : 'var(--bg-3)',
+                                border: `1px solid ${result.incoherencias > 0 ? 'var(--red-border)' : 'var(--line)'}` }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Incoherencias</div>
+                  <div style={{ fontSize: 32, fontWeight: 700, color: result.incoherencias > 0 ? 'var(--red)' : 'var(--text-3)' }}>
+                    {result.incoherencias}
+                  </div>
+                </div>
+              </div>
+
+              {result.incoherencias > 0 && (
+                <>
+                  <h4 style={{ fontSize: 14, color: 'var(--text-1)', marginBottom: 10 }}>Por tipo:</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+                    {Object.entries(result.por_tipo || {}).map(([tipo, n]) => (
+                      <div key={tipo} style={{ padding: '10px 14px', background: 'var(--bg-1)',
+                                                 borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <FileWarning size={14} style={{ color: 'var(--amber)' }} />
+                        <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>{tipo}</strong>
+                        <span style={{ marginLeft: 'auto', color: 'var(--text-2)' }}>{n}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <p style={{ fontSize: 12, color: 'var(--text-2)', marginBottom: 16 }}>
+                Descarga el Excel para ver el detalle de cada incoherencia + propuesta de solución y la lista
+                completa de los OK.
+              </p>
+            </>
+          )}
+        </div>
+
+        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--line)',
+                       display: 'flex', gap: 10, justifyContent: 'flex-end',
+                       background: 'var(--bg-2)' }}>
+          <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+          {result && (
+            <Btn variant="primary" onClick={onDescargar}>
+              <Download size={14} /> Descargar Excel
+            </Btn>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

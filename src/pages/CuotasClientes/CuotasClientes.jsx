@@ -1,24 +1,67 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Receipt, ChevronRight } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { getRoundIdentity } from '../../utils/configApi'
 import GenerarTab from './GenerarTab'
+import GenerarRecibosTab from './GenerarRecibosTab'
+import FacturacionTrimestreTab from './FacturacionTrimestreTab'
 import ListadoTab from './ListadoTab'
 import DevolucionesTab from './DevolucionesTab'
 import EvolucionTab from './EvolucionTab'
 
-const TABS = [
-  { id: 'generar',     label: 'Generar remesa mensual', comp: GenerarTab },
-  { id: 'listado',     label: 'Listado',                comp: ListadoTab },
-  { id: 'devoluciones',label: 'Devoluciones',           comp: DevolucionesTab },
-  { id: 'evolucion',   label: 'Evolución',              comp: EvolucionTab },
+const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+
+// Pestañas declaradas con qué modos las habilitan.
+// modes: array de modos en los que la pestaña se muestra. Si la lista incluye
+// '*' la pestaña se muestra siempre.
+const ALL_TABS = [
+  { id: 'generar_recibos', label: 'Generar recibos del mes', comp: GenerarRecibosTab,
+    modes: ['recibo_trimestre', 'factura_draft'] },
+  { id: 'facturacion_trim', label: 'Facturación trimestral', comp: FacturacionTrimestreTab,
+    modes: ['recibo_trimestre', 'factura_draft'] },
+  { id: 'generar',     label: 'Remesa mensual',         comp: GenerarTab,
+    modes: ['factura_directa'] },
+  { id: 'listado',     label: 'Listado',                comp: ListadoTab,    modes: ['*'] },
+  { id: 'devoluciones',label: 'Devoluciones',           comp: DevolucionesTab,modes: ['*'] },
+  { id: 'evolucion',   label: 'Evolución',              comp: EvolucionTab,  modes: ['*'] },
 ]
 
 export default function CuotasClientes() {
   const { user, isImpersonating } = useAuth()
-  const [activeTab, setActiveTab] = useState('generar')
-  const identity = getRoundIdentity(user)
-  const ActiveComp = TABS.find(t => t.id === activeTab)?.comp ?? GenerarTab
+  const identity = useMemo(() => getRoundIdentity(user), [user])
+
+  // Modo de facturación del manager (guardado en Configuración → Forma de facturar)
+  const [modoFact, setModoFact] = useState(null)
+  const [modoLoaded, setModoLoaded] = useState(false)
+
+  useEffect(() => {
+    if (!identity?.managerId) return
+    fetch('/api/config/modo-facturacion', {
+      headers: {
+        'X-Round-Token': TOKEN,
+        'X-Round-Manager-Id': String(identity.managerId),
+      },
+    }).then(r => r.json()).then(d => {
+      if (d.ok) setModoFact(d.modo_facturacion || 'recibo_trimestre')
+    }).catch(() => setModoFact('recibo_trimestre'))
+      .finally(() => setModoLoaded(true))
+  }, [identity?.managerId])
+
+  // Filtrado por modo
+  const TABS = useMemo(() => {
+    if (!modoFact) return ALL_TABS.filter(t => t.modes.includes('*'))
+    return ALL_TABS.filter(t => t.modes.includes('*') || t.modes.includes(modoFact))
+  }, [modoFact])
+
+  // Pestaña inicial: la primera de las disponibles según modo
+  const [activeTab, setActiveTab] = useState(null)
+  useEffect(() => {
+    if (modoLoaded && TABS.length > 0 && !TABS.find(t => t.id === activeTab)) {
+      setActiveTab(TABS[0].id)
+    }
+  }, [modoLoaded, TABS, activeTab])
+
+  const ActiveComp = TABS.find(t => t.id === activeTab)?.comp ?? (TABS[0]?.comp)
 
   return (
     <div style={{ maxWidth: 1400, padding: '0 4px' }}>
@@ -78,7 +121,11 @@ export default function CuotasClientes() {
         <span>trainer: <strong style={{ color: 'var(--text-1)' }}>{identity.trainerId || '(manager)'}</strong></span>
       </div>
 
-      <ActiveComp identity={identity} />
+      {ActiveComp ? <ActiveComp identity={identity} /> : (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)' }}>
+          {modoLoaded ? 'No hay pestañas disponibles para este modo de facturación.' : 'Cargando…'}
+        </div>
+      )}
     </div>
   )
 }

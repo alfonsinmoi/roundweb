@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { TrainerFilterProvider } from './contexts/TrainerFilterContext'
 import { ToastProvider } from './components/Toast'
 import ErrorBoundary from './components/ErrorBoundary'
 import Layout from './components/Layout'
@@ -8,6 +9,8 @@ import { Loader2 } from 'lucide-react'
 
 // Lazy-loaded pages for code splitting
 const Login = lazy(() => import('./pages/Login'))
+const VerifyAccount = lazy(() => import('./pages/VerifyAccount'))
+const NotasPage = lazy(() => import('./pages/Notas/NotasPage'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const ClientList = lazy(() => import('./pages/Clients/ClientList'))
 const ClientProfile = lazy(() => import('./pages/Clients/ClientProfile'))
@@ -62,6 +65,8 @@ function AppRoutes() {
     <Suspense fallback={<PageLoader />}>
       <Routes>
         <Route path="/login" element={user ? <Navigate to="/clientes" replace /> : <Login />} />
+        <Route path="/verificar" element={<VerifyAccount mode="verify" />} />
+        <Route path="/reset"     element={<VerifyAccount mode="reset" />} />
 
         <Route element={<RequireAuth><Layout /></RequireAuth>}>
           <Route index                  element={<Navigate to="/clientes" replace />} />
@@ -88,6 +93,7 @@ function AppRoutes() {
           <Route path="/notificaciones"      element={<NotificacionesPage />} />
           <Route path="/contabilidad"        element={<ContabilidadPage />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
+          <Route path="/notas" element={<NotasPage />} />
         </Route>
 
         <Route path="*" element={<RequireAuth><NotFound /></RequireAuth>} />
@@ -101,9 +107,11 @@ export default function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <AuthProvider>
-          <ToastProvider>
-            <AppRoutes />
-          </ToastProvider>
+          <TrainerFilterProvider>
+            <ToastProvider>
+              <AppRoutes />
+            </ToastProvider>
+          </TrainerFilterProvider>
         </AuthProvider>
       </BrowserRouter>
     </ErrorBoundary>

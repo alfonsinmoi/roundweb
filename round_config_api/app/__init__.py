@@ -9,6 +9,9 @@ from .db import init_schema
 from .routes.cuotas           import bp as bp_cuotas
 from .routes.descuentos       import bp as bp_descuentos
 from .routes.modificaciones   import bp as bp_modificaciones
+from .routes.familias          import bp as bp_familias
+from .routes.clientes_atendidos import bp as bp_clientes_atendidos
+from .routes.retos          import bp as bp_retos
 from .routes.cuotas_clientes  import bp as bp_cuotas_clientes
 from .routes.cliente_gympass  import bp as bp_cliente_gympass
 from .routes.categorias       import bp as bp_categorias
@@ -22,6 +25,22 @@ from .routes.email_templates   import bp as bp_email_templates
 from .routes.slots             import bp as bp_slots
 from .routes.clientes_log      import bp as bp_clientes_log
 from .routes.social            import bp as bp_social
+from .routes.auth_usuario      import bp as bp_auth_usuario
+from .routes.perfiles          import bp as bp_perfiles
+from .routes.usuarios_web      import bp as bp_usuarios_web
+from .routes.notas             import bp as bp_notas
+from .routes.audit             import bp as bp_audit
+from .routes.trainer_data      import bp as bp_trainer_data
+from .routes.trainer_creds     import bp as bp_trainer_creds
+from .routes.recibos           import bp as bp_recibos
+from .routes.subscriptions     import bp as bp_subscriptions
+from .routes.forma_pago        import bp as bp_forma_pago
+from .routes.modo_facturacion  import bp as bp_modo_facturacion
+from .routes.preemision_validar import bp as bp_preemision_validar
+from .routes.preemision_v2     import bp as bp_preemision_v2
+from .routes.emision_v2        import bp as bp_emision_v2
+from .routes.facturacion_trimestre import bp as bp_fact_trim
+from .routes.trimestre         import bp as bp_trimestre
 
 
 def create_app():
@@ -34,8 +53,23 @@ def create_app():
 
     # CORS
     CORS(app, origins=config.CORS_ORIGINS,
-         allow_headers=['Content-Type','X-Round-Token','X-Round-Manager-Id','X-Round-Trainer-Id'],
+         allow_headers=['Content-Type','Authorization','X-Round-Token','X-Round-Manager-Id','X-Round-Trainer-Id'],
+         expose_headers=['X-New-Token'],
          methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS'])
+
+    # Inyecta `X-New-Token` cuando un endpoint autenticado ha renovado el JWT
+    # (ver `usuario_web_required`). El frontend lo guarda en sessionStorage y
+    # sigue trabajando sin que el usuario lo note.
+    from flask import g as _g
+    @app.after_request
+    def _inject_refresh_jwt(resp):
+        try:
+            new_jwt = getattr(_g, '_refresh_jwt', None)
+            if new_jwt:
+                resp.headers['X-New-Token'] = new_jwt
+        except Exception:
+            pass
+        return resp
 
     # Init schema (idempotente — CREATE TABLE IF NOT EXISTS)
     try:
@@ -65,6 +99,13 @@ def create_app():
         app.register_blueprint(bp_descuentos, name=f'descuentos{prefix}', url_prefix=prefix)
     for prefix in ('/modificaciones', '/api/config/modificaciones'):
         app.register_blueprint(bp_modificaciones, name=f'modificaciones{prefix}', url_prefix=prefix)
+    for prefix in ('/familias', '/api/familias'):
+        app.register_blueprint(bp_familias, name=f'familias{prefix}', url_prefix=prefix)
+    for prefix in ('/clientes-atendidos', '/api/clientes-atendidos'):
+        app.register_blueprint(bp_clientes_atendidos,
+                                name=f'cat_b{prefix}', url_prefix=prefix)
+    for prefix in ('/retos', '/api/retos'):
+        app.register_blueprint(bp_retos, name=f'retos{prefix}', url_prefix=prefix)
     for prefix in ('/cuotas-clientes', '/api/cuotas'):
         app.register_blueprint(bp_cuotas_clientes, name=f'cc{prefix}', url_prefix=prefix)
     for prefix in ('/cliente-gympass', '/api/config/cliente-gympass'):
@@ -97,5 +138,63 @@ def create_app():
     # ── Redes sociales (cuentas Meta + agenda) ────────────────────────────
     for prefix in ('/social', '/api/social'):
         app.register_blueprint(bp_social, name=f'soc{prefix}', url_prefix=prefix)
+
+    # ── Auth usuarios web (login propio, distinto del NoofitPro manager) ──
+    for prefix in ('/auth/usuario-web', '/api/auth/usuario-web'):
+        app.register_blueprint(bp_auth_usuario, name=f'auw{prefix}', url_prefix=prefix)
+
+    # ── CRUD perfiles + usuarios web ──────────────────────────────────────
+    for prefix in ('/perfiles', '/api/config/perfiles'):
+        app.register_blueprint(bp_perfiles, name=f'pf{prefix}', url_prefix=prefix)
+    for prefix in ('/usuarios-web', '/api/config/usuarios-web'):
+        app.register_blueprint(bp_usuarios_web, name=f'uw{prefix}', url_prefix=prefix)
+
+    # ── Notas de cliente + Audit log ─────────────────────────────────────
+    for prefix in ('/notas', '/api/notas'):
+        app.register_blueprint(bp_notas, name=f'nt{prefix}', url_prefix=prefix)
+    for prefix in ('/audit', '/api/config/audit'):
+        app.register_blueprint(bp_audit, name=f'au{prefix}', url_prefix=prefix)
+
+    # ── Proxy trainer-data: filtrado server-side por id_trainer del usuario_web
+    for prefix in ('/trainer-data', '/api/trainer-data'):
+        app.register_blueprint(bp_trainer_data, name=f'td{prefix}', url_prefix=prefix)
+
+    # ── CRUD credenciales NoofitPro por trainer ──────────────────────────
+    for prefix in ('/trainer-creds', '/api/config/trainer-creds'):
+        app.register_blueprint(bp_trainer_creds, name=f'tc{prefix}', url_prefix=prefix)
+
+    # ── Recibos (sistema nuevo: emisión mensual + facturación trimestral)
+    for prefix in ('/recibos', '/api/recibos'):
+        app.register_blueprint(bp_recibos, name=f'rec{prefix}', url_prefix=prefix)
+
+    # ── Subscriptions (round.subscription en Odoo: cuotas asignadas a cliente)
+    for prefix in ('/subscriptions', '/api/subscriptions'):
+        app.register_blueprint(bp_subscriptions, name=f'sub{prefix}', url_prefix=prefix)
+
+    # ── Forma de pago por cliente (con histórico)
+    for prefix in ('/forma-pago', '/api/forma-pago'):
+        app.register_blueprint(bp_forma_pago, name=f'fp{prefix}', url_prefix=prefix)
+
+    # ── Modo de facturación (config del manager)
+    for prefix in ('/modo-facturacion', '/api/config/modo-facturacion'):
+        app.register_blueprint(bp_modo_facturacion, name=f'mf{prefix}', url_prefix=prefix)
+
+    # ── Validación previa antes de emitir (preemision)
+    for prefix in ('/preemision-validar', '/api/cuotas/preemision'):
+        app.register_blueprint(bp_preemision_validar, name=f'pv{prefix}', url_prefix=prefix)
+
+    # ── Preemisión v2 + Emisión v2 (modo α: recibo + trimestral)
+    for prefix in ('/preemision-v2', '/api/cuotas/preemision-v2'):
+        app.register_blueprint(bp_preemision_v2, name=f'pv2{prefix}', url_prefix=prefix)
+    for prefix in ('/emitir-v2', '/api/cuotas/emitir-v2'):
+        app.register_blueprint(bp_emision_v2, name=f'ev2{prefix}', url_prefix=prefix)
+
+    # ── Facturación trimestral
+    for prefix in ('/facturacion-trimestre', '/api/cuotas/facturacion-trimestre'):
+        app.register_blueprint(bp_fact_trim, name=f'ft{prefix}', url_prefix=prefix)
+
+    # ── Aviso trimestre (banner)
+    for prefix in ('/trimestre', '/api/cuotas/trimestre'):
+        app.register_blueprint(bp_trimestre, name=f'tri{prefix}', url_prefix=prefix)
 
     return app

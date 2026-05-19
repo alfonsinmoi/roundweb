@@ -16,6 +16,9 @@ import CuentasMetaTab    from './CuentasMetaTab'
 import CategoriasTab     from './CategoriasTab'
 import NotificacionesTab  from './NotificacionesTab'
 import ContabilidadTab    from './ContabilidadTab'
+import FormaFacturarTab   from './FormaFacturarTab'
+import PerfilesTab        from './PerfilesTab'
+import UsuariosWebTab     from './UsuariosWebTab'
 
 const TABS_BASE = [
   { id: 'cuotas',         label: 'Cuotas',         comp: CuotasTab },
@@ -27,11 +30,14 @@ const TABS_BASE = [
 const TAB_CATEGORIAS = { id: 'categorias', label: 'Categorías clientes',   comp: CategoriasTab,     managerOnly: true }
 const TAB_NOTIF      = { id: 'notif',      label: 'Notificaciones',         comp: NotificacionesTab, managerOnly: true }
 const TAB_CONTAB     = { id: 'contab',     label: 'Contabilidad',           comp: ContabilidadTab,   managerOnly: true }
+const TAB_FORMA_FACT = { id: 'forma_fact',  label: 'Forma de facturar',      comp: FormaFacturarTab,  managerOnly: true }
 const TAB_PASARELAS = { id: 'pasarelas', label: 'Pasarelas (PayComet)', comp: PasarelasTab, managerOnly: true }
 const TAB_CENTROS   = { id: 'centros',   label: 'Centros',                comp: CentrosTab,   managerOnly: true }
 const TAB_EMAIL     = { id: 'email',     label: 'Email (transaccional)',  comp: EmailTab,     managerOnly: true }
 const TAB_EMAIL_TPL = { id: 'email_tpl', label: 'Plantillas email',       comp: EmailTemplatesTab, managerOnly: true }
 const TAB_META      = { id: 'meta',      label: 'Cuentas Meta',           comp: CuentasMetaTab,    managerOnly: true }
+const TAB_PERFILES  = { id: 'perfiles',  label: 'Perfiles',               comp: PerfilesTab,       managerOnly: true }
+const TAB_USUARIOS  = { id: 'usuarios',  label: 'Usuarios web',           comp: UsuariosWebTab,    managerOnly: true }
 
 export default function Configuracion() {
   const { user, isImpersonating } = useAuth()
@@ -40,7 +46,7 @@ export default function Configuracion() {
   // Tabs solo visibles para el manager (no impersonando trainer)
   const TABS = isImpersonating
     ? TABS_BASE
-    : [...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_CENTROS, TAB_PASARELAS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META]
+    : [...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_PASARELAS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS]
   const ActiveComp = TABS.find(t => t.id === activeTab)?.comp ?? CuotasTab
 
   return (

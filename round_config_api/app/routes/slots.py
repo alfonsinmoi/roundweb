@@ -98,17 +98,51 @@ def _email_valid(s):
 # ── 1) Listar slots disponibles ─────────────────────────────────────────────
 @bp.route('/api/crm/slots-disponibles', methods=['GET', 'OPTIONS'])
 def listar_slots():
+    """GET /api/crm/slots-disponibles?centro=<slug>&actividad=<id>
+
+    Parámetros:
+        centro      (obligatorio): slug del centro
+        actividad   (opcional):    id de actividad NoofitPro para filtrar
+        max         (opcional):    nº máximo de slots a devolver (default 12,
+                                   máx 50)
+
+    Devuelve:
+        ok, centro, total, slots, por_dia, actividades
+        donde `actividades` es la lista de actividades disponibles en la
+        ventana de 14 días (para que el frontend público pueda mostrar un
+        selector y filtrar). El listado se calcula SIN aplicar el filtro
+        de actividad → así el selector siempre tiene todas las opciones.
+    """
     if request.method == 'OPTIONS': return ('', 204)
     centro_slug = (request.args.get('centro') or '').strip().lower()
-    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17677')
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
     if not centro_slug:
         return jsonify({'ok': False, 'error': 'centro_requerido'}), 400
     centro = buscar_centro(id_manager, slug=centro_slug)
     if not centro:
         return jsonify({'ok': False, 'error': 'centro_no_encontrado'}), 404
+
+    # Filtros opcionales
+    id_actividad = (request.args.get('actividad') or '').strip() or None
     try:
-        slots = slots_disponibles(id_trainer=centro['id_trainer'],
-                                  dias_adelante=14, max_resultados=12)
+        max_resultados = min(int(request.args.get('max', '12')), 50)
+    except ValueError:
+        max_resultados = 12
+
+    # Config del centro: días/actividades permitidos definidos por el manager
+    dias_permitidos = centro.get('dias_permitidos') or []
+    actividades_permitidas = centro.get('actividades_permitidas') or []
+
+    try:
+        result = slots_disponibles(id_trainer=centro['id_trainer'],
+                                   dias_adelante=14,
+                                   max_resultados=max_resultados,
+                                   id_actividad=id_actividad,
+                                   devolver_actividades=True,
+                                   dias_permitidos=dias_permitidos,
+                                   actividades_permitidas=actividades_permitidas)
+        slots = result['slots']
+        actividades = result['actividades']
         # Agrupar por día para que el form lo muestre fácil
         por_dia = defaultdict(list)
         for s in slots:
@@ -116,13 +150,68 @@ def listar_slots():
         return jsonify({
             'ok': True,
             'centro': {'slug': centro['slug'], 'nombre': centro['nombre_centro']},
+            'actividad_filtro': id_actividad,
             'total': len(slots),
             'slots': slots,
             'por_dia': [{'fecha': d, 'slots': por_dia[d]}
                         for d in sorted(por_dia.keys())],
+            'actividades': actividades,
         })
     except Exception as e:
         log.exception('listar_slots')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+# ── 1.b) Marcar leads en una clase: para que la UI distinga lead vs cliente ─
+@bp.route('/api/crm/leads-en-sala/<int:id_sala>', methods=['GET', 'OPTIONS'])
+def leads_en_sala(id_sala):
+    """Devuelve los `noofit_cliente_id` apuntados a una sala que provienen
+    de una reserva de prueba (es decir: SON LEADS, no clientes pagantes
+    todavía).
+
+    Respuesta:
+        {ok: true,
+         leads: [
+             {idnoofit, estado, nombre, apellidos, email, telefono, dni,
+              token, fecha_clase, expira_at, confirmado_at, lead_creado_at,
+              odoo_lead_id}, …
+         ]}
+    """
+    if request.method == 'OPTIONS': return ('', 204)
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, noofit_cliente_id, estado,
+                       nombre_lead, apellidos_lead, email_lead, telefono_lead,
+                       dni, token, fecha_clase, expira_at, confirmado_at,
+                       odoo_lead_id, created_at
+                  FROM slot_reserva
+                 WHERE id_manager = %s
+                   AND noofit_sala_id = %s
+                   AND estado IN ('creando','pendiente','confirmada')
+                   AND noofit_cliente_id IS NOT NULL
+                 ORDER BY created_at DESC
+            """, (id_manager, int(id_sala)))
+            rows = cur.fetchall()
+        leads = [{
+            'idnoofit':       r['noofit_cliente_id'],
+            'estado':         r['estado'],
+            'nombre':         r['nombre_lead'],
+            'apellidos':      r['apellidos_lead'],
+            'email':          r['email_lead'],
+            'telefono':       r['telefono_lead'],
+            'dni':            r['dni'],
+            'token':          r['token'],
+            'fecha_clase':    r['fecha_clase'].isoformat() if r['fecha_clase'] else None,
+            'expira_at':      r['expira_at'].isoformat() if r['expira_at'] else None,
+            'confirmado_at':  r['confirmado_at'].isoformat() if r['confirmado_at'] else None,
+            'lead_creado_at': r['created_at'].isoformat() if r['created_at'] else None,
+            'odoo_lead_id':   r['odoo_lead_id'],
+        } for r in rows]
+        return jsonify({'ok': True, 'id_sala': int(id_sala), 'leads': leads})
+    except Exception as e:
+        log.exception('leads_en_sala')
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
@@ -242,35 +331,59 @@ def _procesar_reserva_async(p):
     try:
         log.info(f'[bg reserva-{p["reserva_id"]}] iniciando')
 
-        # 1) Buscar cliente existente (cacheado)
+        # Resolver credenciales del TRAINER del centro (espacio propio en
+        # NoofitPro). Si las hay, el cliente del lead-prueba se crea en la
+        # cuenta del trainer; si no, fallback a manager (legacy).
+        id_manager = p.get('id_manager') or (p.get('centro') or {}).get('id_manager')
+        id_trainer = (p.get('centro') or {}).get('id_trainer')
+        trn_email, trn_pwd = (None, None)
+        if id_manager and id_trainer:
+            trn_email, trn_pwd = nc.get_trainer_creds(id_manager, id_trainer)
+        use_trainer_auth = bool(trn_email and trn_pwd)
+        if not use_trainer_auth:
+            log.warning(f'[bg reserva-{p["reserva_id"]}] sin trainer_noofit_creds '
+                        f'(manager={id_manager} trainer={id_trainer}) — fallback a manager')
+
+        # 1) Buscar cliente existente — en el ESPACIO del trainer si lo
+        #    usamos como auth, o en el del manager si fallback.
         cliente_id = None
         try:
-            clientes = _clientes_cached()
+            if use_trainer_auth:
+                clientes = nc.get_clientes_as_trainer(trn_email, trn_pwd)
+            else:
+                clientes = _clientes_cached()
             for c in clientes:
                 c_dni = (c.get('dni') or '').strip().upper()
                 c_email = (c.get('email') or '').strip().lower()
                 if (c_dni and c_dni == p['doc_norm']) or (c_email and c_email == p['email']):
                     cliente_id = c.get('id')
-                    log.info(f'[bg reserva-{p["reserva_id"]}] cliente reutilizado id={cliente_id}')
+                    log.info(f'[bg reserva-{p["reserva_id"]}] cliente reutilizado id={cliente_id} '
+                             f'(scope={"trainer" if use_trainer_auth else "manager"})')
                     break
         except Exception as e:
             log.warning(f'[bg reserva-{p["reserva_id"]}] búsqueda cliente: {e}')
 
-        # 2) Crear si no existía
+        # 2) Crear si no existía — en la cuenta del trainer (preferido) o
+        #    del manager (fallback).
         if not cliente_id:
             try:
-                res = nc.post_cliente({
+                payload = {
                     'name':    p['nombre'],
                     'surname': p['apellidos'],
                     'email':   p['email'],
                     'tlf':     p['telefono'],
                     'dni':     p['doc_norm'],
-                })
+                }
+                if use_trainer_auth:
+                    res = nc.post_cliente_as_trainer(payload, trn_email, trn_pwd)
+                else:
+                    res = nc.post_cliente(payload)
                 new_cli = (res.get('clientes') or res.get('data') or [])
                 if new_cli and isinstance(new_cli, list):
                     cliente_id = new_cli[0].get('id') or new_cli[0].get('idClient')
                 _invalidate_clientes_cache()
-                log.info(f'[bg reserva-{p["reserva_id"]}] cliente creado id={cliente_id}')
+                log.info(f'[bg reserva-{p["reserva_id"]}] cliente creado id={cliente_id} '
+                         f'(scope={"trainer" if use_trainer_auth else "manager"})')
             except Exception as e:
                 log.exception(f'[bg reserva-{p["reserva_id"]}] post_cliente')
 

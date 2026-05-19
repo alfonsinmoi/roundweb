@@ -10,18 +10,24 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')   // mensaje neutro (must_change_password)
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    setError('')
+    setError(''); setInfo('')
     if (!email.trim() || !password.trim()) { setError('Introduce email y contraseña'); return }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError('Introduce un email válido'); return }
     if (password.length > MAX_PASSWORD_LENGTH) { setError(`La contraseña no puede tener más de ${MAX_PASSWORD_LENGTH} caracteres`); return }
     setLoading(true)
     const result = await login(email.trim(), password)
     setLoading(false)
-    if (!result.ok) setError(result.error ?? 'Credenciales incorrectas')
+    if (result.ok) return
+    if (result.mustChangePassword) {
+      setInfo(result.message || 'Te hemos enviado un email para que actualices tu contraseña.')
+      return
+    }
+    setError(result.error ?? 'Credenciales incorrectas')
   }
 
   return (
@@ -168,6 +174,17 @@ export default function Login() {
                 border: '1px solid rgba(248,113,133,0.12)',
               }}>
                 {error}
+              </div>
+            )}
+
+            {/* Info (must_change_password) */}
+            {info && (
+              <div role="status" style={{
+                marginBottom: 28, padding: '16px 20px', borderRadius: 16, fontSize: 14,
+                color: 'var(--green)', background: 'rgba(45,212,168,0.08)',
+                border: '1px solid rgba(45,212,168,0.2)',
+              }}>
+                {info}
               </div>
             )}
 

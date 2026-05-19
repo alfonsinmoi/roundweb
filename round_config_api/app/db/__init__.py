@@ -58,6 +58,13 @@ BEGIN
     END IF;
   END IF;
 
+  -- manager_config: modo_facturacion (cómo se gestionan facturas/recibos)
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='manager_config') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='modo_facturacion') THEN
+      ALTER TABLE manager_config ADD COLUMN modo_facturacion VARCHAR(20) DEFAULT 'recibo_trimestre';
+    END IF;
+  END IF;
+
   -- email_proveedor: añadir id_trainer y eliminar unique antiguo (sólo manager)
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='email_proveedor') THEN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='email_proveedor' AND column_name='id_trainer') THEN
@@ -182,6 +189,59 @@ CREATE TABLE IF NOT EXISTS descuento (
 CREATE INDEX IF NOT EXISTS idx_desc_manager  ON descuento(id_manager);
 CREATE INDEX IF NOT EXISTS idx_desc_trainer  ON descuento(id_trainer);
 
+-- Columnas añadidas posteriormente (mayo 2026):
+-- Tipo "varias_cuotas": cuando un cliente tiene la cuota_requerida activa Y
+-- se da de alta con alguna de las cuotas secundarias, esa cuota se cobra al
+-- precio especificado en `combo_secundarias` en lugar del precio de tarifa.
+--
+-- Tipo "familiares" (nov 2026): se aplica AUTOMÁTICAMENTE a la `cuota_aplicada_codigo`
+-- cuando el cliente pertenece a un grupo familiar con ≥2 miembros activos.
+-- Si `unidad='porcentaje'`: precio = precio * (1 - valor/100)
+-- Si `unidad='importe'`:    precio = precio - valor (mín 0)
+ALTER TABLE descuento
+  ADD COLUMN IF NOT EXISTS cuota_requerida_codigo VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS cuota_aplicada_codigo  VARCHAR(64),  -- legacy precio_combo + familiares
+  ADD COLUMN IF NOT EXISTS precio_final           NUMERIC(10,2),  -- legacy precio_combo
+  ADD COLUMN IF NOT EXISTS combo_secundarias      JSONB DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS unidad                 VARCHAR(20);  -- 'porcentaje'|'importe' (familiares)
+-- Ampliar tipos permitidos: precio_combo (legacy) + varias_cuotas + familiares
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'descuento_tipo_check'
+  ) THEN
+    ALTER TABLE descuento DROP CONSTRAINT descuento_tipo_check;
+  END IF;
+  ALTER TABLE descuento ADD CONSTRAINT descuento_tipo_check
+    CHECK (tipo IN ('porcentaje','importe','precio_combo','varias_cuotas','familiares'));
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
+
+
+-- ─── FAMILIAS (grupos familiares para descuentos automáticos) ───────────────
+-- Cada familia agrupa N clientes (≥2 = condición para descuento "familiares").
+-- Un cliente pertenece a 0 o 1 familia (UNIQUE en miembros).
+CREATE TABLE IF NOT EXISTS familia (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  nombre                   VARCHAR(120),
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_familia_manager ON familia(id_manager);
+
+CREATE TABLE IF NOT EXISTS familia_miembro (
+  id                       SERIAL PRIMARY KEY,
+  familia_id               INTEGER NOT NULL REFERENCES familia(id) ON DELETE CASCADE,
+  id_manager               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT familia_miembro_unique UNIQUE (id_manager, cliente_idnoofit)
+);
+CREATE INDEX IF NOT EXISTS idx_familia_miembro_familia ON familia_miembro(familia_id);
+CREATE INDEX IF NOT EXISTS idx_familia_miembro_cliente ON familia_miembro(cliente_idnoofit);
+
 
 -- ─── MODIFICACIONES ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS modificacion (
@@ -299,6 +359,16 @@ CREATE TABLE IF NOT EXISTS centro_contacto (
 );
 CREATE INDEX IF NOT EXISTS idx_centro_manager ON centro_contacto(id_manager);
 CREATE INDEX IF NOT EXISTS idx_centro_slug ON centro_contacto(id_manager, slug);
+
+-- Columnas añadidas posteriormente (mayo 2026):
+--   - dias_permitidos:        array JSON de int 0-6 (lun=0 ... dom=6) que el
+--                              endpoint /api/crm/slots-disponibles permitirá
+--                              mostrar al público. Vacío = sin restricción.
+--   - actividades_permitidas: array JSON de id_actividad NoofitPro a mostrar.
+--                              Vacío = todas las actividades.
+ALTER TABLE centro_contacto
+  ADD COLUMN IF NOT EXISTS dias_permitidos        JSONB DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS actividades_permitidas JSONB DEFAULT '[]'::jsonb;
 
 
 -- ─── ASIGNACIÓN LEADS (para tracking trainer ↔ odoo lead) ───────────────────
@@ -505,6 +575,52 @@ CREATE INDEX IF NOT EXISTS idx_clicat_categoria ON cliente_categoria(categoria_i
 CREATE INDEX IF NOT EXISTS idx_clicat_manager   ON cliente_categoria(id_manager);
 
 
+-- ─── RETO SNAPSHOT — histórico diario del estado de cada reto ─────────────
+-- El cron `round_retos_snapshot.timer` invoca POST /api/retos/snapshot una
+-- vez al día. Se almacena (id_manager, reto_id, fecha) como clave única,
+-- así si se ejecuta varias veces el mismo día solo se actualiza la fila.
+CREATE TABLE IF NOT EXISTS reto_snapshot (
+  id                   SERIAL PRIMARY KEY,
+  id_manager           VARCHAR(64) NOT NULL,
+  id_trainer           VARCHAR(64),
+  reto_id              INTEGER NOT NULL,
+  fecha                DATE NOT NULL,
+  nombre               VARCHAR(240),
+  descripcion          TEXT,
+  tipo_reto            INTEGER,
+  tipo_metrica         INTEGER,
+  estado               VARCHAR(40),
+  fecha_inicio         DATE,
+  fecha_fin            DATE,
+  n_participantes      INTEGER NOT NULL DEFAULT 0,
+  n_equipos            INTEGER NOT NULL DEFAULT 0,
+  datos_raw            JSONB,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT reto_snapshot_unique UNIQUE (id_manager, reto_id, fecha)
+);
+CREATE INDEX IF NOT EXISTS idx_reto_snap_mgr_fecha
+  ON reto_snapshot(id_manager, fecha DESC);
+CREATE INDEX IF NOT EXISTS idx_reto_snap_reto
+  ON reto_snapshot(reto_id, fecha DESC);
+
+
+-- ─── BANNER "Nuevos clientes esperando cobro": dismiss persistente ─────────
+-- Cuando el trainer pulsa "✕" en el banner para descartar un cliente sin
+-- procesarlo, guardamos aquí el descarte para que se persista entre navega-
+-- dores y dispositivos (antes era localStorage por navegador). Asignar
+-- categoría sigue siendo la señal canónica de "atendido"; esta tabla solo
+-- guarda dismisses manuales sin categoría.
+CREATE TABLE IF NOT EXISTS cliente_atendido_banner (
+  id_manager               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  atendido_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atendido_por             VARCHAR(120),
+  PRIMARY KEY (id_manager, cliente_idnoofit)
+);
+CREATE INDEX IF NOT EXISTS idx_cli_atendido_manager ON cliente_atendido_banner(id_manager);
+
+
 -- ─── MANAGER CONFIG (multi-tenant — N managers, cada uno con sus creds NoofitPro) ──
 -- Cada Round que se conecta tiene su propia cuenta NoofitPro. Los crons
 -- iteran sobre las filas activas de esta tabla para procesar a todos los
@@ -607,6 +723,17 @@ CREATE TABLE IF NOT EXISTS notif_config (
   CONSTRAINT notif_config_dia_chk CHECK (dia_envio_impago_efectivo BETWEEN 0 AND 31)
 );
 CREATE INDEX IF NOT EXISTS idx_notif_cfg_manager ON notif_config(id_manager);
+
+-- Columnas añadidas posteriormente — ALTER idempotente (mayo 2026):
+-- Auto-cobro online: si hay TPV virtual configurado (PayComet u otra) se
+-- pueden mandar links de pago automáticos junto con avisos de impago/devol.
+ALTER TABLE notif_config
+  ADD COLUMN IF NOT EXISTS auto_link_devolucion       BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS auto_link_impago_efectivo  BOOLEAN NOT NULL DEFAULT TRUE,
+  -- Día del mes (1..31) en que se envía link de pago masivo a TODOS los
+  -- clientes con forma_pago=efectivo que tengan recibo del mes pendiente.
+  -- 0 = desactivado (proceso manual).
+  ADD COLUMN IF NOT EXISTS auto_link_efectivo_dia     INTEGER NOT NULL DEFAULT 0;
 
 
 -- ─── CONTABILIDAD ──────────────────────────────────────────────────────────
@@ -756,6 +883,304 @@ CREATE INDEX IF NOT EXISTS idx_banco_mov_factura  ON banco_movimiento(factura_re
 CREATE UNIQUE INDEX IF NOT EXISTS uq_banco_mov_dedupe
   ON banco_movimiento(id_manager, hash_dedupe);
 
+-- Faltantes archivados: el manager dice "este mes/trimestre concreto no
+-- me importa que falte" para que no salga en el listado de faltantes.
+-- Ej: si nunca pago Modelo 200 en T2 porque es trimestre vacío.
+CREATE TABLE IF NOT EXISTS gasto_faltante_ignorado (
+  id_manager               VARCHAR(64) NOT NULL,
+  categoria_id             INTEGER NOT NULL REFERENCES gasto_categoria(id) ON DELETE CASCADE,
+  periodo                  VARCHAR(10) NOT NULL,    -- '2026-05' o '2026-T2' o '2026'
+  ignored_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ignored_by               VARCHAR(80),
+  motivo                   TEXT,
+  PRIMARY KEY (id_manager, categoria_id, periodo)
+);
+CREATE INDEX IF NOT EXISTS idx_falt_ign_manager ON gasto_faltante_ignorado(id_manager);
+
+
+-- ─── USUARIOS WEB + PERFILES ─────────────────────────────────────────────────
+-- Sistema de niveles de acceso a la web Round.
+-- Manager crea usuarios para sus trainers. Cada usuario tiene un perfil que
+-- define qué puede hacer en cada pantalla.
+CREATE TABLE IF NOT EXISTS perfil (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  nombre          VARCHAR(120) NOT NULL,
+  descripcion     TEXT,
+  -- Árbol JSONB con permisos por pantalla:
+  --   { "clientes": { "_": true, "ver": true, "archivar": false }, ... }
+  -- "_" = acceso al item de menú; el resto = permisos finos.
+  permisos        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_admin        BOOLEAN NOT NULL DEFAULT FALSE,  -- saltarse comprobaciones (super-trainer)
+  activa          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (id_manager, nombre)
+);
+CREATE INDEX IF NOT EXISTS idx_perfil_manager ON perfil(id_manager);
+
+CREATE TABLE IF NOT EXISTS usuario_web (
+  id                      SERIAL PRIMARY KEY,
+  id_manager              VARCHAR(64) NOT NULL,
+  id_trainer              VARCHAR(64),                       -- centro al que entra; NULL = corporativo
+  perfil_id               INTEGER REFERENCES perfil(id) ON DELETE SET NULL,
+  email                   VARCHAR(255) NOT NULL UNIQUE,
+  nombre                  VARCHAR(120),
+  apellidos               VARCHAR(160),
+  telefono                VARCHAR(40),
+  password_hash           VARCHAR(255),                      -- bcrypt
+  email_verificado        BOOLEAN NOT NULL DEFAULT FALSE,
+  verif_token             VARCHAR(64),
+  verif_exp               TIMESTAMPTZ,
+  reset_token             VARCHAR(64),
+  reset_exp               TIMESTAMPTZ,
+  must_change_password    BOOLEAN NOT NULL DEFAULT TRUE,     -- en alta sí; tras 30d sí
+  last_password_change    TIMESTAMPTZ,
+  failed_login_count      INTEGER NOT NULL DEFAULT 0,
+  locked_until            TIMESTAMPTZ,                       -- antibruteforce
+  activo                  BOOLEAN NOT NULL DEFAULT TRUE,
+  last_login_at           TIMESTAMPTZ,
+  last_login_ip           VARCHAR(64),
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_usrweb_manager ON usuario_web(id_manager);
+CREATE INDEX IF NOT EXISTS idx_usrweb_perfil  ON usuario_web(perfil_id);
+CREATE INDEX IF NOT EXISTS idx_usrweb_email   ON usuario_web(LOWER(email));
+
+CREATE TABLE IF NOT EXISTS usuario_web_audit (
+  id           SERIAL PRIMARY KEY,
+  usuario_id   INTEGER REFERENCES usuario_web(id) ON DELETE CASCADE,
+  email        VARCHAR(255),                                 -- denormalizado por si borran usuario
+  evento       VARCHAR(40) NOT NULL,                         -- login_ok / login_fail / pwd_change / reset_request / verify / locked / etc.
+  ip           VARCHAR(64),
+  user_agent   VARCHAR(255),
+  detalle      TEXT,
+  ts           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_usrweb_audit_user ON usuario_web_audit(usuario_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_usrweb_audit_evt  ON usuario_web_audit(evento, ts DESC);
+
+
+-- ─── AUDIT LOG GENÉRICO ──────────────────────────────────────────────────────
+-- Captura toda modificación relevante: quién, qué entidad, qué acción.
+-- - actor_kind: 'manager' (login NoofitPro) o 'usuario_web' (login propio)
+-- - actor_id:   id_usuario_web (NULL si manager)
+-- - actor_email: denormalizado para informes (incluso si borran usuario)
+-- - actor_label: 'Manager' o nombre+apellidos del usuario_web
+-- - entidad: 'cliente', 'cuota', 'documento_gasto', 'lead', 'nota', 'perfil', 'usuario_web', etc.
+-- - entidad_id: VARCHAR para soportar ints, ids NoofitPro y composite keys
+-- - accion: 'create', 'update', 'archive', 'unarchive', 'delete', 'validar', 'rechazar', etc.
+-- - cambios: JSONB con {before, after} o resumen libre
+CREATE TABLE IF NOT EXISTS accion_log (
+  id              BIGSERIAL PRIMARY KEY,
+  ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id_manager      VARCHAR(64) NOT NULL,
+  id_trainer      VARCHAR(64),
+  actor_kind      VARCHAR(20) NOT NULL,                 -- 'manager' | 'usuario_web'
+  actor_id        INTEGER,                              -- usuario_web.id si aplica
+  actor_email     VARCHAR(255),
+  actor_label     VARCHAR(160),                         -- denormalizado, lo que se muestra
+  entidad         VARCHAR(40) NOT NULL,
+  entidad_id      VARCHAR(80),
+  accion          VARCHAR(40) NOT NULL,
+  resumen         VARCHAR(255),                         -- 1 línea legible humana
+  cambios         JSONB,                                -- detalle estructurado opcional
+  ip              VARCHAR(64),
+  user_agent      VARCHAR(255)
+);
+CREATE INDEX IF NOT EXISTS idx_accionlog_manager ON accion_log(id_manager, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_accionlog_entidad ON accion_log(entidad, entidad_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_accionlog_actor   ON accion_log(actor_kind, actor_id, ts DESC);
+
+
+-- ─── NOTAS DE CLIENTE ────────────────────────────────────────────────────────
+-- Sistema de notas con asignación a usuarios web.
+-- Estado: abierta (visible en banner si asignada), archivada (oculta del banner),
+-- recordatorio (oculta del banner hasta `recordatorio_hasta`).
+CREATE TABLE IF NOT EXISTS cliente_nota (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64),
+  cliente_idnoofit         VARCHAR(64) NOT NULL,         -- id NoofitPro del cliente
+  cliente_nombre           VARCHAR(160),                  -- denormalizado, para popups
+  contenido                TEXT NOT NULL,
+  -- Quien creó la nota
+  created_by_kind          VARCHAR(20) NOT NULL,          -- 'manager' | 'usuario_web'
+  created_by_id            INTEGER,                       -- usuario_web.id si aplica
+  created_by_email         VARCHAR(255),
+  created_by_label         VARCHAR(160),
+  -- Asignación a otro usuario (NULL = solo informativa)
+  asignada_a_usuario_id    INTEGER REFERENCES usuario_web(id) ON DELETE SET NULL,
+  asignada_a_email         VARCHAR(255),                  -- denormalizado
+  asignada_a_label         VARCHAR(160),
+  -- Estado
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'abierta',  -- 'abierta'|'archivada'|'recordatorio'|'contestada'
+  recordatorio_hasta       TIMESTAMPTZ,                   -- si estado=recordatorio
+  -- Hilo: si es respuesta a otra
+  parent_id                INTEGER REFERENCES cliente_nota(id) ON DELETE CASCADE,
+  -- Auditoría intrínseca
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  archived_at              TIMESTAMPTZ,
+  archived_by_email        VARCHAR(255)
+);
+CREATE INDEX IF NOT EXISTS idx_nota_manager  ON cliente_nota(id_manager);
+CREATE INDEX IF NOT EXISTS idx_nota_cliente  ON cliente_nota(cliente_idnoofit);
+CREATE INDEX IF NOT EXISTS idx_nota_asignada ON cliente_nota(asignada_a_usuario_id, estado);
+CREATE INDEX IF NOT EXISTS idx_nota_estado   ON cliente_nota(estado, recordatorio_hasta);
+CREATE INDEX IF NOT EXISTS idx_nota_parent   ON cliente_nota(parent_id);
+
+
+-- ─── CREDENCIALES NOOFIT POR TRAINER ────────────────────────────────────────
+-- Cada trainer/centro en NoofitPro tiene su propia cuenta. Para que un
+-- usuario_web pueda ver los clientes de su centro (vía proxy), el backend
+-- necesita las credenciales NoofitPro de ESE trainer concreto.
+-- Es complementaria a manager_config (que tiene la cuenta del manager raíz).
+CREATE TABLE IF NOT EXISTS trainer_noofit_creds (
+  id_manager      VARCHAR(64) NOT NULL,
+  id_trainer      VARCHAR(64) NOT NULL,
+  noofit_email    VARCHAR(255) NOT NULL,
+  noofit_password VARCHAR(255) NOT NULL,           -- en claro (igual que manager_config)
+  notas           TEXT,
+  activo          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id_trainer)
+);
+CREATE INDEX IF NOT EXISTS idx_trainer_creds_manager ON trainer_noofit_creds(id_manager);
+
+
+-- ─── RECIBOS Y LOTES DE FACTURACIÓN TRIMESTRAL ─────────────────────────────
+-- Modelo nuevo (mayo 2026 en adelante):
+--   1. Mensual emite RECIBOS por cliente activo (no facturas)
+--   2. SEPA / tarjeta tokenizada → recibo PAGADO al emitir
+--   3. Caja (efectivo, TPV físico/virtual) → recibo IMPAGADO
+--   4. A lo largo del trimestre: pagos manuales, devoluciones SEPA, links pago
+--   5. Al cerrar trimestre: wizard que permite seleccionar recibos COBRADOS
+--      → genera account.move (out_invoice) en bloque por los marcados
+--   6. No marcados → quedan pendientes de revisión en contabilidad
+
+CREATE TABLE IF NOT EXISTS recibo (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64),
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  cliente_nombre           VARCHAR(160),                    -- denormalizado
+  cuota_id                 INTEGER,                          -- ref. cuota tabla
+  cuota_codigo             VARCHAR(64),                      -- ej. RT LX 0915
+  cuota_descripcion        VARCHAR(255),
+  -- Periodo
+  periodo                  VARCHAR(7) NOT NULL,              -- YYYY-MM
+  fecha_desde              DATE,
+  fecha_hasta              DATE,
+  periodicidad             VARCHAR(20),                       -- mensual|trimestral|...
+  -- Importes
+  importe_base             NUMERIC(10,2) NOT NULL DEFAULT 0,
+  importe_iva              NUMERIC(10,2) NOT NULL DEFAULT 0,
+  importe_total            NUMERIC(10,2) NOT NULL DEFAULT 0,
+  iva_pct                  NUMERIC(5,2) DEFAULT 21.00,
+  -- Pago
+  metodo_pago              VARCHAR(30) NOT NULL,              -- sepa|tarjeta_tok|caja_efectivo|caja_tpv_fisico|caja_tpv_virtual|enlace_pago
+  estado                   VARCHAR(20) NOT NULL,              -- emitido|pagado|impagado|devuelto|facturado|cancelado
+  fecha_emision            DATE NOT NULL,
+  fecha_pago               TIMESTAMPTZ,
+  fecha_devolucion         TIMESTAMPTZ,
+  fecha_facturacion        TIMESTAMPTZ,
+  -- Vínculos Odoo
+  account_payment_id       INTEGER,                          -- id account.payment Odoo
+  account_move_id          INTEGER,                          -- id account.move (cuando facturado)
+  account_move_ref         VARCHAR(64),                      -- ref legible (INV/2026/001)
+  -- Link de pago PayComet
+  link_pago_token          VARCHAR(64),
+  link_pago_url            VARCHAR(500),
+  link_pago_creado_at      TIMESTAMPTZ,
+  link_pago_pagado_at      TIMESTAMPTZ,
+  -- Anti-duplicado / control
+  intentos_cobro           INTEGER NOT NULL DEFAULT 0,
+  origen                   VARCHAR(40) DEFAULT 'manual',     -- 'manual'|'cron_emision'|'gestplus_migracion'
+  origen_ref               VARCHAR(64),                      -- numRec GestPlus, etc.
+  notas                    TEXT,
+  -- Lote facturación
+  lote_facturacion_id      INTEGER,                          -- ref a recibo_lote_facturacion
+  -- Auditoría intrínseca
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by               VARCHAR(160),
+  updated_by               VARCHAR(160)
+);
+CREATE INDEX IF NOT EXISTS idx_recibo_manager  ON recibo(id_manager);
+CREATE INDEX IF NOT EXISTS idx_recibo_trainer  ON recibo(id_trainer);
+CREATE INDEX IF NOT EXISTS idx_recibo_cliente  ON recibo(cliente_idnoofit, periodo);
+CREATE INDEX IF NOT EXISTS idx_recibo_estado   ON recibo(estado, fecha_emision);
+CREATE INDEX IF NOT EXISTS idx_recibo_periodo  ON recibo(periodo);
+CREATE INDEX IF NOT EXISTS idx_recibo_amove    ON recibo(account_move_id);
+CREATE INDEX IF NOT EXISTS idx_recibo_lote     ON recibo(lote_facturacion_id);
+CREATE INDEX IF NOT EXISTS idx_recibo_origen   ON recibo(origen, origen_ref);
+
+
+CREATE TABLE IF NOT EXISTS recibo_lote_facturacion (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  trimestre                VARCHAR(7) NOT NULL,             -- '2026-T2'
+  fecha_inicio             DATE NOT NULL,
+  fecha_fin                DATE NOT NULL,
+  -- Estado del lote
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente',  -- pendiente|notificado|en_revision|facturado|cerrado
+  notificado_at            TIMESTAMPTZ,
+  abierto_at               TIMESTAMPTZ,                       -- cuando el manager abre el wizard
+  facturado_at             TIMESTAMPTZ,
+  cerrado_at               TIMESTAMPTZ,
+  cerrado_por              VARCHAR(160),
+  -- Stats
+  total_recibos_disponibles INTEGER DEFAULT 0,
+  total_recibos_marcados    INTEGER DEFAULT 0,
+  total_recibos_facturados  INTEGER DEFAULT 0,
+  total_recibos_pendientes  INTEGER DEFAULT 0,                -- los no marcados al cerrar
+  total_facturado_eur       NUMERIC(12,2) DEFAULT 0,
+  -- Odoo journal usado
+  account_journal_id        INTEGER,
+  notas                     TEXT,
+  created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (id_manager, trimestre)
+);
+CREATE INDEX IF NOT EXISTS idx_lote_manager   ON recibo_lote_facturacion(id_manager);
+CREATE INDEX IF NOT EXISTS idx_lote_trimestre ON recibo_lote_facturacion(trimestre, estado);
+
+
+-- ─── FORMA DE PAGO POR CLIENTE (con histórico) ─────────────────────────────
+-- Cada cliente tiene UNA forma de pago activa que aplica a TODOS sus recibos.
+-- Al cambiar: se cierra la actual (fecha_fin=hoy, estado=cancelada) y se
+-- crea una nueva (mismo patrón que las cuotas).
+CREATE TABLE IF NOT EXISTS forma_pago_cliente (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  forma_pago               VARCHAR(30) NOT NULL,           -- sepa|tarjeta_token|efectivo|enlace_pago
+  iban                     VARCHAR(40),
+  iban_titular             VARCHAR(160),
+  bic                      VARCHAR(20),
+  mandate_ref              VARCHAR(50),
+  card_token               VARCHAR(100),
+  card_brand               VARCHAR(20),
+  card_last4               VARCHAR(4),
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'activa',  -- activa | cancelada
+  fecha_inicio             DATE NOT NULL DEFAULT CURRENT_DATE,
+  fecha_fin                DATE,
+  motivo_cambio            TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by               VARCHAR(160),
+  updated_by               VARCHAR(160)
+);
+CREATE INDEX IF NOT EXISTS idx_fpcli_manager       ON forma_pago_cliente(id_manager);
+CREATE INDEX IF NOT EXISTS idx_fpcli_cliente_act   ON forma_pago_cliente(cliente_idnoofit, estado);
+-- Solo UNA forma activa por (manager, cliente).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fpcli_activa
+  ON forma_pago_cliente(id_manager, cliente_idnoofit)
+  WHERE estado = 'activa';
+
 
 -- ─── TRIGGER updated_at ──────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION trg_set_updated_at() RETURNS TRIGGER AS $$
@@ -783,6 +1208,13 @@ DROP TRIGGER IF EXISTS trg_trainer_contab_upd  ON trainer_contab_config;
 DROP TRIGGER IF EXISTS trg_gasto_categoria_upd ON gasto_categoria;
 DROP TRIGGER IF EXISTS trg_gasto_documento_upd ON gasto_documento;
 DROP TRIGGER IF EXISTS trg_banco_mov_upd       ON banco_movimiento;
+DROP TRIGGER IF EXISTS trg_perfil_upd          ON perfil;
+DROP TRIGGER IF EXISTS trg_usuario_web_upd     ON usuario_web;
+DROP TRIGGER IF EXISTS trg_cliente_nota_upd    ON cliente_nota;
+DROP TRIGGER IF EXISTS trg_trainer_creds_upd   ON trainer_noofit_creds;
+DROP TRIGGER IF EXISTS trg_recibo_upd          ON recibo;
+DROP TRIGGER IF EXISTS trg_recibo_lote_upd     ON recibo_lote_facturacion;
+DROP TRIGGER IF EXISTS trg_fpcli_upd            ON forma_pago_cliente;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -825,6 +1257,20 @@ CREATE TRIGGER trg_gasto_categoria_upd BEFORE UPDATE ON gasto_categoria
 CREATE TRIGGER trg_gasto_documento_upd BEFORE UPDATE ON gasto_documento
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_banco_mov_upd       BEFORE UPDATE ON banco_movimiento
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_perfil_upd          BEFORE UPDATE ON perfil
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_usuario_web_upd     BEFORE UPDATE ON usuario_web
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_cliente_nota_upd    BEFORE UPDATE ON cliente_nota
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trainer_creds_upd   BEFORE UPDATE ON trainer_noofit_creds
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_recibo_upd          BEFORE UPDATE ON recibo
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_recibo_lote_upd     BEFORE UPDATE ON recibo_lote_facturacion
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_fpcli_upd           BEFORE UPDATE ON forma_pago_cliente
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 
@@ -873,6 +1319,35 @@ DEFAULT_GASTO_CATEGORIAS = [
     # ── Otros ──
     ('otro',          'Otro gasto',          'otro',     None,         '629000', 21.00, 'gray'),
 ]
+
+
+# Perfiles por defecto que se siembran la primera vez que un manager
+# crea su primer usuario web. El manager puede borrarlos / editarlos.
+# Los permisos se rellenan dinámicamente desde el catálogo del frontend en
+# cuanto el manager edita el perfil; aquí solo dejamos el placeholder.
+DEFAULT_PERFILES = [
+    # (nombre,         is_admin, descripcion)
+    ('Administrador',  True,     'Control total. Equivale al manager.'),
+    ('Trainer',        False,    'Acceso al centro: ver clientes, clases, cuotas, notificar.'),
+    ('Recepción',      False,    'Atención al cliente: alta, cuotas, cobros, agenda.'),
+    ('Solo lectura',   False,    'Visualizar sin modificar nada.'),
+]
+
+
+def seed_perfiles_for_manager(id_manager: str) -> None:
+    """Siembra los perfiles default si el manager no tiene ninguno."""
+    if not id_manager:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM perfil WHERE id_manager=%s LIMIT 1", (str(id_manager),))
+        if cur.fetchone():
+            return
+        for nombre, is_admin, descripcion in DEFAULT_PERFILES:
+            cur.execute("""
+                INSERT INTO perfil (id_manager, nombre, descripcion, is_admin, permisos)
+                VALUES (%s, %s, %s, %s, '{}'::jsonb)
+                ON CONFLICT (id_manager, nombre) DO NOTHING
+            """, (str(id_manager), nombre, descripcion, is_admin))
 
 
 def seed_gasto_categorias_for_manager(id_manager: str) -> None:

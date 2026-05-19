@@ -441,20 +441,46 @@ def upload_documento():
         f.save(str(path))
         h = _hash_file(path)
 
-        # Anti-duplicado por hash dentro del mismo manager
+        # Anti-duplicado por hash dentro del mismo manager.
+        # Si ya existe lo devolvemos como `existing: True` con TODO el row,
+        # así el frontend lo abre directamente en review en lugar de fallar.
+        # Si el doc estaba en estado 'rechazado', lo revivimos a 'borrador'.
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
-                SELECT id, filename_original FROM gasto_documento
+                SELECT * FROM gasto_documento
                  WHERE id_manager=%s AND hash_sha256=%s LIMIT 1
             """, (g.id_manager, h))
             existing = cur.fetchone()
         if existing:
             try: path.unlink()
             except Exception: pass
+            revivido = False
+            if existing['estado'] == 'rechazado':
+                # Revivir: volver a borrador para que el user lo pueda editar/validar.
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE gasto_documento
+                           SET estado='borrador',
+                               motivo_rechazo=NULL,
+                               notas=COALESCE(notas,'') || %s
+                         WHERE id_manager=%s AND id=%s
+                        RETURNING *
+                    """, (
+                        f"\n[reactivado {datetime.now().isoformat()}] subido de nuevo el mismo archivo",
+                        g.id_manager, existing['id'],
+                    ))
+                    existing = cur.fetchone()
+                    revivido = True
+            mensaje = (f'Documento ya existente (id={existing["id"]}, {existing["filename_original"]}). '
+                       + ('Estaba RECHAZADO — lo he reactivado a borrador. ' if revivido else '')
+                       + 'Se abre el original para que lo revises.')
             return jsonify({
-                'ok': False, 'error': 'duplicado',
-                'detalle': f'Ya existe doc id={existing["id"]} ({existing["filename_original"]})'
-            }), 409
+                'ok': True,
+                'existing': True,
+                'revivido': revivido,
+                'documento': existing,
+                'mensaje': mensaje,
+            })
 
         # Insertar fila
         def _num(k):
@@ -879,6 +905,475 @@ def validar_documento(doc_id):
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@bp.route('/documentos/<int:doc_id>/a-borrador', methods=['POST'])
+@auth_required
+def desvalidar_documento(doc_id):
+    """Revierte un documento validado a estado 'borrador'.
+
+    Si el documento ya tenía asiento creado en Odoo (`odoo_move_id`), intenta
+    cancelarlo o devolverlo a draft. Si no es posible (ya conciliado, etc.),
+    se devuelve un warning pero el doc SÍ pasa a borrador para que el user
+    pueda editarlo. El asiento Odoo huérfano se anota en `notas`.
+
+    body opcional: {motivo: 'texto'}
+    """
+    try:
+        d = request.get_json(silent=True) or {}
+        motivo = (d.get('motivo') or '').strip()
+
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT * FROM gasto_documento
+                 WHERE id_manager=%s AND id=%s
+            """, (g.id_manager, doc_id))
+            row = cur.fetchone()
+        if not row:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if row['estado'] != 'validado':
+            return jsonify({'ok': False, 'error': 'no_validado',
+                            'detalle': f'estado actual: {row["estado"]}'}), 400
+
+        odoo_warning = None
+        odoo_action  = None
+        if row.get('odoo_move_id'):
+            try:
+                from ..odoo_cuotas import get_cuotas
+                oc = get_cuotas()
+                # Intentar action_button_draft (devuelve a borrador en Odoo)
+                # antes que cancel (más reversible).
+                try:
+                    oc._call('account.move', 'button_draft', [row['odoo_move_id']])
+                    odoo_action = 'draft'
+                except Exception as e1:
+                    log.warning(f'button_draft falló move={row["odoo_move_id"]}: {e1}')
+                    try:
+                        oc._call('account.move', 'button_cancel', [row['odoo_move_id']])
+                        odoo_action = 'cancelled'
+                    except Exception as e2:
+                        odoo_warning = (f'No se pudo modificar el asiento Odoo '
+                                        f'(move {row["odoo_move_id"]}): {str(e2)[:200]}. '
+                                        f'Revisa manualmente desde Odoo.')
+                        log.warning(f'button_cancel también falló: {e2}')
+            except Exception as e:
+                odoo_warning = f'Error conectando con Odoo: {str(e)[:200]}'
+                log.warning(f'odoo connect falló: {e}')
+
+        # Actualizar BD: pasar a borrador, opcionalmente limpiar odoo_move_id
+        nota_extra = (f'\n[a-borrador {datetime.now().isoformat()}] '
+                      + (motivo or 'sin motivo')
+                      + (f' · Odoo: {odoo_action}' if odoo_action else '')
+                      + (f' · {odoo_warning}' if odoo_warning else ''))
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE gasto_documento
+                   SET estado='borrador',
+                       validado_at=NULL,
+                       validado_by=NULL,
+                       notas=COALESCE(notas, '') || %s,
+                       odoo_move_state = CASE WHEN %s = 'draft' THEN 'draft'
+                                              WHEN %s = 'cancelled' THEN 'cancel'
+                                              ELSE odoo_move_state END
+                 WHERE id_manager=%s AND id=%s
+                RETURNING *
+            """, (nota_extra, odoo_action, odoo_action, g.id_manager, doc_id))
+            row = cur.fetchone()
+
+        return jsonify({
+            'ok': True,
+            'documento': row,
+            'odoo_action': odoo_action,
+            'warning': odoo_warning,
+        })
+    except Exception as e:
+        log.exception('desvalidar_documento')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@bp.route('/documentos/<int:doc_id>/asiento', methods=['GET'])
+@auth_required
+def asiento_documento(doc_id):
+    """Devuelve el asiento contable de un documento.
+
+    Si el documento ya está validado y tiene `odoo_move_id`, lee las
+    `account.move.line` reales de Odoo (asiento definitivo).
+    Si está en borrador, calcula el asiento PROPUESTO a partir de:
+      - cuenta_contable_odoo de su categoría (cuenta de gasto)
+      - iva_pct (para la cuenta de IVA soportado, normalmente 472)
+      - cuenta de proveedor (normalmente 4100/410 del Plan Contable)
+    """
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT d.*, c.cuenta_contable_odoo, c.iva_default, c.nombre AS categoria_nombre
+                  FROM gasto_documento d
+             LEFT JOIN gasto_categoria c ON c.id = d.categoria_id
+                 WHERE d.id_manager=%s AND d.id=%s
+            """, (g.id_manager, doc_id))
+            doc = cur.fetchone()
+        if not doc:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+        # ── Asiento DEFINITIVO desde Odoo ──────────────────────────────────
+        if doc.get('odoo_move_id'):
+            try:
+                from ..odoo_cuotas import get_cuotas
+                oc = get_cuotas()
+                move = oc._call('account.move', 'read', [doc['odoo_move_id']],
+                    ['id', 'name', 'ref', 'state', 'date', 'invoice_date',
+                     'amount_untaxed', 'amount_tax', 'amount_total', 'line_ids'])
+                if not move:
+                    return jsonify({'ok': False, 'error': 'move_no_encontrado_en_odoo'}), 404
+                m = move[0]
+                lines = []
+                if m.get('line_ids'):
+                    line_rows = oc._call('account.move.line', 'read', m['line_ids'],
+                        ['name', 'account_id', 'debit', 'credit', 'balance',
+                         'tax_ids', 'partner_id'])
+                    for ln in line_rows:
+                        lines.append({
+                            'cuenta':   (ln.get('account_id') or [None,''])[1] if ln.get('account_id') else '',
+                            'concepto': ln.get('name') or '',
+                            'debe':     round(float(ln.get('debit')  or 0), 2),
+                            'haber':    round(float(ln.get('credit') or 0), 2),
+                            'partner':  (ln.get('partner_id') or [None,''])[1] if ln.get('partner_id') else '',
+                        })
+                return jsonify({
+                    'ok': True,
+                    'tipo': 'definitivo',
+                    'move_id':    m['id'],
+                    'move_name':  m.get('name') or '',
+                    'state':      m.get('state'),
+                    'fecha':      m.get('invoice_date') or m.get('date'),
+                    'lineas':     lines,
+                    'totales': {
+                        'base':  round(float(m.get('amount_untaxed') or 0), 2),
+                        'iva':   round(float(m.get('amount_tax')     or 0), 2),
+                        'total': round(float(m.get('amount_total')   or 0), 2),
+                    },
+                })
+            except Exception as e:
+                log.exception('asiento odoo')
+                return jsonify({'ok': False, 'error': f'odoo: {e}'}), 500
+
+        # ── Asiento PROPUESTO (todavía no validado) ─────────────────────────
+        base  = float(doc.get('importe_base')  or 0)
+        iva   = float(doc.get('importe_iva')   or 0)
+        total = float(doc.get('importe_total') or 0)
+        subtipo = (doc.get('subtipo') or '').lower()
+        llm_data = doc.get('llm_data') or {}
+        if isinstance(llm_data, str):
+            try:
+                import json as _json; llm_data = _json.loads(llm_data)
+            except Exception: llm_data = {}
+
+        # ── CASO ESPECIAL: NÓMINA ───────────────────────────────────────────
+        # Detección por subtipo, categoría o nombre del archivo (a veces el
+        # LLM marca subtipo='otro' aunque sea una nómina; en ese caso al
+        # menos la categoría o el filename suele tener "nómina"/"NOMINA").
+        nombre_cat  = (doc.get('categoria_nombre') or '').lower()
+        nombre_file = (doc.get('filename_original') or '').lower()
+        es_nomina = (
+            subtipo == 'nomina'
+            or 'nomina' in nombre_cat or 'nómina' in nombre_cat
+            or 'nomina' in nombre_file or 'nómina' in nombre_file
+            or bool(llm_data.get('importe_bruto') or llm_data.get('liquido_a_pagar')
+                    or llm_data.get('irpf_retenido'))
+        )
+
+        # Las nóminas NO son facturas con IVA. El asiento PGC español es:
+        #   (D) 640 Sueldos y salarios                BRUTO empleado
+        #   (D) 642 Seguridad Social a cargo empresa  SS empresa
+        #     (H) 4751 H.P. acreedora retenciones (IRPF)   retenciones IRPF
+        #     (H) 476  Organismos SS acreedores            SS total (empresa+trab)
+        #     (H) 465  Remuneraciones pendientes pago      LÍQUIDO a empleados
+        #
+        # Cuadre: 640 + 642 = 4751 + 476 + 465
+        # Si el LLM no extrajo todos los componentes intentamos derivarlos
+        # con porcentajes típicos. El usuario puede ajustar antes de validar.
+        if es_nomina:
+            # Si el LLM extrajo un desglose por trabajador, lo usamos. Cada
+            # trabajador puede tener:
+            #   nombre, bruto (=total devengo), base_contingencias_comunes,
+            #   ss_trabajador, ss_empresa, base_accidente, irpf, liquido.
+            trabajadores = llm_data.get('trabajadores') or llm_data.get('empleados_detalle') or []
+            if isinstance(trabajadores, dict): trabajadores = [trabajadores]
+            trabajadores = [t for t in trabajadores if isinstance(t, dict)]
+
+            avisos = []
+            lineas = []
+            mes_label = (doc.get('periodo') or doc.get('concepto') or 'Nómina').replace('"','')
+
+            if trabajadores:
+                # ── Caso con desglose por trabajador ────────────────────────
+                sum_bruto = sum_ss_emp = sum_ss_trab = sum_acc = sum_irpf = sum_liq = 0.0
+                for t in trabajadores:
+                    bruto_t  = float(t.get('bruto') or t.get('total_devengo') or 0)
+                    base_cc  = float(t.get('base_contingencias_comunes') or 0)
+                    ss_trab_t= float(t.get('ss_trabajador') or 0)
+                    ss_emp_t = float(t.get('ss_empresa') or 0)
+                    base_acc = float(t.get('base_accidente') or 0)
+                    irpf_t   = float(t.get('irpf') or t.get('irpf_retenido') or 0)
+                    liq_t    = float(t.get('liquido') or t.get('liquido_a_pagar') or 0)
+                    nombre_t = (t.get('nombre') or t.get('trabajador') or '').strip() or 'Trabajador'
+
+                    # Validación clave: total devengo == base contingencias comunes
+                    if bruto_t > 0 and base_cc > 0 and abs(bruto_t - base_cc) > 0.05:
+                        avisos.append(
+                            f'{nombre_t}: total devengo ({bruto_t:.2f} €) ≠ base contingencias comunes ({base_cc:.2f} €). '
+                            f'Diferencia {bruto_t - base_cc:+.2f} € — revisa la nómina.')
+
+                    sum_bruto   += bruto_t
+                    sum_ss_emp  += ss_emp_t
+                    sum_ss_trab += ss_trab_t
+                    sum_acc     += base_acc
+                    sum_irpf    += irpf_t
+                    sum_liq     += liq_t
+
+                # ── 640: bruto total ───────────────────────────────────────
+                lineas.append({
+                    'cuenta':   '640',
+                    'concepto': f'Sueldos y salarios · {mes_label} ({len(trabajadores)} trabajador{"es" if len(trabajadores)!=1 else ""})',
+                    'debe':     round(sum_bruto, 2), 'haber': 0.0, 'partner': '',
+                })
+                # ── 642: SS a cargo empresa (aportación empresa, que ya
+                # incluye contingencias comunes empresa + AT + desempleo + FOGASA + FP).
+                # NOTA: base_accidente NO es un importe adicional, es la base
+                # sobre la que se calcula el % AT (ya incluido en ss_empresa).
+                # La "deducción contingencias comunes" del trabajador tampoco
+                # va aquí — está implícita en el bruto del 640 y se reconoce
+                # en la 476 (acreedora).
+                total_642 = round(sum_ss_emp, 2)
+                if total_642 > 0:
+                    lineas.append({
+                        'cuenta':   '642',
+                        'concepto': f'Seguridad Social a cargo empresa (cont. comunes + AT + desempleo + FOGASA + FP)',
+                        'debe':     total_642, 'haber': 0.0, 'partner': '',
+                    })
+                # ── 4751: IRPF total retenido ──────────────────────────────
+                if sum_irpf > 0:
+                    lineas.append({
+                        'cuenta':   '4751',
+                        'concepto': 'H.P. acreedora por retenciones IRPF',
+                        'debe':     0.0, 'haber': round(sum_irpf, 2), 'partner': '',
+                    })
+                # ── 476: SS acreedora (empresa + trabajador) ───────────────
+                if sum_ss_emp + sum_ss_trab > 0:
+                    lineas.append({
+                        'cuenta':   '476',
+                        'concepto': 'Organismos S.S. acreedores',
+                        'debe':     0.0, 'haber': round(sum_ss_emp + sum_ss_trab, 2), 'partner': '',
+                    })
+                # ── 465 una por TRABAJADOR ─────────────────────────────────
+                for t in trabajadores:
+                    nombre_t = (t.get('nombre') or t.get('trabajador') or '').strip() or 'Trabajador'
+                    liq_t    = float(t.get('liquido') or t.get('liquido_a_pagar') or 0)
+                    if liq_t <= 0: continue
+                    lineas.append({
+                        'cuenta':   '465',
+                        'concepto': f'Remuneraciones pdtes. · {nombre_t}',
+                        'debe':     0.0, 'haber': round(liq_t, 2), 'partner': nombre_t,
+                    })
+
+                # Validación final: el asiento cuadra
+                suma_debe  = round(sum(l['debe']  for l in lineas), 2)
+                suma_haber = round(sum(l['haber'] for l in lineas), 2)
+                if abs(suma_debe - suma_haber) > 0.05:
+                    avisos.append(f'El asiento NO cuadra: debe {suma_debe:.2f} € ≠ haber {suma_haber:.2f} €. Revisa los importes manualmente.')
+
+                return jsonify({
+                    'ok': True,
+                    'tipo': 'propuesto',
+                    'asiento_tipo': 'nomina',
+                    'state': doc.get('estado'),
+                    'fecha': str(doc.get('fecha_documento')) if doc.get('fecha_documento') else None,
+                    'n_trabajadores': len(trabajadores),
+                    'avisos': avisos,
+                    'lineas': lineas,
+                    'totales': {
+                        'bruto':         round(sum_bruto, 2),
+                        'ss_empresa':    round(sum_ss_emp, 2),
+                        'ss_trabajador': round(sum_ss_trab, 2),
+                        'base_accidente':round(sum_acc, 2),
+                        'ss_total':      round(sum_ss_emp + sum_ss_trab, 2),
+                        'irpf':          round(sum_irpf, 2),
+                        'liquido':       round(sum_liq, 2),
+                        'base':          round(sum_bruto + sum_ss_emp + sum_acc, 2),
+                        'iva':           0.0,
+                        'total':         suma_debe,
+                    },
+                })
+
+            # ── Fallback: sin desglose por trabajador (LLM solo extrajo totales)
+            bruto       = float(llm_data.get('importe_bruto') or llm_data.get('total_devengo') or 0)
+            base_cc     = float(llm_data.get('base_contingencias_comunes') or 0)
+            irpf        = float(llm_data.get('irpf_retenido') or llm_data.get('irpf') or 0)
+            ss_emp      = float(llm_data.get('ss_empresa') or 0)
+            ss_trab     = float(llm_data.get('ss_trabajador') or 0)
+            base_acc    = float(llm_data.get('base_accidente') or 0)
+            liquido     = float(llm_data.get('liquido_a_pagar') or llm_data.get('liquido') or 0)
+
+            # Si solo tenemos `total` (típico cuando el LLM lo confunde con líquido),
+            # asumimos que es el LÍQUIDO y reconstruimos hacia atrás con porcentajes
+            # estándar España 2026: SS trab 6.45%, SS empresa 31%, IRPF 15% medio.
+            if liquido == 0 and total > 0:
+                liquido = total
+            if bruto == 0 and liquido > 0:
+                bruto = round(liquido / (1 - 0.0645 - 0.15), 2)
+            if ss_trab == 0 and bruto > 0:
+                ss_trab = round(bruto * 0.0645, 2)
+            if irpf == 0 and bruto > 0 and liquido > 0:
+                irpf = round(bruto - liquido - ss_trab, 2)
+                if irpf < 0: irpf = 0
+            if ss_emp == 0 and bruto > 0:
+                ss_emp = round(bruto * 0.31, 2)
+            if liquido == 0 and bruto > 0:
+                liquido = round(bruto - ss_trab - irpf, 2)
+
+            # Validación: total devengo == base contingencias comunes
+            if bruto > 0 and base_cc > 0 and abs(bruto - base_cc) > 0.05:
+                avisos.append(
+                    f'Discordancia: total devengo {bruto:.2f} € ≠ base contingencias comunes {base_cc:.2f} €. '
+                    f'Diferencia {bruto - base_cc:+.2f} € — revísalo en la nómina.')
+
+            empleados = llm_data.get('empleados') or llm_data.get('n_empleados') or ''
+            # 642 = aportación empresa total (ya incluye cont. comunes + AT + desempleo + FOGASA + FP)
+            total_642 = round(ss_emp, 2)
+
+            lineas.append({
+                'cuenta':   '640',
+                'concepto': f'Sueldos y salarios · {mes_label}' + (f' ({empleados} empleados)' if empleados else ''),
+                'debe':     round(bruto, 2), 'haber': 0.0, 'partner': '',
+            })
+            if total_642 > 0:
+                lineas.append({
+                    'cuenta':   '642',
+                    'concepto': 'Seguridad Social a cargo empresa',
+                    'debe':     total_642, 'haber': 0.0, 'partner': '',
+                })
+            if irpf > 0:
+                lineas.append({
+                    'cuenta':   '4751',
+                    'concepto': 'H.P. acreedora por retenciones IRPF',
+                    'debe':     0.0, 'haber': round(irpf, 2), 'partner': '',
+                })
+            if ss_emp + ss_trab > 0:
+                lineas.append({
+                    'cuenta':   '476',
+                    'concepto': 'Organismos S.S. acreedores',
+                    'debe':     0.0, 'haber': round(ss_emp + ss_trab, 2), 'partner': '',
+                })
+            if liquido > 0:
+                lineas.append({
+                    'cuenta':   '465',
+                    'concepto': 'Remuneraciones pendientes de pago (líquido)',
+                    'debe':     0.0, 'haber': round(liquido, 2), 'partner': '',
+                })
+
+            if not llm_data.get('importe_bruto') and not llm_data.get('total_devengo'):
+                avisos.append('Bruto estimado a partir del líquido. Verifica con la nómina antes de validar.')
+            if not llm_data.get('irpf_retenido') and not llm_data.get('irpf'):
+                avisos.append('IRPF estimado por diferencia. Si la nómina trae el importe exacto, ajústalo.')
+            if not llm_data.get('ss_empresa'):
+                avisos.append('SS empresa estimada al 31% — varía según convenio/sector. Verifica.')
+            if not llm_data.get('trabajadores'):
+                avisos.append('El LLM no extrajo el desglose por trabajador. Cuando haya varios, debería haber una línea 465 por cada uno con su líquido.')
+
+            suma_debe  = round(sum(l['debe']  for l in lineas), 2)
+            suma_haber = round(sum(l['haber'] for l in lineas), 2)
+            if abs(suma_debe - suma_haber) > 0.05:
+                avisos.append(f'El asiento NO cuadra (debe {suma_debe:.2f} € ≠ haber {suma_haber:.2f} €). Revisa los importes manualmente.')
+
+            return jsonify({
+                'ok': True,
+                'tipo': 'propuesto',
+                'asiento_tipo': 'nomina',
+                'state': doc.get('estado'),
+                'fecha': str(doc.get('fecha_documento')) if doc.get('fecha_documento') else None,
+                'avisos': avisos,
+                'lineas': lineas,
+                'totales': {
+                    'bruto':         round(bruto, 2),
+                    'ss_empresa':    round(ss_emp, 2),
+                    'ss_trabajador': round(ss_trab, 2),
+                    'base_accidente':round(base_acc, 2),
+                    'ss_total':      round(ss_emp + ss_trab, 2),
+                    'irpf':          round(irpf, 2),
+                    'liquido':       round(liquido, 2),
+                    'base':          round(bruto + total_642, 2),
+                    'iva':           0.0,
+                    'total':         suma_debe,
+                },
+            })
+
+        # ── CASO ESTÁNDAR: factura / ticket / otro ──────────────────────────
+        # Si solo tenemos total y no se hizo split de IVA, derivamos del iva_pct
+        if total > 0 and base == 0 and iva == 0:
+            pct = float(doc.get('iva_pct') or 0)
+            if pct > 0:
+                base = round(total / (1 + pct/100), 2)
+                iva  = round(total - base, 2)
+            else:
+                base = total
+
+        cuenta_gasto = doc.get('cuenta_contable_odoo') or '6—Sin categoría'
+        cuenta_iva   = '472' if iva > 0 else None      # IVA soportado (España PGC)
+        cuenta_prov  = '410'
+        proveedor    = doc.get('proveedor') or 'Proveedor'
+        concepto     = (doc.get('concepto') or doc.get('proveedor')
+                        or doc.get('categoria_nombre') or 'Gasto')
+
+        # Asiento típico de factura recibida:
+        #   (D) 6XX  Gasto                    base
+        #   (D) 472  H.P. IVA soportado       iva
+        #     (H) 410  Proveedor                       total
+        lineas = []
+        lineas.append({
+            'cuenta':   cuenta_gasto,
+            'concepto': concepto,
+            'debe':     round(base, 2),
+            'haber':    0.0,
+            'partner':  '',
+        })
+        if iva > 0 and cuenta_iva:
+            lineas.append({
+                'cuenta':   cuenta_iva,
+                'concepto': f'H.P. IVA soportado {doc.get("iva_pct") or ""}%',
+                'debe':     round(iva, 2),
+                'haber':    0.0,
+                'partner':  '',
+            })
+        lineas.append({
+            'cuenta':   cuenta_prov,
+            'concepto': proveedor,
+            'debe':     0.0,
+            'haber':    round(total, 2),
+            'partner':  proveedor,
+        })
+
+        return jsonify({
+            'ok': True,
+            'tipo': 'propuesto',
+            'asiento_tipo': 'factura',
+            'state': doc.get('estado'),
+            'fecha': str(doc.get('fecha_documento')) if doc.get('fecha_documento') else None,
+            'avisos': (
+                []
+                + (['Sin categoría asignada → cuenta de gasto sin resolver'] if not doc.get('categoria_id') else [])
+                + (['Sin IVA detectado'] if iva == 0 and total > 0 else [])
+                + (['Sin proveedor — se creará uno nuevo en Odoo al validar'] if not doc.get('proveedor') else [])
+            ),
+            'lineas': lineas,
+            'totales': {
+                'base':  round(base, 2),
+                'iva':   round(iva, 2),
+                'total': round(total, 2),
+            },
+        })
+    except Exception as e:
+        log.exception('asiento_documento')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @bp.route('/documentos/<int:doc_id>/rechazar', methods=['POST'])
 @auth_required
 def rechazar_documento(doc_id):
@@ -966,14 +1461,25 @@ def listado_totales():
 def listado_faltantes():
     """Detecta categorías con periodicidad cuyo período tiene 0 documentos.
 
-    Por defecto ventana = últimos 6 meses (o 4 trimestres / 2 años según
-    la periodicidad de la categoría).
+    Query params:
+      meses=6                ventana hacia atrás
+      tipo_deteccion=detectado|estimado|all (default all)
+      incluir_ignorados=0|1  (default 0 → oculta los archivados por el manager)
+
+    Cada faltante se marca como:
+      'detectado' = la categoría YA tiene historial (≥1 doc en algún
+                     período pasado). Si falta este mes, es real.
+      'estimado'  = la categoría NUNCA tuvo doc. Quizá no aplique a
+                     este negocio; es solo una sugerencia.
     """
     try:
-        from datetime import date, timedelta
+        from datetime import date
         meses_atras = int(request.args.get('meses', 6))
+        tipo_det = (request.args.get('tipo_deteccion') or 'all').lower()
+        incluir_ignorados = request.args.get('incluir_ignorados') in ('1','true','yes')
         hoy = date.today()
-        # Construir lista de períodos a comprobar para cada periodicidad
+
+        # Construir lista de períodos
         periodos_mensual = []
         for m in range(meses_atras):
             y, mm = hoy.year, hoy.month - m
@@ -988,7 +1494,9 @@ def listado_faltantes():
             while mes <= 0:
                 mes += 12; y -= 1
             tri = (mes - 1) // 3 + 1
-            periodos_trim.append(f'{y}-T{tri}')
+            tag = f'{y}-T{tri}'
+            if tag not in periodos_trim:
+                periodos_trim.append(tag)
 
         periodos_anual = [str(hoy.year), str(hoy.year - 1)]
 
@@ -1008,9 +1516,19 @@ def listado_faltantes():
                    AND estado IN ('validado','borrador')
             """, (g.id_manager,))
             docs = cur.fetchall()
+            cur.execute("""
+                SELECT categoria_id, periodo, ignored_at, ignored_by, motivo
+                  FROM gasto_faltante_ignorado
+                 WHERE id_manager=%s
+            """, (g.id_manager,))
+            ignorados = cur.fetchall()
 
-        # set: {(cat_id, periodo)}
         existentes = {(d['categoria_id'], d['periodo']) for d in docs}
+        # Para "detectado": qué categorías YA tienen al menos un doc histórico
+        cat_con_historial = {d['categoria_id'] for d in docs}
+        ign_set = {(i['categoria_id'], i['periodo']) for i in ignorados}
+        ign_meta = {(i['categoria_id'], i['periodo']): i for i in ignorados}
+
         out = []
         for c in cats:
             if c['periodicidad'] == 'mensual':
@@ -1021,22 +1539,311 @@ def listado_faltantes():
                 periodos_check = periodos_anual
             else:
                 continue
+            es_detectado = c['id'] in cat_con_historial
             for p in periodos_check:
-                if (c['id'], p) not in existentes:
-                    out.append({
-                        'categoria_id': c['id'],
-                        'codigo': c['codigo'],
-                        'nombre': c['nombre'],
-                        'tipo': c['tipo'],
-                        'color': c['color'],
-                        'periodicidad': c['periodicidad'],
-                        'periodo_faltante': p,
-                    })
-        # Ordenar por periodo desc
-        out.sort(key=lambda x: (x['periodo_faltante'], x['nombre']), reverse=True)
-        return jsonify({'ok': True, 'faltantes': out})
+                if (c['id'], p) in existentes:
+                    continue
+                ignorado = (c['id'], p) in ign_set
+                if ignorado and not incluir_ignorados:
+                    continue
+                tipo = 'detectado' if es_detectado else 'estimado'
+                if tipo_det != 'all' and tipo_det != tipo:
+                    continue
+                ig = ign_meta.get((c['id'], p)) if ignorado else None
+                out.append({
+                    'categoria_id': c['id'],
+                    'codigo': c['codigo'],
+                    'nombre': c['nombre'],
+                    'tipo': c['tipo'],
+                    'color': c['color'],
+                    'periodicidad': c['periodicidad'],
+                    'periodo_faltante': p,
+                    'tipo_deteccion': tipo,
+                    'ignorado': ignorado,
+                    'ignored_at': ig['ignored_at'].isoformat() if ig and ig.get('ignored_at') else None,
+                    'ignored_motivo': ig.get('motivo') if ig else None,
+                })
+        # Ordenar: detectados primero, luego por periodo desc, luego por nombre
+        out.sort(key=lambda x: (
+            0 if x['tipo_deteccion'] == 'detectado' else 1,
+            -ord(x['periodo_faltante'][0]),  # placeholder
+        ))
+        # Mejor orden: detectados primero, periodo desc
+        out.sort(key=lambda x: (
+            0 if x['tipo_deteccion'] == 'detectado' else 1,
+            x['periodo_faltante'],
+        ), reverse=False)
+        return jsonify({
+            'ok': True,
+            'faltantes': out,
+            'stats': {
+                'detectados': sum(1 for x in out if x['tipo_deteccion'] == 'detectado'),
+                'estimados':  sum(1 for x in out if x['tipo_deteccion'] == 'estimado'),
+                'ignorados':  sum(1 for x in out if x['ignorado']),
+            },
+        })
     except Exception as e:
         log.exception('listado_faltantes')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@bp.route('/listados/faltantes/ignorar', methods=['POST'])
+@auth_required
+def faltante_ignorar():
+    """Archiva un faltante para que no aparezca en el listado.
+    Body: { categoria_id, periodo_faltante, motivo? }
+    """
+    err = _manager_only()
+    if err: return err
+    try:
+        d = request.get_json() or {}
+        cat_id = int(d.get('categoria_id') or 0)
+        periodo = (d.get('periodo_faltante') or '').strip()
+        if not cat_id or not periodo:
+            return jsonify({'ok': False, 'error': 'categoria_id_y_periodo_requeridos'}), 400
+        actor = getattr(g, 'created_by', None) or 'manager'
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO gasto_faltante_ignorado
+                  (id_manager, categoria_id, periodo, ignored_by, motivo)
+                VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (id_manager, categoria_id, periodo) DO UPDATE
+                  SET motivo = EXCLUDED.motivo, ignored_at = NOW(),
+                      ignored_by = EXCLUDED.ignored_by
+                RETURNING *
+            """, (g.id_manager, cat_id, periodo, actor, d.get('motivo')))
+            row = cur.fetchone()
+        return jsonify({'ok': True, 'row': row})
+    except Exception as e:
+        log.exception('faltante_ignorar')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@bp.route('/listados/faltantes/ignorar/<int:cat_id>/<periodo>', methods=['DELETE'])
+@auth_required
+def faltante_restaurar(cat_id, periodo):
+    """Quita el archivado: el faltante volverá a aparecer."""
+    err = _manager_only()
+    if err: return err
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM gasto_faltante_ignorado
+                 WHERE id_manager=%s AND categoria_id=%s AND periodo=%s
+            """, (g.id_manager, cat_id, periodo))
+            n = cur.rowcount
+        return jsonify({'ok': True, 'removed': n})
+    except Exception as e:
+        log.exception('faltante_restaurar')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+def _resultados_un_rango(desde, hasta, modo_ingresos='reales',
+                          incluir_no_contabilizados=False):
+    """Calcula {ingresos, gastos} para un rango. Helper interno.
+
+    modo_ingresos:
+      'reales'      → recibos cobrados (estado='pagado') por fecha_pago.
+                      Es el dinero que realmente entró en caja.
+      'facturados'  → facturas emitidas (account.move out_invoice posteadas)
+                      por fecha de factura, hayan cobrado o no.
+
+    incluir_no_contabilizados:
+      Si True, suma también los ingresos bancarios sin cuadrar
+      (banco_movimiento.estado='sin_cuadrar' AND importe>0) en el rango.
+      Son cobros que entraron en banco pero aún NO tienen un recibo o
+      factura asociado en BD/Odoo — sirve para tener la foto real de
+      cash flow aunque la contabilidad esté atrasada.
+    """
+    gastos = 0.0
+    with get_conn() as conn, conn.cursor() as cur:
+        wheres = ["d.id_manager=%s", "d.estado='validado'",
+                  "d.fecha_documento >= %s", "d.fecha_documento <= %s"]
+        params = [g.id_manager, desde, hasta]
+        if g.id_trainer:
+            wheres.append('d.id_trainer=%s'); params.append(g.id_trainer)
+        # Gasto = BASE sin IVA. Si la base es 0 (no se hizo split de IVA)
+        # caemos al total para no perder el dato.
+        cur.execute(f"""
+            SELECT COALESCE(SUM(
+                     CASE WHEN COALESCE(d.importe_base, 0) > 0 THEN d.importe_base
+                          ELSE d.importe_total END
+                   ), 0)::numeric(14,2) AS gastos
+              FROM gasto_documento d
+             WHERE {' AND '.join(wheres)}
+        """, params)
+        gastos = float(cur.fetchone()['gastos'])
+
+    ingresos = 0.0
+    if modo_ingresos == 'facturados':
+        # Modo facturado: facturas Odoo posteadas en el rango (cobradas o no)
+        try:
+            from ..odoo_cuotas import get_cuotas
+            from .. import config as cfg
+            oc = get_cuotas()
+            inv_ids = oc._call('account.move', 'search', [
+                ('move_type','=','out_invoice'),
+                ('state','=','posted'),
+                ('invoice_date','>=', desde),
+                ('invoice_date','<=', hasta),
+                ('company_id','=', cfg.ODOO_COMPANY),
+            ])
+            if inv_ids:
+                invs = oc._call('account.move','read', inv_ids, ['amount_untaxed_signed'])
+                ingresos = sum(float(i.get('amount_untaxed_signed') or 0) for i in invs)
+        except Exception as e:
+            log.warning(f'_resultados_un_rango odoo: {e}')
+    else:
+        # Modo reales (default): recibos cobrados en BD propia
+        with get_conn() as conn, conn.cursor() as cur:
+            wheres = ["id_manager=%s", "estado='pagado'",
+                      "fecha_pago::date >= %s", "fecha_pago::date <= %s"]
+            params = [str(g.id_manager), desde, hasta]
+            if g.id_trainer:
+                wheres.append('(id_trainer=%s OR id_trainer IS NULL)')
+                params.append(str(g.id_trainer))
+            cur.execute(f"""
+                SELECT COALESCE(SUM(importe_base), 0)::numeric(14,2) AS ingresos
+                  FROM recibo
+                 WHERE {' AND '.join(wheres)}
+            """, params)
+            ingresos = float(cur.fetchone()['ingresos'])
+
+    # Ingresos NO contabilizados: movimientos bancarios sin cuadrar (positivos)
+    extra_ncl = 0.0
+    if incluir_no_contabilizados:
+        with get_conn() as conn, conn.cursor() as cur:
+            wheres = ["id_manager=%s", "estado='sin_cuadrar'",
+                      "importe > 0",
+                      "fecha >= %s", "fecha <= %s"]
+            params = [str(g.id_manager), desde, hasta]
+            if g.id_trainer:
+                wheres.append('(id_trainer=%s OR id_trainer IS NULL)')
+                params.append(str(g.id_trainer))
+            cur.execute(f"""
+                SELECT COALESCE(SUM(importe), 0)::numeric(14,2) AS ingresos_extra
+                  FROM banco_movimiento
+                 WHERE {' AND '.join(wheres)}
+            """, params)
+            extra_ncl = float(cur.fetchone()['ingresos_extra'])
+        ingresos += extra_ncl
+
+    return round(ingresos, 2), round(gastos, 2), round(extra_ncl, 2)
+
+
+def _resultados_por_periodos(periodos, modo_ingresos='reales',
+                              incluir_no_contabilizados=False):
+    """Para cada período devuelve una fila con ingresos/gastos/beneficio."""
+    filas = []
+    total_ing = total_gas = total_ncl = 0.0
+    for p in periodos:
+        try:
+            desde, hasta = _periodo_a_rango(p)
+        except ValueError as e:
+            return jsonify({'ok': False, 'error': str(e)}), 400
+        ing, gas, ncl = _resultados_un_rango(desde, hasta, modo_ingresos,
+                                              incluir_no_contabilizados)
+        total_ing += ing; total_gas += gas; total_ncl += ncl
+        filas.append({
+            'periodo': p,
+            'desde': desde, 'hasta': hasta,
+            'ingresos': ing, 'gastos': gas,
+            'no_contabilizado': ncl,    # subset de ingresos que viene de banco sin cuadrar
+            'beneficio': round(ing - gas, 2),
+        })
+    return jsonify({
+        'ok': True,
+        'modo': 'periodos',
+        'modo_ingresos': modo_ingresos,
+        'incluir_no_contabilizados': incluir_no_contabilizados,
+        'filas': filas,
+        'total': {
+            'ingresos': round(total_ing, 2),
+            'gastos': round(total_gas, 2),
+            'no_contabilizado': round(total_ncl, 2),
+            'beneficio': round(total_ing - total_gas, 2),
+        },
+    })
+
+
+def _periodo_a_rango(periodo: str):
+    """Convierte 'YYYY-MM' / 'YYYY-Tn' / 'YYYY' a (desde, hasta) ISO."""
+    from datetime import date
+    p = periodo.strip()
+    if len(p) == 4 and p.isdigit():
+        return f'{p}-01-01', f'{p}-12-31'
+    if 'T' in p:
+        y, t = p.split('-T')
+        y = int(y); t = int(t)
+        m_ini = (t-1)*3 + 1
+        m_fin = t*3
+        last_day = 31 if m_fin in (1,3,5,7,8,10,12) else 30 if m_fin != 2 else (29 if y%4==0 else 28)
+        return f'{y}-{m_ini:02d}-01', f'{y}-{m_fin:02d}-{last_day:02d}'
+    if len(p) == 7 and p[4] == '-':
+        y, m = p.split('-')
+        y = int(y); m = int(m)
+        last_day = 31 if m in (1,3,5,7,8,10,12) else 30 if m != 2 else (29 if y%4==0 else 28)
+        return f'{y}-{m:02d}-01', f'{y}-{m:02d}-{last_day:02d}'
+    raise ValueError(f'periodo invalido: {p}')
+
+
+@bp.route('/listados/resultados/disponibles', methods=['GET'])
+@auth_required
+def listado_resultados_disponibles():
+    """Devuelve qué meses/trimestres/años tienen al menos 1 movimiento
+    (gasto Round o ingreso Odoo) en los últimos 5 años.
+    """
+    try:
+        from datetime import date
+        hoy = date.today()
+        ini = f'{hoy.year - 5}-01-01'
+        # Meses con gastos
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT to_char(fecha_documento, 'YYYY-MM') AS mes
+                  FROM gasto_documento
+                 WHERE id_manager=%s AND estado='validado'
+                   AND fecha_documento >= %s
+            """, (g.id_manager, ini))
+            meses_gasto = {r['mes'] for r in cur.fetchall() if r['mes']}
+        # Meses con ingresos (Odoo)
+        meses_ing = set()
+        try:
+            from ..odoo_cuotas import get_cuotas
+            from .. import config as cfg
+            oc = get_cuotas()
+            inv_ids = oc._call('account.move', 'search', [
+                ('move_type','=','out_invoice'),
+                ('state','=','posted'),
+                ('payment_state','in',['paid','in_payment']),
+                ('invoice_date','>=', ini),
+                ('company_id','=', cfg.ODOO_COMPANY),
+            ])
+            if inv_ids:
+                invs = oc._call('account.move','read', inv_ids, ['invoice_date'])
+                for i in invs:
+                    if i.get('invoice_date'):
+                        meses_ing.add(str(i['invoice_date'])[:7])
+        except Exception as e:
+            log.warning(f'disponibles odoo: {e}')
+
+        meses = sorted(meses_gasto | meses_ing, reverse=True)
+        # Derivar trimestres y años
+        trimestres = set()
+        anios = set()
+        for m in meses:
+            y, mm = m.split('-')
+            anios.add(y)
+            t = (int(mm) - 1) // 3 + 1
+            trimestres.add(f'{y}-T{t}')
+        return jsonify({
+            'ok': True,
+            'meses': meses,
+            'trimestres': sorted(trimestres, reverse=True),
+            'anios': sorted(anios, reverse=True),
+        })
+    except Exception as e:
+        log.exception('listado_resultados_disponibles')
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
@@ -1045,17 +1852,29 @@ def listado_faltantes():
 def listado_resultados():
     """Cuenta de resultados (P&L) por período.
 
-    Ingresos: suma de recibos pagados en Odoo (round_facturacion) en el rango.
-    Gastos: suma de gasto_documento validados en el rango (importe_total).
-    Beneficio = Ingresos - Gastos.
-
-    Devuelve por mes + total.
+    Modos:
+      A) Rango: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD (compat versión anterior)
+      B) Períodos: ?periodos=2024-01,2024-02,2024-T1,2024
+         (cada elemento se computa por separado y se devuelve una fila;
+          la fila 'total' agrega todos)
     """
     try:
+        from datetime import date
+        periodos_q = request.args.get('periodos', '').strip()
+        # 'reales' (default) = recibos cobrados | 'facturados' = facturas Odoo
+        modo_ingresos = (request.args.get('ingresos') or 'reales').strip().lower()
+        if modo_ingresos not in ('reales', 'facturados'):
+            modo_ingresos = 'reales'
+        incluir_ncl = request.args.get('incluir_no_contabilizados') in ('1', 'true', 'yes')
+
+        if periodos_q:
+            periodos = [p.strip() for p in periodos_q.split(',') if p.strip()]
+            return _resultados_por_periodos(periodos, modo_ingresos, incluir_ncl)
+
+        # Modo rango (legacy)
         desde = request.args.get('desde')
         hasta = request.args.get('hasta')
         if not desde or not hasta:
-            from datetime import date
             hoy = date.today()
             desde = desde or f'{hoy.year}-01-01'
             hasta = hasta or hoy.isoformat()
@@ -1069,9 +1888,14 @@ def listado_resultados():
                 wheres.append('d.id_trainer=%s'); params.append(g.id_trainer)
             wheres.append('d.fecha_documento >= %s'); params.append(desde)
             wheres.append('d.fecha_documento <= %s'); params.append(hasta)
+            # Gasto = BASE sin IVA. Si la base es 0 caemos al total para no
+            # perder el dato (docs antiguos sin split).
             cur.execute(f"""
                 SELECT to_char(d.fecha_documento, 'YYYY-MM') AS mes,
-                       COALESCE(SUM(d.importe_total), 0)::numeric(14,2) AS gastos
+                       COALESCE(SUM(
+                         CASE WHEN COALESCE(d.importe_base, 0) > 0 THEN d.importe_base
+                              ELSE d.importe_total END
+                       ), 0)::numeric(14,2) AS gastos
                   FROM gasto_documento d
                  WHERE {' AND '.join(wheres)}
                  GROUP BY 1
@@ -1079,30 +1903,49 @@ def listado_resultados():
             for r in cur.fetchall():
                 gastos_mes[r['mes']] = float(r['gastos'])
 
-        # Ingresos por mes (Odoo): facturas cliente PAGADAS en el rango
+        # Ingresos por mes: según modo_ingresos
         ingresos_mes = {}
-        try:
-            from ..odoo_cuotas import get_cuotas
-            from .. import config as cfg
-            oc = get_cuotas()
-            inv_ids = oc._call('account.move', 'search', [
-                ('move_type','=','out_invoice'),
-                ('state','=','posted'),
-                ('payment_state','in',['paid','in_payment']),
-                ('invoice_date','>=', desde),
-                ('invoice_date','<=', hasta),
-                ('company_id','=', cfg.ODOO_COMPANY),
-            ])
-            if inv_ids:
-                invs = oc._call('account.move', 'read', inv_ids,
-                                ['invoice_date','amount_untaxed_signed','amount_total_signed'])
-                for i in invs:
-                    if not i.get('invoice_date'): continue
-                    mes = str(i['invoice_date'])[:7]
-                    # amount_untaxed_signed = sin IVA (resultado)
-                    ingresos_mes[mes] = ingresos_mes.get(mes, 0) + float(i.get('amount_untaxed_signed') or 0)
-        except Exception as e:
-            log.warning(f'P&L Odoo ingresos: {e}')
+        if modo_ingresos == 'facturados':
+            # Modo facturado: facturas Odoo posteadas (cobradas o no)
+            try:
+                from ..odoo_cuotas import get_cuotas
+                from .. import config as cfg
+                oc = get_cuotas()
+                inv_ids = oc._call('account.move', 'search', [
+                    ('move_type','=','out_invoice'),
+                    ('state','=','posted'),
+                    ('invoice_date','>=', desde),
+                    ('invoice_date','<=', hasta),
+                    ('company_id','=', cfg.ODOO_COMPANY),
+                ])
+                if inv_ids:
+                    invs = oc._call('account.move', 'read', inv_ids,
+                                    ['invoice_date','amount_untaxed_signed','amount_total_signed'])
+                    for i in invs:
+                        if not i.get('invoice_date'): continue
+                        mes = str(i['invoice_date'])[:7]
+                        ingresos_mes[mes] = ingresos_mes.get(mes, 0) + float(i.get('amount_untaxed_signed') or 0)
+            except Exception as e:
+                log.warning(f'P&L Odoo ingresos: {e}')
+        else:
+            # Modo reales (default): recibos cobrados en BD propia
+            with get_conn() as conn, conn.cursor() as cur:
+                wheres = ["id_manager=%s", "estado='pagado'",
+                          "fecha_pago::date >= %s", "fecha_pago::date <= %s"]
+                params = [str(g.id_manager), desde, hasta]
+                if g.id_trainer:
+                    wheres.append('(id_trainer=%s OR id_trainer IS NULL)')
+                    params.append(str(g.id_trainer))
+                cur.execute(f"""
+                    SELECT to_char(fecha_pago, 'YYYY-MM') AS mes,
+                           COALESCE(SUM(importe_base), 0)::numeric(14,2) AS ingresos
+                      FROM recibo
+                     WHERE {' AND '.join(wheres)}
+                     GROUP BY 1
+                """, params)
+                for r in cur.fetchall():
+                    if r['mes']:
+                        ingresos_mes[r['mes']] = float(r['ingresos'])
 
         # Combinar
         meses = sorted(set(list(gastos_mes.keys()) + list(ingresos_mes.keys())))

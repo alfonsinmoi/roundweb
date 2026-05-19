@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Loader2, Filter, RotateCcw, CheckCircle2, XCircle,
   UserMinus, ChevronDown, ChevronUp, Users, CalendarDays,
   AlertTriangle, ChevronRight, ArrowLeft, Grid3x3, TrendingUp, TrendingDown,
   Lightbulb, AlertCircle, ArrowUpRight, ArrowDownRight, Zap,
-  HeartPulse, ExternalLink, Activity,
+  HeartPulse, ExternalLink, Activity, Layers, Info,
 } from 'lucide-react'
 import { Card, Badge, Btn, Avatar } from '../components/UI'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -13,10 +13,14 @@ import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
 import InformeTabs from '../components/informe/InformeTabs'
 import InformeToolbar from '../components/informe/InformeToolbar'
+import InfoTip from '../components/informe/InfoTip'
+import AnalisisClusters from './AnalisisClusters'
 import {
   getSalasByRange, invalidateSalasCache, getClientes, getActividades,
   getUsuariosBySala, updateUsuarioSala, userRemoveSala,
 } from '../utils/api'
+import { useAuth } from '../contexts/AuthContext'
+import { getRoundIdentity } from '../utils/configApi'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -80,19 +84,26 @@ function actNombre(a) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-const VALID_TABS = ['faltas', 'control', 'distribucion', 'revisar', 'riesgo']
+const VALID_TABS = ['faltas', 'control', 'distribucion', 'revisar', 'riesgo', 'patrones', 'retos']
 
 export default function InformeAsistencia() {
   const toast    = useToast()
   const params   = useParams()
   const navigate = useNavigate()
+  const { user } = useAuth()
 
   // El tab activo se deriva de la URL: /informe-asistencia/:tab.
-  // Si no hay :tab o no es válido, mostramos la pantalla de menú (tab = null).
-  const tab = VALID_TABS.includes(params.tab) ? params.tab : null
+  // Si entran al menú sin :tab → redirigimos a 'revisar' (que es el
+  // dashboard global). Antes mostrábamos un selector de menú intermedio;
+  // ahora todos los informes están bajo "Para revisar" como punto de entrada.
+  useEffect(() => {
+    if (!params.tab) {
+      navigate('/informe-asistencia/revisar', { replace: true })
+    }
+  }, [params.tab, navigate])
+  const tab = VALID_TABS.includes(params.tab) ? params.tab : 'revisar'
   const setTab = (next) => {
-    if (next == null) navigate('/informe-asistencia')
-    else              navigate(`/informe-asistencia/${next}`)
+    navigate(`/informe-asistencia/${next || 'revisar'}`)
   }
 
   const [salas, setSalas]                   = useState([])
@@ -101,6 +112,10 @@ export default function InformeAsistencia() {
   const [loadingUsuarios, setLoadingUsuarios] = useState({})
   const [actionLoading, setActionLoading]   = useState('')
   const [catActividades, setCatActividades] = useState([])
+  // Retos: lista completa para la pestaña "Retos" y mapa {idCliente: nº retos}
+  // para el score de "Clientes en riesgo".
+  const [retos, setRetos] = useState([])
+  const [retosByClient, setRetosByClient] = useState({})
 
   const [confirmState, setConfirmState] = useState({ open: false, usuario: null, salaId: null })
 
@@ -115,6 +130,7 @@ export default function InformeAsistencia() {
   const [expandedSalas, setExpandedSalas] = useState(new Set())
   const [clienteDetalle, setClienteDetalle] = useState(null)
   const [clientMap, setClientMap]   = useState({})
+  const [infoPopover, setInfoPopover] = useState(null)  // id del botón cuya info está abierta en la pantalla menú
 
   // Control de asistencia por actividad (inline, ya no modal)
   const [actividadSeleccionada, setActividadSeleccionada] = useState(null)
@@ -179,33 +195,104 @@ export default function InformeAsistencia() {
     fetchSalas()
   }, [desde, hasta, tab])
 
+  // Cargar retos (los necesita 'retos' y 'riesgo'). Solo una vez por sesión.
+  const identity = useMemo(() => getRoundIdentity(user), [user])
+  useEffect(() => {
+    if (!identity?.managerId) return
+    if (tab !== 'retos' && tab !== 'riesgo') return
+    if (retos.length > 0) return    // ya cargados
+    import('../utils/configApi').then(mod => mod.retosList(identity)).then(arr => {
+      setRetos(arr || [])
+      // Construir mapa cliente → nº de retos en los que participa
+      const byCli = {}
+      for (const r of (arr || [])) {
+        for (const p of (r.participantes || [])) {
+          if (!p || typeof p !== 'object') continue
+          const cli = p.idClient || p.clienteId || p.idCliente
+          if (cli) byCli[String(cli)] = (byCli[String(cli)] || 0) + 1
+        }
+      }
+      setRetosByClient(byCli)
+    }).catch(e => console.warn('retosList:', e?.message))
+  }, [tab, identity, retos.length])
+
   const filteredSalas = useMemo(() => {
     const dDesde = new Date(desde + 'T00:00:00')
     const dHasta = new Date(hasta + 'T23:59:59')
+    // Mapa idActividad → nombre canónico, para matchear igual que el desplegable
+    const actNameById = new Map()
+    for (const a of catActividades) actNameById.set(String(a.id), actNombre(a))
+    const useId = salas.some(s => s.idActividad != null)
+    const salaActName = (s) => {
+      if (useId && s.idActividad != null) {
+        return actNameById.get(String(s.idActividad)) || s.name || s.nameTraining
+      }
+      return s.name || s.nameTraining
+    }
     return salas.filter(s => {
       if (!s.dateStart) return false
       const d = new Date(s.dateStart)
       if (d < dDesde || d > dHasta) return false
-      if (claseFilter && (s.name || s.nameTraining) !== claseFilter) return false
+      if (claseFilter && salaActName(s) !== claseFilter) return false
       return true
     }).sort((a, b) => new Date(a.dateStart) - new Date(b.dateStart))
-  }, [salas, desde, hasta, claseFilter])
+  }, [salas, desde, hasta, claseFilter, catActividades])
 
+  // Lista de ACTIVIDADES (no clases) disponibles: nombre canónico del catálogo
+  // si la sala tiene idActividad, o el nombre crudo de la sala como fallback.
+  // Antes mostraba todos los nombres de clases (Ciclo 15:05, Ciclo 18:15…),
+  // confundiendo "clase concreta" con "tipo de actividad".
   const clasesDisponibles = useMemo(() => {
-    const names = new Set(salas.map(s => s.name || s.nameTraining).filter(Boolean))
-    return [...names].sort()
-  }, [salas])
+    const actNameById = new Map()
+    for (const a of catActividades) actNameById.set(String(a.id), actNombre(a))
+    const useId = salas.some(s => s.idActividad != null)
+    const names = new Set()
+    for (const s of salas) {
+      if (useId && s.idActividad != null) {
+        const n = actNameById.get(String(s.idActividad))
+        if (n) names.add(n)
+      } else {
+        const n = s.name || s.nameTraining
+        if (n) names.add(n)
+      }
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }))
+  }, [salas, catActividades])
 
   // ── Load usuarios ────────────────────────────────────────────────────────────
+  // Acumulador de fallos de la TANDA en curso. Cuando termina la tanda
+  // (decremento a 0) mostramos UN solo toast con el resumen, en vez de
+  // 50 toasts "Error cargando usuarios de la sala" (lo que pasaba antes
+  // cuando NoofitPro empezaba a 502/429 con muchas salas).
+  const cargaUsersRef = useRef({ pendientes: 0, errores: 0, ultimoErr: null })
 
   const loadUsuarios = async (salaId) => {
     if (usuariosPorSala[salaId]) return
     setLoadingUsuarios(prev => ({ ...prev, [salaId]: true }))
+    cargaUsersRef.current.pendientes += 1
     try {
-      const users = await getUsuariosBySala(salaId)
+      let users
+      try {
+        users = await getUsuariosBySala(salaId)
+      } catch (e1) {
+        // 1 retry con pausa pequeña (mitiga rate limit transitorio de NoofitPro)
+        await new Promise(r => setTimeout(r, 400 + Math.random() * 400))
+        users = await getUsuariosBySala(salaId)
+      }
       setUsuariosPorSala(prev => ({ ...prev, [salaId]: users }))
-    } catch {
-      toast.error('Error cargando usuarios de la sala')
+    } catch (e) {
+      cargaUsersRef.current.errores += 1
+      cargaUsersRef.current.ultimoErr = e?.message || 'error'
+      console.warn(`getUsuariosBySala(${salaId}):`, e?.message || e)
+    } finally {
+      cargaUsersRef.current.pendientes -= 1
+      if (cargaUsersRef.current.pendientes === 0 && cargaUsersRef.current.errores > 0) {
+        const n = cargaUsersRef.current.errores
+        toast.error(`${n} sala${n !== 1 ? 's' : ''} sin datos de usuarios. ` +
+          `(NoofitPro pudo limitar peticiones; recarga si faltan KPIs.)`)
+        cargaUsersRef.current.errores  = 0
+        cargaUsersRef.current.ultimoErr = null
+      }
     }
     setLoadingUsuarios(prev => ({ ...prev, [salaId]: false }))
   }
@@ -213,9 +300,24 @@ export default function InformeAsistencia() {
   useEffect(() => {
     if (salas.length === 0) return
     const ahora = Date.now()
-    filteredSalas
+    cargaUsersRef.current = { pendientes: 0, errores: 0, ultimoErr: null }
+    const salasACargar = filteredSalas
       .filter(s => s.dateStart && new Date(s.dateStart).getTime() < ahora)
-      .forEach(s => loadUsuarios(s.id))
+      .filter(s => !usuariosPorSala[s.id])
+    // Concurrencia limitada: 5 a la vez. Lanza primero las más recientes
+    // para que los KPIs visibles se rellenen cuanto antes.
+    const ordenadas = [...salasACargar].sort(
+      (a, b) => new Date(b.dateStart) - new Date(a.dateStart))
+    const CONCURRENCY = 5
+    let cancelado = false
+    ;(async () => {
+      for (let i = 0; i < ordenadas.length; i += CONCURRENCY) {
+        if (cancelado) return
+        const slice = ordenadas.slice(i, i + CONCURRENCY)
+        await Promise.all(slice.map(s => loadUsuarios(s.id)))
+      }
+    })()
+    return () => { cancelado = true }
   }, [salas, desde, hasta, claseFilter])
 
   // ── Computed data ─────────────────────────────────────────────────────────────
@@ -398,9 +500,26 @@ export default function InformeAsistencia() {
       m.totalClases    += 1
     }
 
-    // Calcular pico y rango horario activo por mes y global
+    // Calcular pico y rango horario activo por mes y global.
+    // Para la "Franja activa" descartamos horas con actividad despreciable
+    // (datos fantasma: salas con 0 inscritos o test) — solo contamos una
+    // hora si la SUMA de clases en toda la semana a esa hora supera un
+    // umbral relativo al pico horario.
     let globalMaxClientes = 0
     let globalMaxClases   = 0
+    // 1ª pasada: max por hora-del-día (sumando todos los días de la semana)
+    const totalClasesPorHora = Array(24).fill(0)
+    for (const m of byMonth.values()) {
+      for (let dw = 0; dw < 7; dw++) {
+        for (let h = 0; h < 24; h++) {
+          totalClasesPorHora[h] += m.clases[dw][h]
+        }
+      }
+    }
+    const picoClasesHora = Math.max(1, ...totalClasesPorHora)
+    // Umbral: ≥ 5% del pico horario Y al menos 3 clases en todo el periodo
+    const umbralFranja = Math.max(3, Math.floor(picoClasesHora * 0.05))
+
     let minHour = 24, maxHour = -1
     for (const m of byMonth.values()) {
       let peak = { dow: 0, hour: 0, value: 0 }
@@ -411,13 +530,16 @@ export default function InformeAsistencia() {
           if (v > globalMaxClientes) globalMaxClientes = v
           const c = m.clases[dw][h]
           if (c > globalMaxClases) globalMaxClases = c
-          if (c > 0) {
-            if (h < minHour) minHour = h
-            if (h > maxHour) maxHour = h
-          }
         }
       }
       m.peak = peak
+    }
+    // Franja activa: solo horas que superan el umbral en el global
+    for (let h = 0; h < 24; h++) {
+      if (totalClasesPorHora[h] >= umbralFranja) {
+        if (h < minHour) minHour = h
+        if (h > maxHour) maxHour = h
+      }
     }
     if (maxHour < 0) { minHour = 7; maxHour = 22 }
 
@@ -754,7 +876,19 @@ export default function InformeAsistencia() {
         factores.push({ key: 'nuevo', label: `Cliente nuevo (${diasAlta}d) con poca asistencia`, severidad: 'media' })
       }
 
-      const total = Math.min(100, score.reduce((s, n) => s + n, 0))
+      // 7) Retos (señal positiva: cliente engaged): RESTA puntos del score.
+      //    -5 si participa en 1 reto, -10 si en 2+. No baja del 0.
+      const nRetos = retosByClient[String(e.idClient)] || 0
+      let restaRetos = 0
+      if (nRetos >= 2) {
+        restaRetos = 10
+        factores.push({ key: 'retos', label: `Participa en ${nRetos} retos (engagement alto)`, severidad: 'positiva' })
+      } else if (nRetos === 1) {
+        restaRetos = 5
+        factores.push({ key: 'retos', label: `Participa en 1 reto`, severidad: 'positiva' })
+      }
+
+      const total = Math.max(0, Math.min(100, score.reduce((s, n) => s + n, 0) - restaRetos))
       const pctAsistencia = e.totalReservas > 0 ? Math.round((e.totalAsistencias / e.totalReservas) * 100) : null
       const nivel = total >= 75 ? 'critico' : total >= 50 ? 'riesgo' : total >= 30 ? 'atencion' : 'sano'
 
@@ -779,7 +913,7 @@ export default function InformeAsistencia() {
     }
 
     return { list, totales }
-  }, [allUsers, clientMap])
+  }, [allUsers, clientMap, retosByClient])
 
   const pendientes = useMemo(() => {
     const ahora = new Date()
@@ -935,49 +1069,90 @@ export default function InformeAsistencia() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
           {[
-            { id: 'faltas',       label: 'Faltas de asistencia',  desc: 'Reincidentes con clases no asistidas',                        icon: UserMinus, color: 'var(--red)',   bg: 'rgba(248,113,113,0.12)' },
-            { id: 'control',      label: 'Control de asistencia', desc: 'Asistencias por cliente y actividad',                          icon: Users,     color: 'var(--green)', bg: 'var(--green-bg)' },
-            { id: 'distribucion', label: 'Distribución de clases', desc: 'Mapa de clientes por hora y día — evolución mensual',         icon: Grid3x3,   color: '#5B9CF6',      bg: 'rgba(91,156,246,0.12)' },
-            { id: 'revisar',      label: 'Para revisar',          desc: 'Detecta horas saturadas y propone mejoras de horario',         icon: Lightbulb,  color: '#FBBF24',      bg: 'rgba(251,191,36,0.14)' },
-            { id: 'riesgo',       label: 'Clientes en riesgo',    desc: 'Score de fuga: caída de asistencia, frecuencia, patrón…',     icon: HeartPulse, color: 'var(--rose)',  bg: 'rgba(251,113,133,0.12)' },
-          ].map(({ id, label, desc, icon: Icon, color, bg }) => (
-            <button key={id}
-                    onClick={() => {
-                      setTab(id)
-                      if (id === 'distribucion') {
-                        // Para el heatmap: rango de últimos 6 meses
-                        const seis = new Date(); seis.setMonth(seis.getMonth() - 6); seis.setDate(1)
-                        setDesde(fmtDate(seis))
-                        setHasta(fmtDate(new Date()))
-                      }
-                      if (id === 'revisar') {
-                        // Para análisis de ocupación: últimos 3 meses (recientes y accionables)
-                        const tres = new Date(); tres.setMonth(tres.getMonth() - 3); tres.setDate(1)
-                        setDesde(fmtDate(tres))
-                        setHasta(fmtDate(new Date()))
-                      }
-                      if (id === 'riesgo') {
-                        // Para riesgo: últimos 90 días (necesario para comparar 4sem vs 4sem)
-                        const noventa = new Date(); noventa.setDate(noventa.getDate() - 90)
-                        setDesde(fmtDate(noventa))
-                        setHasta(fmtDate(new Date()))
-                      }
-                    }}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 16,
-                      padding: 24, borderRadius: 16, textAlign: 'left',
-                      background: 'var(--bg-2)', border: '1px solid var(--line)',
-                      cursor: 'pointer',
-                    }}>
-              <div style={{ width: 52, height: 52, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: bg, flexShrink: 0 }}>
-                <Icon size={24} style={{ color }} aria-hidden="true" />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontFamily: 'Outfit', fontSize: 17, fontWeight: 600, color: 'var(--text-0)', marginBottom: 4 }}>{label}</p>
-                <p style={{ fontSize: 13, color: 'var(--text-3)' }}>{desc}</p>
-              </div>
-              <ChevronRight size={18} style={{ color: 'var(--text-3)', flexShrink: 0 }} aria-hidden="true" />
-            </button>
+            { id: 'faltas', label: 'Faltas de asistencia', desc: 'Reincidentes con clases no asistidas',
+              icon: UserMinus, color: 'var(--red)', bg: 'rgba(248,113,113,0.12)',
+              info: 'Lista de clientes que han faltado a clases en los últimos 7 días, ordenados por número de faltas. Útil para detectar caída de hábito y contactar antes de que se den de baja. Puedes ver el detalle de qué clase faltaron y el motivo si está registrado.' },
+            { id: 'control', label: 'Control de asistencia', desc: 'Asistencias por cliente y actividad',
+              icon: Users, color: 'var(--green)', bg: 'var(--green-bg)',
+              info: 'Vista detallada de quién asistió a cada clase en un período. Permite filtrar por actividad, marcar manualmente asistencia/falta de cualquier cliente en cualquier sesión, y descargar listados.' },
+            { id: 'distribucion', label: 'Distribución de clases', desc: 'Mapa de clientes por hora y día — evolución mensual',
+              icon: Grid3x3, color: '#5B9CF6', bg: 'rgba(91,156,246,0.12)',
+              info: 'Heatmap día × hora con la ocupación real de las clases. Te muestra en qué franjas hay más demanda y cuáles están infrautilizadas, con evolución mes a mes. Útil para ajustar el cuadrante de horarios.' },
+            { id: 'revisar', label: 'Para revisar', desc: 'Detecta horas saturadas y propone mejoras de horario',
+              icon: Lightbulb, color: '#FBBF24', bg: 'rgba(251,191,36,0.14)',
+              info: 'Sistema de recomendaciones automáticas: clases con asistencia anómala, monitores con baja ocupación, actividades sin demanda, horas con sobrecarga, sesiones repetidamente vacías. El sistema te sugiere qué optimizar para mejorar la rentabilidad y la experiencia.' },
+            { id: 'riesgo', label: 'Clientes en riesgo', desc: 'Score de fuga: caída de asistencia, frecuencia, patrón…',
+              icon: HeartPulse, color: 'var(--rose)', bg: 'rgba(251,113,133,0.12)',
+              info: 'Score predictivo de baja: combina caída de asistencia (4 sem actuales vs 4 anteriores), antigüedad, frecuencia, días desde última asistencia y otros indicadores. Cada cliente recibe un nivel de riesgo (alto/medio/bajo) para que actúes antes de que se vaya.' },
+            { id: 'patrones', label: 'Análisis de patrones', desc: 'Clusters automáticos por hábitos de uso',
+              icon: Layers, color: '#A78BFA', bg: 'rgba(167,139,250,0.14)',
+              info: 'Agrupa a tus clientes en grupos con patrones similares (días, horas, actividades, edad, género) usando K-means sobre un vector de 33 características. Útil para campañas dirigidas, optimizar horarios según los perfiles reales, y entender qué tipos de cliente tienes en tu centro.' },
+          ].map(({ id, label, desc, icon: Icon, color, bg, info }) => (
+            <div key={id} style={{ position: 'relative' }}>
+              <button onClick={() => {
+                setTab(id)
+                if (id === 'distribucion') {
+                  const seis = new Date(); seis.setMonth(seis.getMonth() - 6); seis.setDate(1)
+                  setDesde(fmtDate(seis)); setHasta(fmtDate(new Date()))
+                }
+                if (id === 'revisar') {
+                  const tres = new Date(); tres.setMonth(tres.getMonth() - 3); tres.setDate(1)
+                  setDesde(fmtDate(tres)); setHasta(fmtDate(new Date()))
+                }
+                if (id === 'riesgo') {
+                  const noventa = new Date(); noventa.setDate(noventa.getDate() - 90)
+                  setDesde(fmtDate(noventa)); setHasta(fmtDate(new Date()))
+                }
+              }} style={{
+                display: 'flex', alignItems: 'center', gap: 16, width: '100%',
+                padding: 24, borderRadius: 16, textAlign: 'left',
+                background: 'var(--bg-2)', border: '1px solid var(--line)', cursor: 'pointer',
+              }}>
+                <div style={{ width: 52, height: 52, borderRadius: 14,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                background: bg, flexShrink: 0 }}>
+                  <Icon size={24} style={{ color }} aria-hidden="true" />
+                </div>
+                <div style={{ flex: 1, minWidth: 0, paddingRight: 28 }}>
+                  <p style={{ fontFamily: 'Outfit', fontSize: 17, fontWeight: 600, color: 'var(--text-0)', marginBottom: 4 }}>{label}</p>
+                  <p style={{ fontSize: 13, color: 'var(--text-3)' }}>{desc}</p>
+                </div>
+                <ChevronRight size={18} style={{ color: 'var(--text-3)', flexShrink: 0 }} aria-hidden="true" />
+              </button>
+              {/* Botón info absoluto arriba a la derecha */}
+              <button onClick={(e) => {
+                  e.stopPropagation()
+                  setInfoPopover(infoPopover === id ? null : id)
+                }}
+                title="Más información"
+                style={{
+                  position: 'absolute', top: 12, right: 12,
+                  background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 8,
+                  padding: 6, cursor: 'pointer',
+                  color: infoPopover === id ? 'var(--green)' : 'var(--text-3)',
+                  zIndex: 1,
+                }}>
+                <Info size={14} />
+              </button>
+              {infoPopover === id && (
+                <>
+                  <div onClick={() => setInfoPopover(null)}
+                       style={{ position: 'fixed', inset: 0, zIndex: 9 }} />
+                  <div style={{
+                    position: 'absolute', top: 50, right: 12, width: 360, padding: 16,
+                    background: 'var(--bg-2)', border: '1px solid var(--line)',
+                    borderRadius: 12, boxShadow: '0 12px 24px -8px rgba(0,0,0,0.5)',
+                    zIndex: 10, fontSize: 13, color: 'var(--text-1)', lineHeight: 1.55,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <Icon size={16} style={{ color }} aria-hidden="true" />
+                      <strong style={{ color: 'var(--text-0)' }}>{label}</strong>
+                    </div>
+                    <p>{info}</p>
+                  </div>
+                </>
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -1049,6 +1224,7 @@ export default function InformeAsistencia() {
           distribucion: distribucionPorMes?.meses?.[0]?.totalClases ?? null,
           revisar:      analisisRevisar?.recomendaciones?.length ?? 0,
           riesgo:       (analisisRiesgo?.totales?.criticos ?? 0) + (analisisRiesgo?.totales?.riesgo ?? 0),
+          retos:        retos.length || null,
         }}
       />
 
@@ -1057,7 +1233,15 @@ export default function InformeAsistencia() {
       {tab === 'faltas' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16, marginBottom: 32 }}>
           <Card style={{ padding: 24 }}>
-            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14 }}>Total reservas</p>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, display: 'flex', alignItems: 'center' }}>
+              Total reservas
+              <InfoTip title="Total reservas">
+                Suma de todas las inscripciones (reservas) registradas en NoofitPro
+                para clases pasadas. Un mismo cliente que reservó 3 clases cuenta como 3.
+                Compara los últimos 7 días con los últimos 30 días para ver la actividad
+                reciente del centro.
+              </InfoTip>
+            </p>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
               <div>
                 <p style={{ fontFamily: 'Outfit', fontSize: 32, fontWeight: 700, color: 'var(--text-0)', lineHeight: 1 }}>{totalReservas7d}</p>
@@ -1071,7 +1255,15 @@ export default function InformeAsistencia() {
           </Card>
 
           <Card style={{ padding: 24 }}>
-            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14 }}>Faltas de asistencia</p>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, display: 'flex', alignItems: 'center' }}>
+              Faltas de asistencia
+              <InfoTip title="Faltas de asistencia (no-show)">
+                Número de reservas en las que el cliente NO apareció: estaba inscrito
+                pero el trainer no lo marcó como asistente al pasar lista. Se calcula
+                solo sobre clases ya pasadas (no las futuras). Si una clase aún no se
+                ha cerrado puede contar como falta provisional hasta que se marque.
+              </InfoTip>
+            </p>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
               <div>
                 <p style={{ fontFamily: 'Outfit', fontSize: 32, fontWeight: 700, color: 'var(--red)', lineHeight: 1 }}>{totalNoShows7d}</p>
@@ -1244,9 +1436,29 @@ export default function InformeAsistencia() {
                 <Card style={{ padding: 0, overflow: 'hidden' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 72px 72px 84px', gap: 8, padding: '10px 16px', borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                     <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Cliente</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center' }}>Semana</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center' }}>Mes</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center' }}>Media/sem</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', display: 'inline-flex', justifyContent: 'center', alignItems: 'center' }}>
+                      Semana
+                      <InfoTip title="Asistencias esta semana">
+                        Nº de clases a las que ha asistido el cliente DESDE el lunes hasta hoy
+                        (semana ISO en curso). Solo cuenta presencias verificadas, no reservas
+                        ni faltas.
+                      </InfoTip>
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', display: 'inline-flex', justifyContent: 'center', alignItems: 'center' }}>
+                      Mes
+                      <InfoTip title="Asistencias este mes">
+                        Nº de clases a las que ha asistido el cliente desde el día 1 del mes
+                        en curso hasta hoy.
+                      </InfoTip>
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', display: 'inline-flex', justifyContent: 'center', alignItems: 'center' }}>
+                      Media/sem
+                      <InfoTip title="Media semanal" side="left">
+                        Asistencias del cliente en todo el rango filtrado divididas entre
+                        el número de semanas del rango. Da una cifra realista de su hábito,
+                        independiente de si justo esta semana asistió mucho o poco.
+                      </InfoTip>
+                    </span>
                   </div>
                   <div>
                     {clientesFiltrados.map((c, idx) => {
@@ -1367,6 +1579,18 @@ export default function InformeAsistencia() {
           onVerPerfil={(id) => navigate(`/clientes/${id}`)}
           clientMap={clientMap}
         />
+      )}
+
+      {/* Tab: Análisis de patrones (clusters de uso) */}
+      {tab === 'patrones' && (
+        <div role="tabpanel" aria-label="Análisis de patrones">
+          <AnalisisClusters embedded />
+        </div>
+      )}
+
+      {/* Tab: Retos NoofitPro */}
+      {tab === 'retos' && (
+        <RetosPanel retos={retos} clientMap={clientMap} />
       )}
 
       {/* Modal: clases no asistidas del cliente */}
@@ -1535,8 +1759,16 @@ function DistribucionClases({ datos, datosActividad, loadingUsuarios }) {
       {/* KPIs comparativos */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
         <Card style={{ padding: 18 }}>
-          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
             {metrica === 'clientes' ? 'Clientes' : 'Clases'} — {MES_LABELS[latest.fecha.getMonth()]}
+            <InfoTip title={metrica === 'clientes' ? 'Clientes del mes' : 'Clases del mes'} side="left">
+              {metrica === 'clientes'
+                ? 'Suma de personas inscritas en TODAS las clases del mes mostrado (cuenta cada reserva como un cliente, una persona inscrita en 4 clases suma 4).'
+                : 'Número total de clases pasadas del mes mostrado.'}
+              {deltaPct !== null && (
+                <><br/><br/><strong>Δ vs mes anterior:</strong> compara con el mes inmediatamente previo. Verde = subida, Rojo = bajada.</>
+              )}
+            </InfoTip>
           </p>
           <p style={{ fontFamily: 'Outfit', fontSize: 26, fontWeight: 700, color: 'var(--text-0)', marginTop: 4 }}>{totalLatest}</p>
           {deltaPct !== null && (
@@ -1548,7 +1780,13 @@ function DistribucionClases({ datos, datosActividad, loadingUsuarios }) {
         </Card>
         {usaActividad ? (
           <Card style={{ padding: 18 }}>
-            <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Actividad líder</p>
+            <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
+              Actividad líder
+              <InfoTip title="Actividad líder" side="left">
+                La actividad con más {metrica === 'clientes' ? 'clientes inscritos' : 'sesiones programadas'} en
+                todo el periodo. Útil para ver qué tipo de clase atrae más demanda.
+              </InfoTip>
+            </p>
             {datosActividad.actividades[0] ? (
               <>
                 <p style={{ fontFamily: 'Outfit', fontSize: 18, fontWeight: 700, color: 'var(--text-0)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1562,7 +1800,14 @@ function DistribucionClases({ datos, datosActividad, loadingUsuarios }) {
           </Card>
         ) : (
           <Card style={{ padding: 18 }}>
-            <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Día pico</p>
+            <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
+              Día pico
+              <InfoTip title="Día pico" side="left">
+                Combinación día-de-semana + hora con el valor MÁS ALTO en el heatmap
+                del mes mostrado. Se calcula recorriendo todas las celdas (7 días × 24 horas)
+                y eligiendo la del máximo. Útil para saber dónde se concentra la demanda.
+              </InfoTip>
+            </p>
             <p style={{ fontFamily: 'Outfit', fontSize: 22, fontWeight: 700, color: 'var(--text-0)', marginTop: 4 }}>
               {DOW_LABELS[latest.peak.dow]} · {String(latest.peak.hour).padStart(2, '0')}:00
             </p>
@@ -1570,7 +1815,19 @@ function DistribucionClases({ datos, datosActividad, loadingUsuarios }) {
           </Card>
         )}
         <Card style={{ padding: 18 }}>
-          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Franja activa</p>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
+            Franja activa
+            <InfoTip title="Franja activa" side="left">
+              Rango horario con actividad CONSISTENTE durante el periodo analizado.
+              <br/><br/>
+              <strong>Cómo se filtra:</strong> solo entran horas que cumplen las dos condiciones:
+              <br/>• ≥ 5% del nº de clases de la hora pico
+              <br/>• ≥ 3 clases en todo el periodo
+              <br/><br/>
+              Esto evita que una clase fantasma a las 01:00 (datos de test o salas mal
+              etiquetadas) estire la franja desde madrugada hasta noche.
+            </InfoTip>
+          </p>
           <p style={{ fontFamily: 'Outfit', fontSize: 22, fontWeight: 700, color: 'var(--text-0)', marginTop: 4 }}>
             {String(minHour).padStart(2, '0')}:00 — {String(maxHour).padStart(2, '0')}:59
           </p>
@@ -1841,21 +2098,55 @@ function ParaRevisar({ analisis, loadingUsuarios }) {
       {/* KPIs globales */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 24 }}>
         <Card style={{ padding: 18 }}>
-          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Ocupación media</p>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
+            Ocupación media
+            <InfoTip title="Ocupación media">
+              Porcentaje medio de plazas usadas. <strong>Fórmula:</strong> total inscritos / total aforo × 100.
+              <br/><br/>
+              <strong>Colores:</strong>
+              <br/>• Azul &lt; 40% — infraocupado, valora reducir clases.
+              <br/>• Verde 40-69% — sano.
+              <br/>• Ámbar 70-84% — al borde de saturación.
+              <br/>• Rojo ≥ 85% — saturado, plantéate desdoblar.
+            </InfoTip>
+          </p>
           <p style={{ fontFamily: 'Outfit', fontSize: 28, fontWeight: 700, color: ocupGlobal != null ? colorOcup(ocupGlobal) : 'var(--text-3)', marginTop: 4 }}>
             {ocupGlobal != null ? `${ocupGlobal}%` : '—'}
           </p>
           <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{totalInscritos} de {totalAforo || '—'} plazas</p>
         </Card>
         <Card style={{ padding: 18 }}>
-          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Tasa asistencia</p>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
+            Tasa asistencia
+            <InfoTip title="Tasa de asistencia">
+              Porcentaje de reservas en las que el cliente sí apareció. <strong>Fórmula:</strong> asistencias / reservas × 100.
+              <br/><br/>
+              <strong>Umbrales:</strong>
+              <br/>• ≥ 80% verde — comportamiento sano.
+              <br/>• &lt; 80% ámbar — empiezas a tener no-shows.
+              <br/>• &lt; 70% rojo — alto absentismo. Plantea políticas de "última reserva" o penalización.
+            </InfoTip>
+          </p>
           <p style={{ fontFamily: 'Outfit', fontSize: 28, fontWeight: 700, color: asistGlobal != null && asistGlobal >= 80 ? 'var(--green)' : 'var(--amber)', marginTop: 4 }}>
             {asistGlobal != null ? `${asistGlobal}%` : '—'}
           </p>
           <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{totalAsistencia} asistencias / {totalInscritos} reservas</p>
         </Card>
         <Card style={{ padding: 18 }}>
-          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Recomendaciones</p>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center' }}>
+            Recomendaciones
+            <InfoTip title="Recomendaciones" side="left">
+              Número de alertas detectadas por el algoritmo combinando:
+              <br/>• Horas saturadas (ocupación ≥ 85%)
+              <br/>• Horas sobreofertadas (ocupación &lt; 40% con &gt; 5 clases)
+              <br/>• Actividades sin demanda (&lt; 30% ocupación)
+              <br/>• Monitores con baja asistencia
+              <br/>• Tendencias al alza/baja significativas
+              <br/><br/>
+              Severidad <strong>alta</strong>: el problema afecta a varias clases / es estructural.
+              <br/>Severidad <strong>media</strong>: caso aislado o leve.
+            </InfoTip>
+          </p>
           <p style={{ fontFamily: 'Outfit', fontSize: 28, fontWeight: 700, color: 'var(--text-0)', marginTop: 4 }}>{recomendaciones.length}</p>
           <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
             {recomendaciones.filter(r => r.severidad === 'alta').length} alta · {recomendaciones.filter(r => r.severidad === 'media').length} media
@@ -1930,12 +2221,39 @@ function ParaRevisar({ analisis, loadingUsuarios }) {
           fontSize: 11, fontWeight: 600, color: 'var(--text-3)',
           textTransform: 'uppercase', letterSpacing: 0.4,
         }}>
-          <span>Hora</span>
-          <span>Ocupación</span>
-          <span style={{ textAlign: 'right' }}>Clases</span>
-          <span style={{ textAlign: 'right' }}>Inscritos</span>
-          <span style={{ textAlign: 'right' }}>Aforo</span>
-          <span style={{ textAlign: 'right' }}>Asist.</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+            Hora
+            <InfoTip title="Hora del día">Franja horaria en formato 24h. Una clase se asigna a la hora en que arranca, no a su duración.</InfoTip>
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+            Ocupación
+            <InfoTip title="Ocupación de la franja">
+              Porcentaje de plazas ocupadas en esa hora del día. <strong>Fórmula:</strong> total inscritos / total aforo × 100.
+              <br/><br/>
+              Si aparece una flecha <strong>↗ verde</strong> o <strong>↘ roja</strong> al lado,
+              indica la <strong>tendencia</strong>: cambio en puntos porcentuales (pp) entre las
+              últimas 2 semanas y las 2 anteriores.
+            </InfoTip>
+          </span>
+          <span style={{ textAlign: 'right', display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+            Clases
+            <InfoTip title="Clases" side="left">Número total de clases programadas en esta franja durante el periodo. No filtra por asistencia.</InfoTip>
+          </span>
+          <span style={{ textAlign: 'right', display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+            Inscritos
+            <InfoTip title="Inscritos" side="left">Suma total de reservas en todas las clases de esta franja. Un cliente que reserva 3 clases en esta hora cuenta como 3.</InfoTip>
+          </span>
+          <span style={{ textAlign: 'right', display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+            Aforo
+            <InfoTip title="Aforo total" side="left">Suma de plazas máximas (aforo) de todas las clases de esta franja. Útil para conocer la capacidad teórica.</InfoTip>
+          </span>
+          <span style={{ textAlign: 'right', display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end' }}>
+            Asist.
+            <InfoTip title="Tasa de asistencia" side="left">
+              % de personas que se inscribieron y SÍ aparecieron a clase. <strong>Fórmula:</strong> asistencias / inscritos × 100.
+              <br/><br/>Por debajo de <strong>70%</strong> se marca en rojo (alto no-show — clientes que reservan pero no van).
+            </InfoTip>
+          </span>
         </div>
         {horasAnalizadas
           .slice()
@@ -1960,15 +2278,36 @@ function ParaRevisar({ analisis, loadingUsuarios }) {
                   <span style={{ minWidth: 44, textAlign: 'right', fontSize: 13, fontWeight: 600, color: ocupColor }}>
                     {h.ocupacion != null ? `${h.ocupacion}%` : '—'}
                   </span>
-                  {h.tendencia != null && Math.abs(h.tendencia) >= 10 && (
-                    <span style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 11, fontWeight: 600,
-                      color: h.tendencia > 0 ? 'var(--green)' : 'var(--red)',
-                    }}>
-                      {h.tendencia > 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                      {h.tendencia > 0 ? '+' : ''}{h.tendencia}pp
-                    </span>
-                  )}
+                  {h.tendencia != null && Math.abs(h.tendencia) >= 10 && (() => {
+                    const ocupAnt = h.ocupacionAntiguaA > 0
+                      ? Math.round((h.ocupacionAntiguaI  / h.ocupacionAntiguaA)  * 100) : null
+                      const ocupRec = h.ocupacionRecienteA > 0
+                        ? Math.round((h.ocupacionRecienteI / h.ocupacionRecienteA) * 100) : null
+                    const sube = h.tendencia > 0
+                    const tooltip =
+                      `Tendencia: la ocupación a las ${String(h.hora).padStart(2,'0')}h ha ` +
+                      `${sube ? 'subido' : 'bajado'} ${Math.abs(h.tendencia)} puntos porcentuales (pp) ` +
+                      `comparando las últimas 2 semanas con las 2 anteriores.\n\n` +
+                      (ocupAnt != null && ocupRec != null
+                        ? `Antes (semanas −4 a −2): ${ocupAnt}%\nAhora (semanas −2 a hoy): ${ocupRec}%\n\n`
+                        : '') +
+                      (sube
+                        ? '↗ Verde = la franja está captando más asistentes.'
+                        : '↘ Rojo = la franja está perdiendo asistentes. Revisa si hay clases canceladas, cambio de horario o competencia interna.')
+                    return (
+                      <span title={tooltip}
+                            style={{
+                              display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 11, fontWeight: 600,
+                              color: sube ? 'var(--green)' : 'var(--red)',
+                              cursor: 'help',
+                              textDecoration: 'underline dotted',
+                              textUnderlineOffset: 3,
+                            }}>
+                        {sube ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                        {sube ? '+' : ''}{h.tendencia}pp
+                      </span>
+                    )
+                  })()}
                 </div>
                 <span style={{ textAlign: 'right', color: 'var(--text-2)' }}>{h.clases}</span>
                 <span style={{ textAlign: 'right', color: 'var(--text-2)' }}>{h.inscritos}</span>
@@ -2024,7 +2363,23 @@ function ClientesEnRiesgo({ analisis, loadingUsuarios, onVerPerfil, clientMap })
         <Activity size={16} style={{ color: 'var(--blue)', flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
         <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.55 }}>
           Score basado en señales reales del backend: asistencias verificadas, reservas,
-          frecuencia, patrón horario y fecha de alta. <strong style={{ color: 'var(--text-0)' }}>Faltan integraciones</strong>:
+          frecuencia, patrón horario y fecha de alta.{' '}
+          <InfoTip title="Cómo se calcula el score (0-100)">
+            El score combina 5 indicadores, cada uno aporta entre 0 y N puntos:
+            <br/><br/>
+            <strong>1. Caída de asistencia (0-40 pt)</strong> — diferencia entre asistencias de las últimas 4 semanas y las 4 anteriores. A más caída, más puntos.
+            <br/><br/>
+            <strong>2. Días sin asistir (0-25 pt)</strong> — cuántos días hace de la última asistencia. ≥30 días = máximo.
+            <br/><br/>
+            <strong>3. Frecuencia baja (0-15 pt)</strong> — clases/semana actual vs hábito histórico.
+            <br/><br/>
+            <strong>4. Antigüedad (0-10 pt)</strong> — clientes recién captados son más volátiles.
+            <br/><br/>
+            <strong>5. Patrón irregular (0-10 pt)</strong> — variabilidad en horas y días.
+            <br/><br/>
+            <strong>Niveles:</strong> &lt;30 sano, 30-49 atención, 50-74 riesgo, ≥75 crítico.
+          </InfoTip>
+          <strong style={{ color: 'var(--text-0)' }}>Faltan integraciones</strong>:
           uso de la app móvil (mynoofit) y retos completados — pendientes de endpoint en wiemspro.
           Cuando estén, el algoritmo los incorporará automáticamente.
           {loadingUsuarios && <> &nbsp;<Loader2 size={12} className="animate-spin" style={{ display: 'inline', verticalAlign: 'middle' }} /> Aún cargando reservas…</>}
@@ -2034,13 +2389,20 @@ function ClientesEnRiesgo({ analisis, loadingUsuarios, onVerPerfil, clientMap })
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 22 }}>
         {[
-          { id:'critico',  label:'Críticos',  count: totales.criticos,  desc:'Score ≥ 75',  color: colorNivel.critico,  bg:'rgba(248,113,113,0.06)', border:'rgba(248,113,113,0.22)' },
-          { id:'riesgo',   label:'En riesgo', count: totales.riesgo,    desc:'Score 50–74', color: colorNivel.riesgo,   bg:'rgba(251,191,36,0.06)', border:'rgba(251,191,36,0.22)' },
-          { id:'atencion', label:'Atención',  count: totales.atencion,  desc:'Score 30–49', color: colorNivel.atencion, bg:'rgba(91,156,246,0.06)', border:'rgba(91,156,246,0.22)' },
-          { id:'sano',     label:'Sanos',     count: totales.sanos,     desc:'Score < 30',  color: colorNivel.sano,     bg:'rgba(45,212,168,0.06)', border:'rgba(45,212,168,0.22)' },
+          { id:'critico',  label:'Críticos',  count: totales.criticos,  desc:'Score ≥ 75',  color: colorNivel.critico,  bg:'rgba(248,113,113,0.06)', border:'rgba(248,113,113,0.22)',
+            tip: 'Cliente con MUY alta probabilidad de fuga. Acción recomendada: contacto personal en menos de 7 días.' },
+          { id:'riesgo',   label:'En riesgo', count: totales.riesgo,    desc:'Score 50–74', color: colorNivel.riesgo,   bg:'rgba(251,191,36,0.06)', border:'rgba(251,191,36,0.22)',
+            tip: 'Cliente con señales de desconexión: caída de asistencia o frecuencia. Plantéate campaña automática y oferta de retención.' },
+          { id:'atencion', label:'Atención',  count: totales.atencion,  desc:'Score 30–49', color: colorNivel.atencion, bg:'rgba(91,156,246,0.06)', border:'rgba(91,156,246,0.22)',
+            tip: 'Hay algún indicador anómalo pero no es crítico. Útil para incluirlos en campañas masivas de fidelización.' },
+          { id:'sano',     label:'Sanos',     count: totales.sanos,     desc:'Score < 30',  color: colorNivel.sano,     bg:'rgba(45,212,168,0.06)', border:'rgba(45,212,168,0.22)',
+            tip: 'Comportamiento consistente y reciente. No requieren acción.' },
         ].map(k => (
           <Card key={k.id} style={{ padding: 16, background: k.bg, border: `1px solid ${k.border}` }}>
-            <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.4 }}>{k.label}</p>
+            <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 0.4, display: 'flex', alignItems: 'center' }}>
+              {k.label}
+              <InfoTip title={`${k.label} — ${k.desc}`}>{k.tip}</InfoTip>
+            </p>
             <p style={{ fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 700, color: k.color, marginTop: 4 }}>{k.count}</p>
             <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>{k.desc}</p>
           </Card>
@@ -2181,3 +2543,325 @@ function ClienteRiesgoRow({ cliente, clientFromMap, colorNivel, labelNivel, onVe
     </Card>
   )
 }
+
+// ─── Componente: Retos NoofitPro ────────────────────────────────────────────
+// Determina si un reto está "terminado": estado==2 / fechaFin pasada.
+function retoTerminado(r) {
+  if (Number(r.estado) === 2) return true
+  const ff = r.fechaFin
+  if (typeof ff === 'number' && ff > 1e10) {
+    return ff < Date.now()
+  }
+  return false
+}
+
+// Lista de retos en los que participa un cliente (con su valor + ranking)
+function retosParaCliente(retos, idClient) {
+  const out = []
+  const idStr = String(idClient)
+  for (const r of (retos || [])) {
+    const part = (r.participantes || []).find(p =>
+      String(p?.idClient || p?.clienteId) === idStr)
+    if (!part) continue
+    const rk = (r.rankingIndividual || []).find(x =>
+      String(x?.idClient || x?.clienteId) === idStr)
+    out.push({
+      reto: r,
+      valorAcumulado: rk?.valorAcumulado ?? part.valorAcumulado ?? 0,
+      numRegistros:   rk?.numRegistros   ?? part.numRegistros   ?? 0,
+      ranking:        rk?.rankingIndividual ?? null,
+      activo:         part.activo,
+      fechaInscripcion: part.fechaInscripcion,
+      terminado:      retoTerminado(r),
+    })
+  }
+  return out
+}
+
+function RetosPanel({ retos, clientMap }) {
+  const [filtroEstado, setFiltroEstado] = useState('activos')   // activos | terminados | todos
+  const [clienteSel, setClienteSel] = useState(null)            // { idClient, nombre, imgUrl }
+
+  if (!retos || retos.length === 0) {
+    return (
+      <div role="tabpanel" aria-label="Retos" style={{ marginTop: 8 }}>
+        <Card style={{ padding: 32, textAlign: 'center' }}>
+          <Zap size={24} style={{ color: 'var(--green)', margin: '0 auto 8px' }} />
+          <p style={{ fontSize: 14, color: 'var(--text-2)' }}>
+            No hay retos activos en NoofitPro para los trainers configurados.
+          </p>
+          <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
+            Crea un reto desde NoofitPro y aparecerá aquí (caché 5 min, fuerza refresco en el botón ↻ de la toolbar).
+          </p>
+        </Card>
+      </div>
+    )
+  }
+
+  // Aplicar filtro de estado
+  const retosFiltrados = retos.filter(r => {
+    const term = retoTerminado(r)
+    if (filtroEstado === 'activos')    return !term
+    if (filtroEstado === 'terminados') return term
+    return true
+  })
+  const nActivos    = retos.filter(r => !retoTerminado(r)).length
+  const nTerminados = retos.length - nActivos
+
+  const fmtFecha = (epoch) => {
+    if (!epoch) return '—'
+    if (typeof epoch === 'number' && epoch > 1e10) {
+      return new Date(epoch).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
+    }
+    return epoch
+  }
+  const tipoMetricaLabel = (n) => ({ 1: 'sesiones', 2: 'km', 3: 'minutos', 4: 'calorías' }[n] || `métrica ${n}`)
+
+  return (
+    <div role="tabpanel" aria-label="Retos" style={{ marginTop: 8 }}>
+      <div style={{
+        padding: '12px 16px', borderRadius: 12, marginBottom: 18,
+        background: 'rgba(45,212,168,0.06)', border: '1px solid rgba(45,212,168,0.2)',
+        fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.55,
+      }}>
+        <strong>{retos.length} reto{retos.length !== 1 ? 's' : ''}</strong> en NoofitPro
+        ({nActivos} activo{nActivos !== 1 ? 's' : ''} · {nTerminados} terminado{nTerminados !== 1 ? 's' : ''}).
+        Click sobre cualquier participante del ranking para ver TODOS sus retos. Cuando un
+        cliente participa, su score de "En riesgo" baja (señal positiva de engagement).
+      </div>
+
+      {/* Filtro de estado */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 600 }}>Mostrar:</span>
+        <div style={{ display: 'flex', borderRadius: 10, overflow: 'hidden',
+                       border: '1.5px solid var(--line)', background: 'var(--bg-2)' }}>
+          {[
+            { id: 'activos',    label: `Activos (${nActivos})` },
+            { id: 'terminados', label: `Terminados (${nTerminados})` },
+            { id: 'todos',      label: `Todos (${retos.length})` },
+          ].map(({ id, label }) => (
+            <button key={id}
+                    onClick={() => setFiltroEstado(id)}
+                    aria-pressed={filtroEstado === id}
+                    style={{
+                      padding: '8px 14px', fontSize: 12.5, fontWeight: 700,
+                      background: filtroEstado === id ? 'var(--green)' : 'transparent',
+                      color: filtroEstado === id ? '#fff' : 'var(--text-1)',
+                      border: 'none', cursor: 'pointer',
+                    }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {retosFiltrados.length === 0 ? (
+        <Card style={{ padding: 28, textAlign: 'center' }}>
+          <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
+            No hay retos {filtroEstado === 'activos' ? 'activos' : 'terminados'} en el filtro actual.
+          </p>
+        </Card>
+      ) : (
+      <div style={{ display: 'grid', gap: 14 }}>
+        {retosFiltrados.map(r => {
+          const participantes = r.participantes || []
+          const equipos = r.equipos || []
+          const ranking = r.rankingIndividual || []
+          return (
+            <Card key={r.id} style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
+                            display: 'flex', alignItems: 'flex-start', gap: 14,
+                            background: 'var(--bg-2)' }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12,
+                              background: 'var(--green-bg)', display: 'flex',
+                              alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Zap size={20} style={{ color: 'var(--green)' }} aria-hidden="true" />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontFamily: 'Outfit', fontSize: 16, fontWeight: 700, color: 'var(--text-0)', margin: 0,
+                              display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {r.nombre || `Reto #${r.id}`}
+                    {retoTerminado(r)
+                      ? <Badge color="gray">Terminado</Badge>
+                      : <Badge color="green">Activo</Badge>}
+                  </p>
+                  <p style={{ fontSize: 12, color: 'var(--text-2)', margin: '4px 0 0', whiteSpace: 'pre-line' }}>
+                    {r.descripcion || '—'}
+                  </p>
+                  <div style={{ display: 'flex', gap: 14, fontSize: 11.5, color: 'var(--text-3)', marginTop: 8 }}>
+                    <span>📅 {fmtFecha(r.fechaInicio)} → {fmtFecha(r.fechaFin)}</span>
+                    <span>👥 {participantes.length} participantes</span>
+                    {equipos.length > 0 && <span>🏆 {equipos.length} equipos</span>}
+                    <span>📏 {tipoMetricaLabel(r.tipoMetrica)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {ranking.length > 0 && (
+                <div style={{ padding: '12px 18px' }}>
+                  <p style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600,
+                              textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+                    Ranking individual (top 10)
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {ranking.slice(0, 10).map((rk, idx) => {
+                      const cli = clientMap[String(rk.idClient || rk.clienteId)]
+                      const nombreLocal = cli ? `${cli.nombre || cli.name || ''} ${cli.apellidos || cli.surname || ''}`.trim() : ''
+                      // Prioridad: nombre del clientMap > nombreCliente del propio reto > id
+                      const nombre = nombreLocal
+                                     || rk.nombreCliente
+                                     || rk.nombre
+                                     || `#${rk.idClient || rk.clienteId || idx}`
+                      // Campo real en NoofitPro: valorAcumulado (km / sesiones / etc.)
+                      const valor = rk.valorAcumulado ?? rk.valor ?? rk.puntuacion ?? rk.score
+                      const valorTxt = (typeof valor === 'number')
+                          ? (Number.isInteger(valor) ? valor.toString() : valor.toFixed(2))
+                          : (valor ?? '0')
+                      const sinActividad = (typeof valor === 'number' && valor === 0)
+                      return (
+                        <div key={idx} style={{
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '6px 8px', borderRadius: 8,
+                          background: idx < 3 ? 'rgba(45,212,168,0.05)' : 'transparent',
+                          fontSize: 12.5, color: sinActividad ? 'var(--text-3)' : 'var(--text-1)',
+                          opacity: sinActividad ? 0.6 : 1,
+                        }}>
+                          <span style={{
+                            width: 22, height: 22, borderRadius: '50%',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: idx === 0 ? '#FFC83D' : idx === 1 ? '#C0C0C0' : idx === 2 ? '#CD7F32' : 'var(--bg-3)',
+                            color: idx < 3 ? '#000' : 'var(--text-2)',
+                            fontSize: 11, fontWeight: 700, flexShrink: 0,
+                          }}>{idx + 1}</span>
+                          <button onClick={() => setClienteSel({
+                                    idClient: rk.idClient || rk.clienteId,
+                                    nombre,
+                                    imgUrl: rk.imagenCliente || '',
+                                  })}
+                                  style={{
+                                    flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    background: 'none', border: 'none', padding: 0, textAlign: 'left',
+                                    color: 'inherit', cursor: 'pointer',
+                                    textDecoration: 'underline', textDecorationColor: 'transparent',
+                                    transition: 'text-decoration-color 0.15s',
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.textDecorationColor = 'var(--green)'}
+                                  onMouseLeave={e => e.currentTarget.style.textDecorationColor = 'transparent'}
+                                  title="Ver todos los retos de este cliente">
+                            {nombre}
+                          </button>
+                          {rk.numRegistros != null && (
+                            <span style={{ fontSize: 10.5, color: 'var(--text-3)',
+                                           fontFamily: 'var(--font-mono)' }}
+                                  title={`${rk.numRegistros} sesiones registradas`}>
+                              {rk.numRegistros} ses
+                            </span>
+                          )}
+                          <span style={{ fontWeight: 700, color: sinActividad ? 'var(--text-3)' : 'var(--text-0)',
+                                         minWidth: 80, textAlign: 'right' }}>
+                            {valorTxt} {tipoMetricaLabel(r.tipoMetrica)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <p style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 8 }}>
+                    <strong>valor:</strong> km/sesiones acumulados por el cliente desde fecha de inicio del reto.{' '}
+                    <strong>ses:</strong> nº de sesiones donde se han registrado datos (pulsómetro o sala compatible).{' '}
+                    Participantes en gris = inscritos pero sin actividad registrada todavía.
+                  </p>
+                </div>
+              )}
+            </Card>
+          )
+        })}
+      </div>
+      )}
+
+      {/* Modal: retos de un cliente concreto */}
+      {clienteSel && (
+        <RetosClienteModal
+          clienteSel={clienteSel}
+          retos={retos}
+          onClose={() => setClienteSel(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Modal: todos los retos en los que participa un cliente ─────────────────
+function RetosClienteModal({ clienteSel, retos, onClose }) {
+  const retosCli = retosParaCliente(retos, clienteSel.idClient)
+  const total = retosCli.length
+  const activos    = retosCli.filter(x => !x.terminado).length
+  const terminados = total - activos
+  const tipoMetricaLabel = (n) => ({ 1: 'sesiones', 2: 'km', 3: 'minutos', 4: 'calorías' }[n] || `métrica ${n}`)
+  const fmtFecha = (epoch) => {
+    if (!epoch) return '—'
+    if (typeof epoch === 'number' && epoch > 1e10)
+      return new Date(epoch).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
+    return epoch
+  }
+
+  return (
+    <Modal open onClose={onClose} maxWidth={720}
+           title={`Retos de ${clienteSel.nombre}`}>
+      <div style={{ padding: 24 }}>
+        <div style={{ display: 'flex', gap: 14, marginBottom: 18,
+                       padding: '10px 14px', borderRadius: 10,
+                       background: 'var(--green-bg)', border: '1px solid var(--green-border)' }}>
+          <Zap size={18} style={{ color: 'var(--green)', flexShrink: 0, marginTop: 2 }} aria-hidden="true" />
+          <div style={{ fontSize: 12.5, color: 'var(--text-1)' }}>
+            <strong>{total}</strong> reto{total !== 1 ? 's' : ''} (
+            <strong style={{ color: 'var(--green)' }}>{activos}</strong> activo{activos !== 1 ? 's' : ''} ·{' '}
+            <strong style={{ color: 'var(--text-3)' }}>{terminados}</strong> terminado{terminados !== 1 ? 's' : ''})
+          </div>
+        </div>
+
+        {total === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-3)', textAlign: 'center', padding: 20 }}>
+            Este cliente no participa en ningún reto.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {retosCli.map(({ reto, valorAcumulado, numRegistros, ranking, activo, fechaInscripcion, terminado }) => (
+              <div key={reto.id} style={{
+                padding: '12px 14px', borderRadius: 10,
+                background: terminado ? 'var(--bg-2)' : 'var(--green-bg)',
+                border: `1px solid ${terminado ? 'var(--line)' : 'var(--green-border)'}`,
+                opacity: !activo ? 0.6 : 1,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-0)' }}>
+                    {reto.nombre}
+                  </span>
+                  {terminado
+                    ? <Badge color="gray">Terminado</Badge>
+                    : <Badge color="green">Activo</Badge>}
+                  {!activo && <Badge color="red">Abandonó</Badge>}
+                  {ranking != null && (
+                    <Badge color={ranking <= 3 ? 'amber' : 'blue'}>
+                      Puesto #{ranking}
+                    </Badge>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 14, fontSize: 11.5, color: 'var(--text-2)', flexWrap: 'wrap' }}>
+                  <span>📅 {fmtFecha(reto.fechaInicio)} → {fmtFecha(reto.fechaFin)}</span>
+                  {fechaInscripcion && <span>📝 Inscrito {new Date(fechaInscripcion).toLocaleDateString('es-ES')}</span>}
+                  <span style={{ fontWeight: 700, color: 'var(--text-0)' }}>
+                    🏆 {typeof valorAcumulado === 'number'
+                          ? (Number.isInteger(valorAcumulado) ? valorAcumulado : valorAcumulado.toFixed(2))
+                          : valorAcumulado} {tipoMetricaLabel(reto.tipoMetrica)}
+                  </span>
+                  <span>📊 {numRegistros} sesiones</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+

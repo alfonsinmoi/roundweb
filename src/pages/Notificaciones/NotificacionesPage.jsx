@@ -476,9 +476,9 @@ function NuevaNotifModal({ identity, seccionInicial, audiencePreset, presetTitle
     cuerpo: '',
     cuerpoHtml: '',
     url: '',
-    // Por defecto: enviar en 30 min (programada). El usuario puede ponerlo a "ahora"
-    // marcando "Enviar inmediatamente".
-    enviar_ahora: false,
+    // Por defecto: enviar inmediatamente. Si el user desmarca, se programa
+    // para la fecha del datetime-local (default ahora + 30 min).
+    enviar_ahora: true,
     fecha_publicacion: nowPlusMin(30),
     fecha_desaparicion: '',
   })

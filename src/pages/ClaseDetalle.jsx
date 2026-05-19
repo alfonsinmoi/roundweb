@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Users, Clock, CheckCircle2, XCircle, UserPlus,
-  UserMinus, Loader2, Search, CalendarCheck, X,
+  UserMinus, Loader2, Search, CalendarCheck, X, Sparkles,
 } from 'lucide-react'
 import { Card, Badge, Btn, Avatar } from '../components/UI'
 import Modal from '../components/Modal'
@@ -41,25 +41,39 @@ export default function ClaseDetalle() {
 
   const fetchData = async () => {
     try {
-      const [salasData, usuariosData, clientesData] = await Promise.all([
+      const [salasData, usuariosData, clientesData, leadsResp] = await Promise.all([
         getSalas(),
         getUsuariosBySala(Number(id)),
         getClientes().catch(() => []),
+        // Marca de leads: usuarios apuntados que provienen de reserva de prueba
+        fetch(`/api/crm/leads-en-sala/${Number(id)}`)
+          .then(r => r.json()).catch(() => ({ leads: [] })),
       ])
       const found = salasData.find(s => String(s.id) === String(id))
       if (!found) { setError('No se pudo cargar la información solicitada'); return }
-      // Enriquecer cada usuario con nombre/apellidos reales del cliente
+      // Mapa idnoofit → info de lead (estado, fecha de reserva, etc.)
+      const leadsMap = new Map(
+        (leadsResp?.leads || []).map(l => [String(l.idnoofit), l])
+      )
+      // Enriquecer cada usuario con nombre/apellidos reales del cliente + flag lead
       const clientMap = new Map(clientesData.map(c => [String(c.id), c]))
       const usuariosEnriquecidos = usuariosData.map(u => {
         const c = clientMap.get(String(u.idClient))
         const fallback = (u.nameClient || '').trim().split(/\s+/)
+        const lead = leadsMap.get(String(u.idClient)) || null
         return {
           ...u,
           nombre:    c?.name    ?? fallback[0] ?? '',
           apellidos: c?.surname ?? fallback.slice(1).join(' ') ?? '',
           imgUrl:    c?.imgUrl || u.pictureClient || '',
+          lead,                              // null si NO es lead, objeto si SÍ
+          esLead:    !!lead,
         }
       })
+      // Ordenar para que los leads salgan primero
+      usuariosEnriquecidos.sort((a, b) =>
+        (b.esLead ? 1 : 0) - (a.esLead ? 1 : 0)
+      )
       setSala(found)
       setUsuarios(usuariosEnriquecidos)
       setClientes(clientesData)
@@ -181,6 +195,7 @@ export default function ClaseDetalle() {
 
   const asistieron = usuarios.filter(u => u.verify).length
   const total = usuarios.length
+  const totalLeads = usuarios.filter(u => u.esLead).length
 
   return (
     <div style={{ maxWidth: 900 }}>
@@ -208,15 +223,20 @@ export default function ClaseDetalle() {
               {sala.idEspejo != null && <span style={{ fontFamily: 'monospace' }}>Espejo: {sala.idEspejo}</span>}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Badge color={total >= (sala.aforo || 999) ? 'red' : 'green'}>
               {total}/{sala.aforo || '∞'} inscritos
             </Badge>
+            {totalLeads > 0 && (
+              <Badge color="amber" title="Reservas de prueba gratuita">
+                <Sparkles size={10} aria-hidden="true" /> {totalLeads} lead{totalLeads !== 1 ? 's' : ''}
+              </Badge>
+            )}
           </div>
         </div>
 
         {/* Stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginTop: 28, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${totalLeads > 0 ? 4 : 3}, 1fr)`, gap: 16, marginTop: 28, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
           <div style={{ textAlign: 'center' }}>
             <p style={{ fontFamily: 'Outfit', fontSize: 32, fontWeight: 700, color: 'var(--text-0)' }}>{total}</p>
             <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Inscritos</p>
@@ -229,6 +249,12 @@ export default function ClaseDetalle() {
             <p style={{ fontFamily: 'Outfit', fontSize: 32, fontWeight: 700, color: total - asistieron > 0 ? 'var(--red)' : 'var(--text-3)' }}>{total - asistieron}</p>
             <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>No asistieron</p>
           </div>
+          {totalLeads > 0 && (
+            <div style={{ textAlign: 'center' }}>
+              <p style={{ fontFamily: 'Outfit', fontSize: 32, fontWeight: 700, color: 'var(--amber, #f59e0b)' }}>{totalLeads}</p>
+              <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Leads (prueba)</p>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -253,8 +279,26 @@ export default function ClaseDetalle() {
           {usuarios.map(u => {
             const ampliada = fotoAmpliada === u.id
             const nombreCompleto = `${u.nombre} ${u.apellidos}`.trim() || `Cliente #${u.idClient}`
+            const leadStyles = u.esLead ? {
+              background: 'linear-gradient(90deg, var(--amber-bg, #fef3c7) 0%, var(--bg-2) 60%)',
+              border: '1.5px solid var(--amber, #f59e0b)',
+              boxShadow: '0 0 0 3px rgba(245,158,11,0.08)',
+            } : {}
             return (
-            <Card key={u.id} style={{ padding: 20 }}>
+            <Card key={u.id} style={{ padding: 20, position: 'relative', ...leadStyles }}>
+              {u.esLead && (
+                <div style={{
+                  position: 'absolute', top: 10, right: 14,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '4px 10px', borderRadius: 999,
+                  background: 'var(--amber, #f59e0b)', color: '#fff',
+                  fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}>
+                  <Sparkles size={12} aria-hidden="true" />
+                  LEAD · prueba gratuita
+                </div>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
 
                 {/* Avatar clicable — al hacer click se amplía a 10x10 cm al lado del cliente */}
@@ -324,7 +368,22 @@ export default function ClaseDetalle() {
                     }
                     {u.isPause && <Badge color="yellow">Pausado</Badge>}
                     {u.gympassId && <Badge color="purple">Gympass {u.gympassId}</Badge>}
+                    {u.esLead && (
+                      <Badge color="amber" title="Reserva de prueba gratuita pendiente">
+                        Reserva {u.lead?.estado || 'pendiente'}
+                      </Badge>
+                    )}
                   </div>
+                  {u.esLead && (
+                    <div style={{
+                      marginTop: 6, fontSize: 11, color: 'var(--text-2)',
+                      display: 'flex', flexWrap: 'wrap', gap: 12,
+                    }}>
+                      {u.lead?.email && <span>📧 {u.lead.email}</span>}
+                      {u.lead?.telefono && <span>📱 {u.lead.telefono}</span>}
+                      {u.lead?.dni && <span>🪪 {u.lead.dni}</span>}
+                    </div>
+                  )}
                 </div>
 
                 {/* Actions */}

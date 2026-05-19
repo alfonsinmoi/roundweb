@@ -1,0 +1,11 @@
+[Unit]
+Description=Round retos snapshot diario (NoofitPro → reto_snapshot)
+
+[Service]
+Type=oneshot
+User=odoo
+WorkingDirectory=/opt/round_config_api
+EnvironmentFile=/opt/round_config_api/.env
+ExecStart=/opt/round_config_api/venv/bin/python -m app.cron_retos_snapshot
+StandardOutput=journal
+StandardError=journal

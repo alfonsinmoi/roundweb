@@ -7,7 +7,11 @@ from .. import config
 
 bp = Blueprint('descuentos', __name__)
 
-FIELDS = "id, scope, id_manager, id_trainer, plantilla_origen_id, codigo, descripcion, tipo, valor, active, odoo_id, created_at, updated_at"
+FIELDS = ("id, scope, id_manager, id_trainer, plantilla_origen_id, codigo, "
+          "descripcion, tipo, valor, unidad, active, odoo_id, "
+          "cuota_requerida_codigo, cuota_aplicada_codigo, precio_final, "
+          "combo_secundarias, "
+          "created_at, updated_at")
 
 
 def _row(r):
@@ -17,6 +21,18 @@ def _row(r):
         if out.get(k): out[k] = out[k].isoformat()
     if out.get('valor') is not None:
         out['valor'] = float(out['valor'])
+    if out.get('precio_final') is not None:
+        out['precio_final'] = float(out['precio_final'])
+    # combo_secundarias normalizado: lista de {cuota_codigo, precio}
+    cs = out.get('combo_secundarias')
+    if cs is None:
+        out['combo_secundarias'] = []
+    elif isinstance(cs, str):
+        try:
+            import json as _j
+            out['combo_secundarias'] = _j.loads(cs)
+        except Exception:
+            out['combo_secundarias'] = []
     return out
 
 
@@ -44,17 +60,68 @@ def create():
         return jsonify({'ok': False, 'error': 'tipo_invalido'}), 400
     if not d.get('codigo'):
         return jsonify({'ok': False, 'error': 'codigo_obligatorio'}), 400
+    # Validar campos del tipo precio_combo (legacy: cuota_aplicada única)
+    if d['tipo'] == 'precio_combo':
+        if not d.get('cuota_requerida_codigo') or not d.get('cuota_aplicada_codigo'):
+            return jsonify({'ok': False, 'error':
+                'precio_combo requiere cuota_requerida_codigo y cuota_aplicada_codigo'}), 400
+        if d.get('precio_final') is None:
+            return jsonify({'ok': False, 'error':
+                'precio_combo requiere precio_final'}), 400
+    # Validar campos del tipo varias_cuotas (nuevo: lista de cuotas secundarias)
+    if d['tipo'] == 'varias_cuotas':
+        if not d.get('cuota_requerida_codigo'):
+            return jsonify({'ok': False, 'error':
+                'varias_cuotas requiere cuota_requerida_codigo'}), 400
+        cs = d.get('combo_secundarias') or []
+        if not isinstance(cs, list) or not cs:
+            return jsonify({'ok': False, 'error':
+                'varias_cuotas requiere combo_secundarias no vacío'}), 400
+        for item in cs:
+            if not isinstance(item, dict) or not item.get('cuota_codigo'):
+                return jsonify({'ok': False, 'error':
+                    'cada combo_secundarias debe ser {cuota_codigo, precio}'}), 400
+            if item.get('precio') is None:
+                return jsonify({'ok': False, 'error':
+                    'cada combo debe tener precio'}), 400
+    # Validar campos del tipo familiares (descuento automático por grupo familiar)
+    # Para familiares: combo_secundarias = [{cuota_codigo, valor, unidad}]
+    # con un descuento independiente por actividad.
+    if d['tipo'] == 'familiares':
+        cs = d.get('combo_secundarias') or []
+        if not isinstance(cs, list) or not cs:
+            return jsonify({'ok': False, 'error':
+                'familiares requiere combo_secundarias=[{cuota_codigo,valor,unidad}] no vacío'}), 400
+        for item in cs:
+            if not isinstance(item, dict) or not item.get('cuota_codigo'):
+                return jsonify({'ok': False, 'error':
+                    'cada entrada familiares debe ser {cuota_codigo,valor,unidad}'}), 400
+            u = item.get('unidad')
+            if u not in ('porcentaje', 'importe'):
+                return jsonify({'ok': False, 'error':
+                    f'unidad inválida para {item.get("cuota_codigo")}: {u}'}), 400
+            v = item.get('valor')
+            if v is None or float(v) <= 0:
+                return jsonify({'ok': False, 'error':
+                    f'valor inválido para {item.get("cuota_codigo")}'}), 400
+    import json as _json_mod
     scope = 'trainer' if g.id_trainer else 'plantilla_manager'
     id_trainer = g.id_trainer if scope == 'trainer' else None
+    combo_json = _json_mod.dumps(d.get('combo_secundarias') or [])
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""
             INSERT INTO descuento (scope, id_manager, id_trainer, plantilla_origen_id,
-              codigo, descripcion, tipo, valor, active)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              codigo, descripcion, tipo, valor, unidad, active,
+              cuota_requerida_codigo, cuota_aplicada_codigo, precio_final,
+              combo_secundarias)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
             RETURNING {FIELDS}
         """, (scope, g.id_manager, id_trainer, d.get('plantilla_origen_id'),
               d['codigo'], d.get('descripcion'), d['tipo'], d.get('valor', 0),
-              d.get('active', True)))
+              d.get('unidad'),
+              d.get('active', True),
+              d.get('cuota_requerida_codigo'), d.get('cuota_aplicada_codigo'),
+              d.get('precio_final'), combo_json))
         row = cur.fetchone()
     if scope == 'plantilla_manager':
         oid = get_sync().descuento_create(row)
@@ -71,11 +138,17 @@ def update(_id):
     d = request.get_json() or {}
     if 'tipo' in d and d['tipo'] not in config.TIPOS_DESCUENTO:
         return jsonify({'ok': False, 'error': 'tipo_invalido'}), 400
-    allowed = ('codigo','descripcion','tipo','valor','active')
+    allowed = ('codigo','descripcion','tipo','valor','unidad','active',
+               'cuota_requerida_codigo','cuota_aplicada_codigo','precio_final')
     sets, params = [], []
     for k in allowed:
         if k in d:
             sets.append(f"{k}=%s"); params.append(d[k])
+    # combo_secundarias necesita cast a jsonb
+    if 'combo_secundarias' in d:
+        import json as _json_mod
+        sets.append('combo_secundarias=%s::jsonb')
+        params.append(_json_mod.dumps(d.get('combo_secundarias') or []))
     if not sets:
         return jsonify({'ok': False, 'error': 'no_changes'}), 400
     params.extend([_id, g.id_manager])
@@ -125,12 +198,203 @@ def _asig_row(r):
 @bp.route('/<int:desc_id>/asignaciones', methods=['GET'])
 @auth_required
 def list_asignaciones(desc_id):
-    """Lista clientes asignados a un descuento."""
+    """Lista clientes a quienes se aplica un descuento.
+
+    Para descuentos normales: lee de `descuento_asignacion` (asignación manual).
+    Para descuentos tipo='familiares': calcula dinámicamente las familias del
+    manager con ≥2 miembros que tienen activa la cuota_aplicada_codigo y los
+    devuelve agrupados (`familias`).
+
+    En ambos casos enriquece con `cliente_nombre` desde res.partner en Odoo.
+    """
+    # Cargar descuento para saber tipo + sus actividades (familiares)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id, tipo, cuota_aplicada_codigo, combo_secundarias
+                         FROM descuento WHERE id=%s AND id_manager=%s""",
+                    (desc_id, g.id_manager))
+        desc = cur.fetchone()
+    if not desc:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+    if desc['tipo'] == 'familiares':
+        cs = desc.get('combo_secundarias') or []
+        if isinstance(cs, str):
+            try:
+                import json as _j; cs = _j.loads(cs)
+            except Exception: cs = []
+        cuotas_codigos = [s.get('cuota_codigo') for s in cs
+                          if isinstance(s, dict) and s.get('cuota_codigo')]
+        if not cuotas_codigos and desc.get('cuota_aplicada_codigo'):
+            cuotas_codigos = [desc['cuota_aplicada_codigo']]
+        return _list_asig_familiares(desc_id, cuotas_codigos, cs)
+
+    # Asignaciones manuales (resto de tipos)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""SELECT {ASIGN_FIELDS} FROM descuento_asignacion
                         WHERE descuento_id=%s AND id_manager=%s
                         ORDER BY created_at DESC""", (desc_id, g.id_manager))
-        return jsonify({'ok': True, 'asignaciones': [_asig_row(r) for r in cur.fetchall()]})
+        rows = [_asig_row(r) for r in cur.fetchall()]
+
+    nombres = _resolver_nombres_odoo([r['cliente_idnoofit'] for r in rows
+                                       if r.get('cliente_idnoofit')])
+    for r in rows:
+        r['cliente_nombre'] = nombres.get(str(r.get('cliente_idnoofit') or ''), '')
+
+    return jsonify({'ok': True, 'asignaciones': rows})
+
+
+def _resolver_nombres_odoo(idnoofits):
+    """Devuelve dict {idnoofit: nombre} consultando res.partner una sola vez."""
+    nombres = {}
+    idnoofits = list({str(i) for i in idnoofits if i})
+    if not idnoofits:
+        return nombres
+    try:
+        from ..odoo_alta import OdooAlta
+        o = OdooAlta(); o._connect()
+        partners = o._call('res.partner', 'search_read',
+            [('id_noofit', 'in', idnoofits)], ['id_noofit', 'name'])
+        for p in partners:
+            if p.get('id_noofit'):
+                nombres[str(p['id_noofit'])] = p.get('name') or ''
+    except Exception:
+        pass
+    return nombres
+
+
+def _list_asig_familiares(desc_id, cuotas_codigos, combo_secundarias):
+    """Para descuentos tipo='familiares' (multi-cuota): devuelve las familias
+    del manager + para cada miembro qué cuotas (del descuento) tiene activas.
+    Estructura:
+       { ok: True,
+         tipo: 'familiares',
+         cuotas: [{cuota_codigo, valor, unidad}],
+         familias: [
+            { familia_id, nombre,
+              cuotas_aplicadas: [{cuota_codigo, n_miembros}],   # n≥2 = aplica
+              miembros: [
+                {cliente_idnoofit, cliente_nombre,
+                 cuotas_activas: ['RT 2 dias',...]}     # restringido a las del descuento
+              ],
+              aplica: bool                                       # alguna cuota con ≥2
+            }
+         ] }
+    """
+    cuotas_codigos = list(dict.fromkeys(cuotas_codigos or []))     # dedup conservando orden
+    # 1) Familias del manager + miembros
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT f.id, f.nombre,
+                   ARRAY(SELECT cliente_idnoofit FROM familia_miembro
+                          WHERE familia_id=f.id) AS miembros
+              FROM familia f
+             WHERE f.id_manager=%s
+        """, (str(g.id_manager),))
+        familias_db = cur.fetchall()
+
+    if not familias_db or not cuotas_codigos:
+        return jsonify({'ok': True, 'tipo': 'familiares',
+                        'cuotas': combo_secundarias or [],
+                        'familias': []})
+
+    # 2) Resolver nombres + cuotas activas vía Odoo (un solo round-trip)
+    todos_idn = sorted({idn for f in familias_db for idn in (f.get('miembros') or [])})
+    nombres = _resolver_nombres_odoo(todos_idn)
+
+    cuotas_por_idn = {}    # idnoofit → set(codigos cuota activa)
+    if todos_idn:
+        try:
+            from ..odoo_alta import OdooAlta
+            o = OdooAlta(); o._connect()
+            partners = o._call('res.partner', 'search_read',
+                [('id_noofit', 'in', todos_idn)], ['id', 'id_noofit'])
+            partner_id_to_idn = {p['id']: p['id_noofit'] for p in partners}
+            partner_ids = list(partner_id_to_idn.keys())
+            if partner_ids:
+                subs = o._call('round.subscription', 'search_read',
+                    [('estado', '=', 'activa'),
+                     ('partner_id', 'in', partner_ids)],
+                    ['partner_id', 'cuota_id'])
+                cuota_ids = list({s['cuota_id'][0] for s in subs if s.get('cuota_id')})
+                cuotas_lookup = {}
+                if cuota_ids:
+                    crows = o._call('round.cuota.catalogo', 'read', cuota_ids,
+                        ['id', 'codigo'])
+                    cuotas_lookup = {r['id']: r['codigo'] for r in crows}
+                for s in subs:
+                    if not s.get('partner_id') or not s.get('cuota_id'): continue
+                    pid = s['partner_id'][0]
+                    cid = s['cuota_id'][0]
+                    idn = partner_id_to_idn.get(pid)
+                    if not idn: continue
+                    cuotas_por_idn.setdefault(idn, set()).add(cuotas_lookup.get(cid))
+        except Exception:
+            pass
+
+    # 3) Construir familias enriquecidas
+    out = []
+    for f in familias_db:
+        miembros_idn = f.get('miembros') or []
+        miembros = []
+        conteo_por_cuota = {c: 0 for c in cuotas_codigos}
+        for idn in miembros_idn:
+            cuotas_cli = cuotas_por_idn.get(idn) or set()
+            activas_relevantes = [c for c in cuotas_codigos if c in cuotas_cli]
+            for c in activas_relevantes:
+                conteo_por_cuota[c] += 1
+            miembros.append({
+                'cliente_idnoofit': idn,
+                'cliente_nombre': nombres.get(str(idn), ''),
+                'cuotas_activas': activas_relevantes,
+            })
+        cuotas_aplicadas = [
+            {'cuota_codigo': c, 'n_miembros': n, 'aplica': n >= 2}
+            for c, n in conteo_por_cuota.items()
+        ]
+        aplica_alguna = any(x['aplica'] for x in cuotas_aplicadas)
+        out.append({
+            'familia_id': f['id'],
+            'nombre': f.get('nombre'),
+            'cuotas_aplicadas': cuotas_aplicadas,
+            'aplica': aplica_alguna,
+            'miembros': miembros,
+        })
+    # Mostrar primero las que aplican, luego el resto
+    out.sort(key=lambda x: (not x['aplica'], x.get('nombre') or ''))
+    return jsonify({'ok': True, 'tipo': 'familiares',
+                    'cuotas': combo_secundarias or [],
+                    'familias': out})
+
+
+@bp.route('/asignaciones/cliente/<idnoofit>', methods=['GET'])
+@auth_required
+def list_asignaciones_cliente(idnoofit):
+    """Lista descuentos asignados a un cliente concreto (con histórico).
+    Devuelve: [{asig: {...}, descuento: {codigo, descripcion, tipo, valor,
+                                         cuota_requerida_codigo, cuota_aplicada_codigo,
+                                         precio_final}}]"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT a.id AS asig_id, a.descuento_id, a.fecha_desde, a.fecha_hasta,
+                   a.estado, a.odoo_id, a.created_at, a.updated_at,
+                   d.codigo, d.descripcion, d.tipo, d.valor,
+                   d.cuota_requerida_codigo, d.cuota_aplicada_codigo, d.precio_final,
+                   d.combo_secundarias
+              FROM descuento_asignacion a
+              JOIN descuento d ON d.id = a.descuento_id
+             WHERE a.id_manager=%s AND a.cliente_idnoofit=%s
+             ORDER BY a.estado, a.created_at DESC
+        """, (g.id_manager, str(idnoofit)))
+        rows = cur.fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ('created_at','updated_at','fecha_desde','fecha_hasta'):
+            if d.get(k): d[k] = d[k].isoformat()
+        if d.get('valor') is not None: d['valor'] = float(d['valor'])
+        if d.get('precio_final') is not None: d['precio_final'] = float(d['precio_final'])
+        out.append(d)
+    return jsonify({'ok': True, 'asignaciones': out})
 
 
 @bp.route('/<int:desc_id>/asignaciones', methods=['POST'])

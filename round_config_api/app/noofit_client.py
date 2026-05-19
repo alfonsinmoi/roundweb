@@ -170,7 +170,7 @@ def get_clientes():
 
 
 def post_cliente(payload, send_welcome=False):
-    """Crea uno o varios clientes en NoofitPro.
+    """Crea uno o varios clientes en NoofitPro (autenticado como manager).
 
     payload: dict con {name, surname, email, tlf, dni} o lista de dicts.
     send_welcome: si True, NoofitPro envía su email automático de
@@ -181,6 +181,66 @@ def post_cliente(payload, send_welcome=False):
     if isinstance(payload, dict): payload = [payload]
     body = [{**c, 'toSend': bool(send_welcome), 'enabled': True} for c in payload]
     return post('/api/dispositivos/clientePlusv2', body)
+
+
+# ── Variante autenticada como TRAINER (importante para que el cliente quede
+#    "dentro" de la cuenta del trainer, no en la del manager). NoofitPro
+#    tiene espacios de clientes separados por cuenta, y no expone API para
+#    cambiar de trainer a posteriori. ──────────────────────────────────────
+
+def _login_as(email, pwd):
+    """Login en NoofitPro con credenciales arbitrarias.
+    Devuelve (token, manager_header_value).
+    NO cachea (las llamadas con un trainer concreto son puntuales)."""
+    token, manager_hdr = _login(email, pwd)
+    return token, manager_hdr
+
+
+def _request_as(token, manager_hdr, method, path, **kw):
+    kw.setdefault('timeout', 30); kw['verify'] = False
+    h = kw.pop('headers', {}) or {}
+    h.update(_auth_headers(token, manager_hdr))
+    kw['headers'] = h
+    return requests.request(method, f'{BASE}{path}', **kw)
+
+
+def get_clientes_as_trainer(trainer_email, trainer_password):
+    """Lista de clientes que ve la cuenta del trainer indicada (espacio propio)."""
+    tok, mgr = _login_as(trainer_email, trainer_password)
+    r = _request_as(tok, mgr, 'GET', '/api/dispositivos/getClienteSimple')
+    r.raise_for_status()
+    return ((r.json() or {}).get('clientes')) or []
+
+
+def post_cliente_as_trainer(payload, trainer_email, trainer_password,
+                              send_welcome=False):
+    """Crea cliente(s) en NoofitPro autenticado como TRAINER.
+    Esto hace que el cliente quede en la cuenta de ese trainer (no en la
+    del manager). Devuelve el dict de respuesta tal cual de NoofitPro
+    (incluye `clientes: [{id,...}]` con el id real generado).
+    """
+    if isinstance(payload, dict): payload = [payload]
+    body = [{**c, 'toSend': bool(send_welcome), 'enabled': True} for c in payload]
+    tok, mgr = _login_as(trainer_email, trainer_password)
+    r = _request_as(tok, mgr, 'POST', '/api/dispositivos/clientePlusv2', json=body)
+    r.raise_for_status()
+    return r.json() if r.text else {}
+
+
+def get_trainer_creds(id_manager, id_trainer):
+    """Resuelve credenciales NoofitPro para un trainer concreto (espacio
+    propio) a partir de la tabla `trainer_noofit_creds`. Devuelve
+    (email, password) o (None, None) si no hay."""
+    from .db import get_conn
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT noofit_email, noofit_password
+                         FROM trainer_noofit_creds
+                        WHERE id_manager=%s AND id_trainer=%s AND activo=TRUE
+                        LIMIT 1""", (str(id_manager), str(id_trainer)))
+        r = cur.fetchone()
+    if not r or not r.get('noofit_email') or not r.get('noofit_password'):
+        return None, None
+    return r['noofit_email'], r['noofit_password']
 
 
 def reactivar_cliente(cliente_id):

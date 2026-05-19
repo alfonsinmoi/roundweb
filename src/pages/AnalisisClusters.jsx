@@ -2,10 +2,12 @@ import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Loader2, Users, Clock, CalendarDays, Dumbbell,
-  TrendingUp, ChevronDown, ChevronRight, Layers, Filter, RefreshCw, Play, UserRound, Bell,
+  TrendingUp, ChevronDown, ChevronRight, Layers, Filter, RefreshCw, Play, UserRound, Bell, Info, X,
 } from 'lucide-react'
 import { Card, Avatar, Btn, Badge, SectionTitle } from '../components/UI'
 import { runUsageClustering, DOW_LABELS, HOUR_BUCKETS, AGE_BUCKETS } from '../utils/clustering'
+import { retosList, getRoundIdentity } from '../utils/configApi'
+import { useAuth } from '../contexts/AuthContext'
 
 // Paleta cíclica para los clusters
 const CLUSTER_COLORS = [
@@ -63,7 +65,116 @@ function GenderBar({ genderCount }) {
   )
 }
 
+function ClusterInfoModal({ cluster, color, onClose }) {
+  // Top día y franja horaria del cluster
+  const dowMax = cluster.dowTotal.indexOf(Math.max(...cluster.dowTotal))
+  const hourMax = cluster.hourTotal.indexOf(Math.max(...cluster.hourTotal))
+  const ageMax = cluster.ageTotal ? cluster.ageTotal.indexOf(Math.max(...cluster.ageTotal)) : -1
+  const totalGen = (cluster.genderCount?.male || 0) + (cluster.genderCount?.female || 0)
+  const pctMale = totalGen ? Math.round(100 * (cluster.genderCount?.male || 0) / totalGen) : 0
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 9999, padding: 20,
+    }}>
+      <Card onClick={(e) => e.stopPropagation()}
+            style={{ padding: 0, maxWidth: 560, width: '100%', maxHeight: '88vh', overflowY: 'auto' }}>
+        <div style={{ padding: 20, borderBottom: '1px solid var(--line)',
+                       display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <h3 style={{ margin: 0, fontFamily: 'Outfit', fontSize: 17, fontWeight: 700 }}>
+              Cluster {cluster.id + 1}: {cluster.name}
+            </h3>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+              {cluster.size} clientes con un patrón de uso similar
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}>
+            <X size={14} />
+          </button>
+        </div>
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Section title="¿Qué tienen en común?" icon="🎯">
+            <ul style={ulStyle}>
+              <li><strong>Día dominante:</strong> {DOW_LABELS[dowMax]}{' '}
+                ({Math.round(100 * cluster.dowTotal[dowMax] / cluster.totalSessions)}% de sus sesiones)</li>
+              <li><strong>Franja horaria favorita:</strong> {HOUR_BUCKETS[hourMax].label}h{' '}
+                ({Math.round(100 * cluster.hourTotal[hourMax] / cluster.totalSessions)}%)</li>
+              {ageMax >= 0 && (
+                <li><strong>Edad predominante:</strong> {AGE_BUCKETS[ageMax].label} años</li>
+              )}
+              {totalGen > 0 && (
+                <li><strong>Género:</strong> {pctMale}% hombres / {100 - pctMale}% mujeres</li>
+              )}
+              {cluster.topTypes?.length > 0 && (
+                <li><strong>Actividades top:</strong>{' '}
+                  {cluster.topTypes.slice(0, 3).map(t => t.name || t).join(', ')}</li>
+              )}
+              <li><strong>Frecuencia media:</strong> {cluster.avgSessionsPerWeek.toFixed(1)} sesiones / semana</li>
+              <li><strong>Total sesiones del grupo:</strong> {cluster.totalSessions}</li>
+            </ul>
+          </Section>
+
+          <Section title="¿Cómo se creó?" icon="🧠">
+            <p style={pStyle}>
+              Hemos extraído de cada cliente un <strong>vector de ~36 características</strong>:
+            </p>
+            <ul style={ulStyle}>
+              <li>Distribución por día de semana (7 dim)</li>
+              <li>Distribución por franja horaria (6 dim)</li>
+              <li>Frecuencia semanal (1 dim)</li>
+              <li>Distribución por actividad sobre vocabulario top-12 (12 dim)</li>
+              <li>Género one-hot (2 dim)</li>
+              <li>Franja de edad one-hot (5 dim)</li>
+              <li><strong>Retos NoofitPro (3 dim)</strong>: nº de retos participa, podios (top 3), valor acumulado normalizado</li>
+            </ul>
+            <p style={pStyle}>
+              Después aplicamos <strong>K-means++</strong> con distancia euclídea sobre todos
+              los vectores. Los clientes que han caído en este cluster comparten un perfil
+              de uso suficientemente parecido al centroide.
+            </p>
+            <p style={{ ...pStyle, fontStyle: 'italic', color: 'var(--text-3)' }}>
+              El nombre &ldquo;{cluster.name}&rdquo; se asigna automáticamente con una heurística
+              que mira los rasgos dominantes (día/hora/edad/actividad) y elige una etiqueta
+              corta humana.
+            </p>
+          </Section>
+
+          <Section title="¿Para qué sirve?" icon="💡">
+            <ul style={ulStyle}>
+              <li>Segmentar campañas: notificación, oferta o recordatorio dirigido a este perfil</li>
+              <li>Detectar &ldquo;huecos&rdquo;: si este cluster es grande y casi no hay clases en su
+                franja, hay oportunidad de añadirlas</li>
+              <li>Optimizar plantilla de monitores y horarios según los grupos reales</li>
+              <li>Identificar cohortes de riesgo y crear acciones de retención específicas</li>
+            </ul>
+          </Section>
+        </div>
+        <div style={{ padding: 14, borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+function Section({ title, icon, children }) {
+  return (
+    <div style={{ padding: 14, background: 'var(--bg-1)', borderRadius: 10, border: '1px solid var(--line)' }}>
+      <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-0)', marginBottom: 8 }}>
+        <span style={{ marginRight: 6 }}>{icon}</span>{title}
+      </p>
+      {children}
+    </div>
+  )
+}
+const pStyle = { fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 8 }
+const ulStyle = { fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6, paddingLeft: 18, margin: 0 }
+
+
 function ClusterCard({ cluster, color, onClientClick, onNotify }) {
+  const [infoOpen, setInfoOpen] = useState(false)
   const [open, setOpen] = useState(false)
   const dowData  = DOW_LABELS.map((l, i) => ({ label: l, value: cluster.dowTotal[i] }))
   const hourData = HOUR_BUCKETS.map((b, i) => ({ label: b.label, value: cluster.hourTotal[i] }))
@@ -93,6 +204,16 @@ function ClusterCard({ cluster, color, onClientClick, onNotify }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Badge color="gray"><Users size={10} aria-hidden="true" /> {cluster.size}</Badge>
+          <button onClick={() => setInfoOpen(true)} title="¿Cómo se creó este cluster?"
+                  aria-label="Información del cluster"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center',
+                    padding: '6px 8px', borderRadius: 8,
+                    cursor: 'pointer', border: '1px solid var(--line)',
+                    background: 'var(--bg-2)', color: 'var(--text-2)',
+                  }}>
+            <Info size={11} aria-hidden="true" />
+          </button>
           <button
             onClick={() => onNotify?.(cluster)}
             title="Enviar notificación a este cluster"
@@ -106,6 +227,8 @@ function ClusterCard({ cluster, color, onClientClick, onNotify }) {
           </button>
         </div>
       </div>
+
+      {infoOpen && <ClusterInfoModal cluster={cluster} color={color} onClose={() => setInfoOpen(false)} />}
 
       {/* Distribuciones */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -209,17 +332,44 @@ export default function AnalisisClusters() {
   const [error, setError] = useState('')
   const [hasRun, setHasRun] = useState(false)
 
+  const { user } = useAuth()
+  const identity = useMemo(() => getRoundIdentity(user), [user])
+
   const runAnalysis = () => {
     setHasRun(true)
     setLoading(true)
     setError('')
     let active = true
-    runUsageClustering({
-      dias,
-      k: k === 'auto' ? 'auto' : Number(k),
-      minSessions,
-      soloActivos,
-    })
+    // Cargar retos en paralelo: incluir como señales en el clustering
+    Promise.resolve()
+      .then(() => identity?.managerId ? retosList(identity).catch(() => []) : [])
+      .then(retos => {
+        // Mapa idClient → {nRetos, ranking1to3, valor}
+        const retosByClient = {}
+        for (const r of (retos || [])) {
+          const rankByCli = {}
+          for (const rk of (r.rankingIndividual || [])) {
+            const id = String(rk?.idClient || rk?.clienteId || '')
+            if (id) rankByCli[id] = rk.rankingIndividual
+          }
+          for (const p of (r.participantes || [])) {
+            const id = String(p?.idClient || p?.clienteId || '')
+            if (!id) continue
+            if (!retosByClient[id]) retosByClient[id] = { nRetos: 0, ranking1to3: 0, valor: 0 }
+            retosByClient[id].nRetos += 1
+            retosByClient[id].valor  += (rankByCli[id] ? (r.rankingIndividual.find(x => String(x.idClient || x.clienteId) === id)?.valorAcumulado || 0) : 0) || p.valorAcumulado || 0
+            const rk = rankByCli[id]
+            if (rk != null && rk <= 3) retosByClient[id].ranking1to3 += 1
+          }
+        }
+        return runUsageClustering({
+          dias,
+          k: k === 'auto' ? 'auto' : Number(k),
+          minSessions,
+          soloActivos,
+          retosByClient,
+        })
+      })
       .then(res => { if (active) setResultado(res) })
       .catch(err => { if (active) setError(err.message || 'Error analizando patrones') })
       .finally(() => { if (active) setLoading(false) })

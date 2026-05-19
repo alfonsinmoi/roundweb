@@ -24,14 +24,25 @@ def _row(r):
 @bp.route('', methods=['GET'])
 @auth_required
 def list_():
-    """Lista modificaciones del trainer (o de todos los trainers del manager si no se especifica)."""
+    """Lista modificaciones del trainer (o de todos los trainers del manager).
+    Filtros opcionales:
+        ?cliente=<idnoofit>   solo modificaciones de ese cliente
+        ?estado=<activa|aplicada|cancelada>
+    """
+    cliente = (request.args.get('cliente') or '').strip()
+    estado  = (request.args.get('estado')  or '').strip()
+    where = ['id_manager=%s']
+    vals = [g.id_manager]
+    if g.id_trainer:
+        where.append('id_trainer=%s'); vals.append(g.id_trainer)
+    if cliente:
+        where.append('cliente_idnoofit=%s'); vals.append(cliente)
+    if estado:
+        where.append('estado=%s'); vals.append(estado)
+    sql = (f"SELECT {FIELDS} FROM modificacion WHERE " + ' AND '.join(where)
+           + " ORDER BY created_at DESC, fecha_desde DESC")
     with get_conn() as conn, conn.cursor() as cur:
-        if g.id_trainer:
-            cur.execute(f"SELECT {FIELDS} FROM modificacion WHERE id_manager=%s AND id_trainer=%s ORDER BY fecha_desde DESC",
-                        (g.id_manager, g.id_trainer))
-        else:
-            cur.execute(f"SELECT {FIELDS} FROM modificacion WHERE id_manager=%s ORDER BY id_trainer, fecha_desde DESC",
-                        (g.id_manager,))
+        cur.execute(sql, vals)
         return jsonify({'ok': True, 'modificaciones': [_row(r) for r in cur.fetchall()]})
 
 

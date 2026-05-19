@@ -2,6 +2,8 @@
 // Backend Flask en /api/config/* que mantiene cuotas, descuentos y
 // modificaciones por trainer. Token compartido en variable Vite.
 
+import { handleAuthExpired, consumeNewToken, isAuthExpiredResponse } from './authState'
+
 const BASE = '/api/config'
 
 // Token compartido. Se inyecta en build vía Vite (.env: VITE_CONFIG_API_TOKEN)
@@ -27,8 +29,10 @@ export const TIPOS_MODIFICACION = [
   { id: 'precio_alternativo',  label: 'Precio alternativo' },
 ]
 export const TIPOS_DESCUENTO = [
-  { id: 'porcentaje', label: '%' },
-  { id: 'importe',    label: '€' },
+  { id: 'porcentaje',    label: 'Descuento %' },
+  { id: 'importe',       label: 'Restar €' },
+  { id: 'varias_cuotas', label: 'Varias cuotas (precio combinado)' },
+  { id: 'familiares',    label: 'Familiares (automático ≥2 miembros)' },
 ]
 
 // ── Helpers de identidad ─────────────────────────────────────────────────────
@@ -71,13 +75,26 @@ export function getRoundIdentity(user) {
   }
 }
 
+// Override del trainerId via selector global del header (admin).
+// Si el admin elige un trainer concreto, sus llamadas se filtran como si
+// estuviese impersonándolo. Si elige "Todos", no se manda el header.
+function _trainerOverride() {
+  try {
+    const v = sessionStorage.getItem('round.trainer_filter')
+    if (!v || v === 'all' || v === '*' || v === '') return null
+    return v
+  } catch { return null }
+}
+
 function headers(identity) {
   const h = {
     'Content-Type': 'application/json',
     'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity.managerId || '',
   }
-  if (identity.trainerId) h['X-Round-Trainer-Id'] = identity.trainerId
+  // Prioridad: trainerId explícito de identity (impersonación clásica) > selector admin
+  const tid = identity.trainerId || _trainerOverride()
+  if (tid) h['X-Round-Trainer-Id'] = tid
   return h
 }
 
@@ -88,9 +105,17 @@ async function _request(method, path, identity, body = null) {
   const text = await res.text()
   let data
   try { data = JSON.parse(text) } catch { data = { error: text } }
+  // Sesión expirada: limpiar y redirigir a /login (sólo si la respuesta
+  // realmente apunta a auth — vía isAuthExpiredResponse).
+  if (res.status === 401 && isAuthExpiredResponse(res.status, text)) {
+    handleAuthExpired()
+    throw new Error('Sesión expirada')
+  }
   if (!res.ok || data?.ok === false) {
     throw new Error(data?.error || `HTTP ${res.status}`)
   }
+  // Sliding refresh: el backend pudo haber renovado el JWT.
+  consumeNewToken(res)
   return data
 }
 
@@ -109,12 +134,100 @@ export const descuentoDelete  = (identity, id) => _request('DELETE', `/descuento
 export const descuentoAdoptar = (identity, id) => _request('POST', `/descuentos/${id}/adoptar`, identity).then(d => d.descuento)
 
 // ── Asignaciones de descuento a clientes ─────────────────────────────────────
+// Para tipo='familiares' la respuesta no es {asignaciones:[]} sino
+// {tipo:'familiares', familias:[{familia_id,nombre,miembros,aplica_a_n,aplica}]}.
+// Devolvemos el objeto completo para que el caller pueda diferenciar.
 export const asignacionesList   = (identity, descId) =>
-  _request('GET', `/descuentos/${descId}/asignaciones`, identity).then(d => d.asignaciones)
+  _request('GET', `/descuentos/${descId}/asignaciones`, identity)
 export const asignacionCreate   = (identity, descId, body) =>
   _request('POST', `/descuentos/${descId}/asignaciones`, identity, body)
 export const asignacionDelete   = (identity, descId, asigId) =>
   _request('DELETE', `/descuentos/${descId}/asignaciones/${asigId}`, identity)
+// Lista descuentos asignados a un cliente concreto (con histórico)
+export const asignacionesClienteList = (identity, idnoofit) =>
+  _request('GET', `/descuentos/asignaciones/cliente/${encodeURIComponent(idnoofit)}`, identity)
+    .then(d => d.asignaciones)
+
+// ── Familias ────────────────────────────────────────────────────────────────
+export const familiasList = (identity) =>
+  _request('GET', '/familias', identity).then(d => d.familias)
+export const familiaGet = (identity, id) =>
+  _request('GET', `/familias/${id}`, identity).then(d => d.familia)
+export const familiaCreate = (identity, body) =>
+  _request('POST', '/familias', identity, body).then(d => d.familia)
+export const familiaUpdate = (identity, id, body) =>
+  _request('PATCH', `/familias/${id}`, identity, body).then(d => d.familia)
+export const familiaDelete = (identity, id) =>
+  _request('DELETE', `/familias/${id}`, identity)
+export const familiaDeCliente = (identity, idnoofit) =>
+  _request('GET', `/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
+    .then(d => d.familia)
+export const familiaAddCliente = (identity, idnoofit, body) =>
+  _request('POST', `/familias/cliente/${encodeURIComponent(idnoofit)}`, identity, body)
+export const familiaRemoveCliente = (identity, idnoofit) =>
+  _request('DELETE', `/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
+
+// ── Banner "Nuevos clientes esperando cobro" — dismiss persistente ─────────
+// Usa /api/clientes-atendidos (no /api/config), de ahí el path completo
+async function _requestRoot(method, path, identity, body = null) {
+  const init = { method, headers: headers(identity) }
+  if (body) init.body = JSON.stringify(body)
+  const res = await fetch(path, init)
+  const text = await res.text()
+  let data; try { data = JSON.parse(text) } catch { data = { error: text } }
+  if (res.status === 401 && isAuthExpiredResponse(res.status, text)) {
+    handleAuthExpired(); throw new Error('Sesión expirada')
+  }
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || `HTTP ${res.status}`)
+  }
+  consumeNewToken(res)
+  return data
+}
+export const clientesAtendidosList = (identity) =>
+  _requestRoot('GET', '/api/clientes-atendidos', identity).then(d => d.ids || [])
+export const clientesAtendidosMark = (identity, clientes) =>
+  _requestRoot('POST', '/api/clientes-atendidos', identity,
+                Array.isArray(clientes) ? { clientes } : { cliente_idnoofit: clientes })
+export const clientesAtendidosUnmark = (identity, idnoofit) =>
+  _requestRoot('DELETE', `/api/clientes-atendidos/${encodeURIComponent(idnoofit)}`, identity)
+export const clientesAtendidosReset = (identity) =>
+  _requestRoot('DELETE', '/api/clientes-atendidos', identity)
+
+// ── Recibos (BD local — incluye importados de GestPlus) ──────────────────
+// GET /api/recibos?periodo=YYYY-MM&estado=...
+// Pertenecen a la tabla local `recibo`, que ya tiene los recibos
+// importados desde GestPlus (origen=gestplus_migracion) además de los
+// emitidos vía preemision_v2.
+export const recibosList = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.cliente) qs.set('cliente', params.cliente)
+  if (params.estado)  qs.set('estado',  params.estado)
+  if (params.metodo)  qs.set('metodo',  params.metodo)
+  if (params.periodo) qs.set('periodo', params.periodo)
+  if (params.desde)   qs.set('desde',   params.desde)
+  if (params.hasta)   qs.set('hasta',   params.hasta)
+  if (params.limit)   qs.set('limit',   String(params.limit))
+  if (params.offset)  qs.set('offset',  String(params.offset))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return _requestRoot('GET', `/api/recibos${suffix}`, identity).then(d => d.recibos || [])
+}
+
+// ── Retos (NoofitPro proxy) ───────────────────────────────────────────────
+// GET /api/retos — lista agregada de todos los trainers del manager.
+// Params opcionales: {estado, id_trainer, force}
+export const retosList = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.estado)     qs.set('estado', params.estado)
+  if (params.id_trainer) qs.set('id_trainer', params.id_trainer)
+  if (params.force)      qs.set('force', '1')
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return _requestRoot('GET', `/api/retos${suffix}`, identity).then(d => d.retos || [])
+}
+export const retoGet = (identity, retoId) =>
+  _requestRoot('GET', `/api/retos/${retoId}`, identity).then(d => d.reto)
+export const retosSnapshot = (identity) =>
+  _requestRoot('POST', '/api/retos/snapshot', identity)
 
 // ── Modificaciones ──────────────────────────────────────────────────────────
 // ── Proveedor de email transaccional (Resend / Postmark / SMTP / Gmail) ───
@@ -155,6 +268,16 @@ export const centroUpsert = (identity, idTrainer, data) =>
   _request('PUT',  `/centros/${idTrainer}`, identity, data).then(d => d.row)
 export const centroDelete = (identity, idTrainer) =>
   _request('DELETE', `/centros/${idTrainer}`, identity)
+
+// ── Credenciales NoofitPro por trainer (proxy server-side) ─────────────────
+export const trainerCredsList = (identity) =>
+  _request('GET', '/trainer-creds', identity).then(d => d.creds || [])
+export const trainerCredsUpsert = (identity, idTrainer, data) =>
+  _request('PUT', `/trainer-creds/${idTrainer}`, identity, data).then(d => d.cred)
+export const trainerCredsDelete = (identity, idTrainer) =>
+  _request('DELETE', `/trainer-creds/${idTrainer}`, identity)
+export const trainerCredsTest = (identity, idTrainer) =>
+  _request('POST', `/trainer-creds/${idTrainer}/test`, identity, {})
 
 // ── CRM (leads) ─────────────────────────────────────────────────────────────
 // Nota: el endpoint base es /api/crm (no /api/config/crm), por eso construimos
@@ -321,6 +444,12 @@ export const contabDocEscanear = (identity, id) =>
 export const contabDocValidar = (identity, id, opts = {}) =>
   _contabRequest('POST', `/documentos/${id}/validar`, identity, opts).then(d => d.documento)
 export const contabDocRechazar= (identity, id, motivo) => _contabRequest('POST', `/documentos/${id}/rechazar`, identity, { motivo }).then(d => d.documento)
+// Asiento contable (propuesto si borrador, definitivo si validado)
+export const contabDocAsiento = (identity, id) =>
+  _contabRequest('GET', `/documentos/${id}/asiento`, identity)
+// Devuelve un documento VALIDADO a estado borrador (intenta deshacer asiento Odoo si lo había)
+export const contabDocABorrador = (identity, id, motivo) =>
+  _contabRequest('POST', `/documentos/${id}/a-borrador`, identity, { motivo: motivo || '' })
 export const contabDocDelete  = (identity, id) => _contabRequest('DELETE', `/documentos/${id}`, identity)
 // Banco — extractos + matching
 export const contabBancoImportar = (identity, formData) =>
@@ -345,14 +474,32 @@ export const contabTotales = (identity, filters = {}) => {
   }
   return _contabRequest('GET', `/listados/totales?${qs}`, identity)
 }
-export const contabFaltantes = (identity, meses = 6) =>
-  _contabRequest('GET', `/listados/faltantes?meses=${meses}`, identity).then(d => d.faltantes || [])
-export const contabResultados = (identity, desde, hasta) => {
+export const contabFaltantes = (identity, params = {}) => {
+  const { meses = 6, tipo_deteccion = 'all', incluir_ignorados = false } = params
+  const qs = new URLSearchParams({
+    meses, tipo_deteccion,
+    incluir_ignorados: incluir_ignorados ? '1' : '0',
+  })
+  return _contabRequest('GET', `/listados/faltantes?${qs}`, identity)
+}
+export const contabFaltanteIgnorar = (identity, categoria_id, periodo_faltante, motivo) =>
+  _contabRequest('POST', '/listados/faltantes/ignorar', identity,
+                 { categoria_id, periodo_faltante, motivo })
+export const contabFaltanteRestaurar = (identity, categoria_id, periodo) =>
+  _contabRequest('DELETE', `/listados/faltantes/ignorar/${categoria_id}/${encodeURIComponent(periodo)}`, identity)
+export const contabResultados = (identity, params) => {
   const qs = new URLSearchParams()
-  if (desde) qs.set('desde', desde)
-  if (hasta) qs.set('hasta', hasta)
+  if (params?.periodos?.length) qs.set('periodos', params.periodos.join(','))
+  else {
+    if (params?.desde) qs.set('desde', params.desde)
+    if (params?.hasta) qs.set('hasta', params.hasta)
+  }
+  if (params?.ingresos) qs.set('ingresos', params.ingresos)
+  if (params?.incluir_no_contabilizados) qs.set('incluir_no_contabilizados', '1')
   return _contabRequest('GET', `/listados/resultados?${qs}`, identity)
 }
+export const contabResultadosDisponibles = (identity) =>
+  _contabRequest('GET', '/listados/resultados/disponibles', identity)
 
 // URL para descargar/visualizar el binario. Como el navegador no manda
 // headers en un <a href>, pasamos auth via query string (auth_required acepta
@@ -442,7 +589,13 @@ export const categoriaClienteDel = (identity, idNoofit) =>
   _request('DELETE', `/categorias/clientes/${idNoofit}`, identity)
 
 
-export const modificacionesList  = (identity) => _request('GET',   '/modificaciones', identity).then(d => d.modificaciones)
+export const modificacionesList  = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.cliente) qs.set('cliente', params.cliente)
+  if (params.estado)  qs.set('estado',  params.estado)
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return _request('GET', `/modificaciones${suffix}`, identity).then(d => d.modificaciones)
+}
 export const modificacionCreate  = (identity, data) => _request('POST',  '/modificaciones', identity, data).then(d => d.modificacion)
 export const modificacionUpdate  = (identity, id, data) => _request('PATCH', `/modificaciones/${id}`, identity, data).then(d => d.modificacion)
 export const modificacionDelete  = (identity, id) => _request('DELETE', `/modificaciones/${id}`, identity)

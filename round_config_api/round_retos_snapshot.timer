@@ -1,0 +1,10 @@
+[Unit]
+Description=Round retos snapshot diario — 04:30
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

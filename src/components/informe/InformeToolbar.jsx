@@ -47,15 +47,15 @@ export default function InformeToolbar({
       {/* Botón con rango legible — abre filtros avanzados */}
       <button onClick={onTogglePersonalizar}
               style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '8px 14px', borderRadius: 'var(--radius-sm)',
-                background: personalizando ? 'var(--bg-3)' : 'var(--bg-2)',
-                border: '1px solid var(--line)',
-                color: 'var(--text-1)', fontSize: 13, fontWeight: 500,
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '11px 18px', borderRadius: 12,
+                background: personalizando ? 'var(--green-bg)' : 'var(--bg-2)',
+                border: `1.5px solid ${personalizando ? 'var(--green-border)' : 'var(--line)'}`,
+                color: 'var(--text-0)', fontSize: 14, fontWeight: 700,
                 cursor: 'pointer', flexShrink: 0,
               }}>
-        <Calendar size={13} aria-hidden="true" style={{ color: 'var(--green)' }} />
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-1)' }}>
+        <Calendar size={16} aria-hidden="true" style={{ color: 'var(--green)' }} />
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color: 'var(--text-0)' }}>
           {fmt(desde)} — {fmt(hasta)}
         </span>
       </button>
@@ -63,8 +63,8 @@ export default function InformeToolbar({
       {/* Atajos de rango (segmented) */}
       <div role="group" aria-label="Atajos de rango"
            style={{
-             display: 'flex', borderRadius: 'var(--radius-sm)',
-             background: 'var(--bg-1)', border: '1px solid var(--line)',
+             display: 'flex', borderRadius: 12,
+             background: 'var(--bg-2)', border: '1.5px solid var(--line)',
              overflow: 'hidden',
            }}>
         {presets.map(p => {
@@ -77,10 +77,11 @@ export default function InformeToolbar({
                     }}
                     aria-pressed={activo}
                     style={{
-                      padding: '7px 12px', fontSize: 12, fontWeight: 600,
-                      background: activo ? 'var(--bg-3)' : 'transparent',
-                      color: activo ? 'var(--text-0)' : 'var(--text-2)',
+                      padding: '10px 18px', fontSize: 13, fontWeight: 700,
+                      background: activo ? 'var(--green)' : 'transparent',
+                      color: activo ? '#fff' : 'var(--text-1)',
                       border: 'none', cursor: 'pointer',
+                      transition: 'background 0.15s',
                     }}>
               {p.label}
             </button>
@@ -89,11 +90,12 @@ export default function InformeToolbar({
         <button onClick={onTogglePersonalizar}
                 aria-pressed={personalizando}
                 style={{
-                  padding: '7px 12px', fontSize: 12, fontWeight: 600,
-                  background: personalizando ? 'var(--bg-3)' : 'transparent',
-                  color: personalizando ? 'var(--text-0)' : 'var(--text-2)',
+                  padding: '10px 18px', fontSize: 13, fontWeight: 700,
+                  background: personalizando ? 'var(--green)' : 'transparent',
+                  color: personalizando ? '#fff' : 'var(--text-1)',
                   border: 'none', cursor: 'pointer',
                   borderLeft: '1px solid var(--line)',
+                  transition: 'background 0.15s',
                 }}>
           Personalizado
         </button>
@@ -105,9 +107,10 @@ export default function InformeToolbar({
                 onChange={e => onActividad?.(e.target.value)}
                 aria-label="Filtrar por actividad"
                 style={{
-                  padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-                  background: 'var(--bg-2)', border: '1px solid var(--line)',
-                  color: 'var(--text-1)', fontSize: 13, cursor: 'pointer',
+                  padding: '11px 14px', borderRadius: 12,
+                  background: actividadActiva ? 'var(--green-bg)' : 'var(--bg-2)',
+                  border: `1.5px solid ${actividadActiva ? 'var(--green-border)' : 'var(--line)'}`,
+                  color: 'var(--text-0)', fontSize: 14, fontWeight: 700, cursor: 'pointer',
                   outline: 'none',
                 }}>
           <option value="">Todas las actividades</option>

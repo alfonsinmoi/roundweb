@@ -1,4 +1,5 @@
 import md5 from 'md5'
+import { handleAuthExpired, consumeNewToken, isAuthExpiredResponse } from './authState'
 
 const BASE = '/wiemspro'
 const APP_VERSION = '1.8.39'
@@ -22,10 +23,45 @@ function getSession() {
   try {
     const raw = sessionStorage.getItem('round_session')
     const session = raw ? JSON.parse(raw) : {}
-    return { token: session.token ?? '', manager: session.manager ?? '', trainerId: session.id }
+    // Para X-TRAINER_MANAGER (NoofitPro) preferimos managerNoofit si existe
+    // (caso usuario_web auto-logueado en NoofitPro). Si no, fallback a manager.
+    return {
+      token: session.token ?? '',
+      manager: session.managerNoofit ?? session.manager ?? '',
+      trainerId: session.id,
+    }
   } catch {
     return { token: '', manager: '', trainerId: null }
   }
+}
+
+// Si el usuario logueado es un usuario_web con id_trainer asignado,
+// devuelve ese id como FILTRO. Las llamadas que devuelven datos cross-trainer
+// (clientes, salas) deben filtrar a este id para que el usuario_web solo vea
+// los datos del centro al que pertenece.
+function getTrainerFilter() {
+  try {
+    const raw = sessionStorage.getItem('round_session')
+    const s = raw ? JSON.parse(raw) : {}
+    if (s?.kind === 'usuario_web' && s?.id_trainer) {
+      // Comparable con cliente.idTrainer (suele ser numérico)
+      return Number(s.id_trainer) || String(s.id_trainer)
+    }
+  } catch { /* ignore */ }
+  return null
+}
+
+// Devuelve { jwt, isUsuarioWeb } para decidir si usar el proxy backend
+// (que filtra server-side) en lugar de NoofitPro directamente.
+function getProxyAuth() {
+  try {
+    const raw = sessionStorage.getItem('round_session')
+    const s = raw ? JSON.parse(raw) : {}
+    if (s?.kind === 'usuario_web' && s?.jwt) {
+      return { jwt: s.jwt, isUsuarioWeb: true }
+    }
+  } catch { /* ignore */ }
+  return { jwt: null, isUsuarioWeb: false }
 }
 
 // ── User-friendly error mapping ─────────────────────────────────────────────
@@ -63,6 +99,19 @@ function getSignal(key) {
   return controller.signal
 }
 
+// Helper: chequea status 401 y, si parece auth expirado, redirige a /login
+// devolviendo true para que el caller pueda interrumpir el flujo.
+async function _checkAuthExpired(res) {
+  if (res.status !== 401) return false
+  let body = ''
+  try { body = await res.clone().text() } catch { /* ignore */ }
+  if (isAuthExpiredResponse(res.status, body)) {
+    handleAuthExpired()
+    return true
+  }
+  return false
+}
+
 export async function apiGet(path, { abortKey } = {}) {
   const { token, manager } = getSession()
   const signal = getSignal(abortKey)
@@ -71,6 +120,7 @@ export async function apiGet(path, { abortKey } = {}) {
     headers: authHeaders(token, manager),
     signal,
   })
+  if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
   if (data?.mensaje !== 'OK') throw new Error(userFriendlyError(data?.mensaje, 'Error en la respuesta'))
@@ -85,6 +135,7 @@ export async function apiGetRaw(path, { abortKey } = {}) {
     headers: authHeaders(token, manager),
     signal,
   })
+  if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   return res.json()
 }
@@ -108,6 +159,7 @@ export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } =
     body: JSON.stringify(stripNulls(body)),
     signal,
   })
+  if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
   if (data?.mensaje !== 'OK') throw new Error(userFriendlyError(data?.mensaje, 'Error en la operación'))
@@ -125,6 +177,11 @@ export async function apiPostRaw(path, body = {}, extraHeaders = {}) {
   })
   let body_text = ''
   try { body_text = await res.text() } catch {}
+  // Detectar sesión expirada antes de devolver (no rompemos el caller,
+  // pero disparamos la redirección global).
+  if (res.status === 401 && isAuthExpiredResponse(res.status, body_text)) {
+    handleAuthExpired()
+  }
   let data = null
   try { data = JSON.parse(body_text) } catch {}
   return { status: res.status, ok: res.ok, data, text: body_text }
@@ -141,6 +198,9 @@ export async function apiDeleteRaw(path, body = null) {
   const res = await fetch(`${BASE}/${path}`, init)
   let body_text = ''
   try { body_text = await res.text() } catch {}
+  if (res.status === 401 && isAuthExpiredResponse(res.status, body_text)) {
+    handleAuthExpired()
+  }
   let data = null
   try { data = JSON.parse(body_text) } catch {}
   return { status: res.status, ok: res.ok, data, text: body_text }
@@ -252,15 +312,48 @@ function pickImgUrl(c) {
   ) || ''
 }
 
-export const getClientes = () =>
-  cached('clientes', () =>
-    apiGet('api/dispositivos/getClienteSimple').then(d => {
-      const list = (d.clientes ?? []).map(c => ({ ...c, imgUrl: pickImgUrl(c) }))
-      // Persistimos para pintado instantáneo en recargas posteriores (F5)
-      setPersistedCache('clientes', list)
-      return list
-    })
-  )
+// Helper: lee el filtro de trainer del admin (sessionStorage 'round.trainer_filter')
+// Devuelve string id_trainer o null si "Todos".
+function getTrainerFilterFromStorage() {
+  try {
+    const v = sessionStorage.getItem('round.trainer_filter')
+    if (!v || v === 'all' || v === '*' || v === '') return null
+    return v
+  } catch { return null }
+}
+
+export const getClientes = () => {
+  const trainerFiltro = getTrainerFilterFromStorage()
+  const cacheKey = trainerFiltro ? `clientes:${trainerFiltro}` : 'clientes'
+  return cached(cacheKey, async () => {
+    const { jwt, isUsuarioWeb } = getProxyAuth()
+    let list
+    if (isUsuarioWeb) {
+      // Backend filtra por id_trainer del JWT — admin puede pasar override
+      // ?id_trainer=X para ver solo los de un centro concreto.
+      const url = trainerFiltro
+        ? `/api/trainer-data/clientes?id_trainer=${encodeURIComponent(trainerFiltro)}`
+        : '/api/trainer-data/clientes'
+      const r = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${jwt}` },
+      })
+      if (await _checkAuthExpired(r)) throw new Error('Sesión expirada')
+      if (!r.ok) throw new Error(userFriendlyError(`Error ${r.status}`))
+      consumeNewToken(r)
+      const d = await r.json()
+      list = (d.clientes ?? []).map(c => ({ ...c, imgUrl: pickImgUrl(c) }))
+    } else {
+      // Manager NoofitPro: directo a NoofitPro (sesión clásica)
+      const d = await apiGet('api/dispositivos/getClienteSimple')
+      list = (d.clientes ?? []).map(c => ({ ...c, imgUrl: pickImgUrl(c) }))
+      if (trainerFiltro) {
+        list = list.filter(c => String(c.idTrainer || c.trainerId || '') === String(trainerFiltro))
+      }
+    }
+    setPersistedCache(cacheKey, list)
+    return list
+  })
+}
 
 export const getEntrenadores = () =>
   cached('entrenadores', () => apiGet('api/dispositivos/getTrainersByManager').then(d => d.entrenadores ?? []))
@@ -291,20 +384,50 @@ export const getSensores = () => {
   }
 }
 
-export const getSalas = () =>
-  cached('salas', () => {
+async function _proxySalas(body = {}) {
+  const { jwt } = getProxyAuth()
+  const trainerFiltro = getTrainerFilterFromStorage()
+  if (trainerFiltro) body = { ...body, id_trainer: trainerFiltro }
+  const r = await fetch('/api/trainer-data/salas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jwt}` },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  const d = await r.json()
+  return d.salas ?? []
+}
+
+function _filtrarSalasPorTrainer(salas) {
+  const tf = getTrainerFilterFromStorage()
+  if (!tf) return salas
+  return salas.filter(s => String(s.idTrainer || s.trainerId || '') === String(tf))
+}
+
+export const getSalas = () => {
+  const tf = getTrainerFilterFromStorage()
+  const key = tf ? `salas:${tf}` : 'salas'
+  return cached(key, () => {
+    const { isUsuarioWeb } = getProxyAuth()
+    if (isUsuarioWeb) return _proxySalas({}).catch(() => [])
     try {
       const raw = sessionStorage.getItem('round_session')
       const session = raw ? JSON.parse(raw) : {}
       const managerId = session.entrenador?.managerId ?? session.manager ?? ''
-      return apiPost('api/dispositivos/getSalasByManager', { idManager: managerId }, { initialId: '0' }).then(d => d.salas ?? [])
+      return apiPost('api/dispositivos/getSalasByManager', { idManager: managerId }, { initialId: '0' })
+        .then(d => _filtrarSalasPorTrainer(d.salas ?? []))
     } catch {
       return Promise.resolve([])
     }
   })
+}
 
-export const getSalasRango = (fechaDesde, fechaHasta) =>
-  cached(`salas-${fechaDesde}-${fechaHasta}`, () => {
+export const getSalasRango = (fechaDesde, fechaHasta) => {
+  const tf = getTrainerFilterFromStorage()
+  const key = `salas-${fechaDesde}-${fechaHasta}` + (tf ? `:${tf}` : '')
+  return cached(key, () => {
+    const { isUsuarioWeb } = getProxyAuth()
+    if (isUsuarioWeb) return _proxySalas({ fechaDesde, fechaHasta }).catch(() => [])
     try {
       const raw = sessionStorage.getItem('round_session')
       const session = raw ? JSON.parse(raw) : {}
@@ -313,11 +436,12 @@ export const getSalasRango = (fechaDesde, fechaHasta) =>
         'api/dispositivos/getSalasByManager',
         { idManager: managerId, fechaDesde, fechaHasta },
         { initialId: '0' },
-      ).then(d => d.salas ?? [])
+      ).then(d => _filtrarSalasPorTrainer(d.salas ?? []))
     } catch {
       return Promise.resolve([])
     }
   })
+}
 
 // Endpoint específico para rango de fechas con histórico
 function isoWithOffset(date) {
@@ -332,12 +456,20 @@ function isoWithOffset(date) {
 
 export const getSalasByRange = (fechaDesde, fechaHasta) => {
   const key = `salas-range:${fechaDesde.toISOString().slice(0, 10)}:${fechaHasta.toISOString().slice(0, 10)}`
-  return cached(key, () =>
-    apiPost('api/dispositivos/getSalasByManagerByRange', {
+  return cached(key, async () => {
+    const { isUsuarioWeb } = getProxyAuth()
+    if (isUsuarioWeb) {
+      const list = await _proxySalas({
+        fechaDesde: isoWithOffset(fechaDesde),
+        fechaHasta: isoWithOffset(fechaHasta),
+      }).catch(() => [])
+      return list.filter(s => s.enabled !== false)
+    }
+    return apiPost('api/dispositivos/getSalasByManagerByRange', {
       fechaDesde: isoWithOffset(fechaDesde),
       fechaHasta: isoWithOffset(fechaHasta),
     }).then(d => (d.salas ?? []).filter(s => s.enabled !== false))
-  )
+  })
 }
 
 export function invalidateSalasCache() {

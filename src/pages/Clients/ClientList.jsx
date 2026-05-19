@@ -1,13 +1,16 @@
 import { useState, useEffect, useMemo, useDeferredValue } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search, Archive, Loader2, Send, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
+import { Plus, Search, Archive, Loader2, Send, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { Badge, Avatar, Btn, EmptyState, isSafeImageUrl, normalizeImageUrl } from '../../components/UI'
-import ERPModal from '../../components/ERPModal'
+import AltaClienteModal from '../../components/AltaClienteModal'
 import { getClientes, peekCache, peekPersistedCache, getERPConfiguraciones, invalidateCache, clearPersistedCache } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import { useGympassMap } from '../../hooks/useGympassMap'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
 import { getRoundIdentity, fechaBajaPorCliente } from '../../utils/configApi'
+import NotasPopover from '../../components/notas/NotasPopover'
+import { useCan } from '../../hooks/useCan'
 
 const PAGE_SIZE = 15
 
@@ -116,6 +119,7 @@ export default function ClientList() {
   const { isGympass, getGympassId } = useGympassMap()
   // Sistema nuevo: catálogo de categorías + asignación cliente↔categoría
   const { categorias, getCategoria } = useCategoriasMap()
+  const canExportarExcel = useCan('clientes.exportar_excel')
 
   const filtered = useMemo(() => clientes.filter(c => {
     const q = deferredSearch.toLowerCase()
@@ -154,7 +158,10 @@ export default function ClientList() {
 
   const startIdx = (page - 1) * PAGE_SIZE
   const visible = filtered.slice(startIdx, startIdx + PAGE_SIZE)
-  const cols = tieneERP ? '2.4fr 1fr 2fr 120px 1fr 1fr auto' : '2.4fr 1fr 2fr 120px 1fr 1fr'
+  // Notas siempre presentes; columna "Acciones" reservada solo si hay un cliente
+  // archivado con permiso de reactivación (botón Reactivar). En el caso normal
+  // se renderiza vacía.
+  const cols = '2.4fr 1fr 2fr 120px 1fr 1fr auto auto'
   const pageList = buildPageList(totalPages, page)
   const goPage = p => setPage(Math.min(totalPages, Math.max(1, p)))
 
@@ -223,6 +230,41 @@ export default function ClientList() {
             ))}
           </select>
 
+          {canExportarExcel && (
+          <Btn size="md" variant="secondary"
+               disabled={filtered.length === 0}
+               onClick={() => {
+                 // Exporta a Excel los clientes actualmente filtrados con
+                 // solo Nombre, Apellidos, Email. El nombre de archivo
+                 // incluye el filtro aplicado y la fecha de descarga.
+                 const rows = filtered.map(c => ({
+                   Nombre:    c.name    || c.nombre    || '',
+                   Apellidos: c.surname || c.apellidos || '',
+                   Email:     c.email   || '',
+                 }))
+                 const ws = XLSX.utils.json_to_sheet(rows,
+                   { header: ['Nombre', 'Apellidos', 'Email'] })
+                 ws['!cols'] = [{ wch: 22 }, { wch: 28 }, { wch: 32 }]
+                 const wb = XLSX.utils.book_new()
+                 XLSX.utils.book_append_sheet(wb, ws, 'Clientes')
+                 const hoy = new Date().toISOString().slice(0, 10)
+                 const partes = ['clientes', filtro]
+                 if (filtroCategoria) {
+                   const cat = categorias.find(x => String(x.id) === String(filtroCategoria))
+                   partes.push(filtroCategoria === 'sin' ? 'sin-categoria'
+                     : (cat?.nombre || `cat${filtroCategoria}`)
+                       .toLowerCase().replace(/[^a-z0-9]+/g, '-'))
+                 }
+                 if (deferredSearch) partes.push('busq')
+                 XLSX.writeFile(wb, `${partes.join('_')}_${hoy}.xlsx`)
+               }}
+               title={filtered.length === 0
+                  ? 'No hay clientes con el filtro actual'
+                  : `Exportar ${filtered.length} cliente${filtered.length !== 1 ? 's' : ''} a Excel (nombre, apellidos, email)`}>
+            <Download size={14} aria-hidden="true" /> Excel
+          </Btn>
+          )}
+
           <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
             <Plus size={15} aria-hidden="true" /> Nuevo cliente
           </Btn>
@@ -258,7 +300,7 @@ export default function ClientList() {
         <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 0, padding: '8px 20px', background: 'var(--bg-3)', borderBottom: '1px solid var(--line)' }}>
-            {['Cliente', 'Categoría', 'Email', 'Estado', 'Teléfono', 'DNI', ...(tieneERP ? [''] : [])].map((h, i) => (
+            {['Cliente', 'Categoría', 'Email', 'Estado', 'Teléfono', 'DNI', 'Notas', ''].map((h, i) => (
               <span key={i} style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-3)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>{h}</span>
             ))}
           </div>
@@ -274,9 +316,11 @@ export default function ClientList() {
                  className="interactive-row"
                  style={{
                    display: 'grid', gridTemplateColumns: cols, alignItems: 'center',
+                   gap: 12,
                    padding: '8px 20px', cursor: 'pointer',
                    borderBottom: i < visible.length - 1 ? '1px solid var(--line)' : 'none',
                    transition: 'background 0.1s',
+                   minHeight: 48,             // altura fija = una sola línea visual
                  }}>
 
               {/* Cliente */}
@@ -359,21 +403,14 @@ export default function ClientList() {
                         { day: 'numeric', month: 'short', year: 'numeric' })
                     } catch {}
                   }
+                  // Tooltip con todo el contexto, badge en una sola línea
+                  const tooltipParts = []
+                  if (fbStr) tooltipParts.push(`Inactivo desde ${fbStr}`)
+                  if (motivo) tooltipParts.push(`Motivo: ${motivo}`)
                   return (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <Badge color="red"><Archive size={10} aria-hidden="true" /> Inactivo</Badge>
-                      {fbStr && (
-                        <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}
-                              title={`Detectado como inactivo el ${fbStr}`}>
-                          inactivo: {fbStr}
-                        </span>
-                      )}
-                      {motivo && (
-                        <span style={{ fontSize: 10, color: 'var(--text-3)' }} title={motivo}>
-                          {motivo.length > 18 ? motivo.slice(0, 18) + '…' : motivo}
-                        </span>
-                      )}
-                    </div>
+                    <Badge color="red" title={tooltipParts.join(' · ')}>
+                      <Archive size={10} aria-hidden="true" /> Inactivo
+                    </Badge>
                   )
                 })() : (
                   <Badge color="green">Activo</Badge>
@@ -381,12 +418,19 @@ export default function ClientList() {
               </div>
 
               {/* Teléfono */}
-              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>{c.cellPhone || '—'}</p>
+              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)',
+                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}
+                 title={c.cellPhone || ''}>{c.cellPhone || '—'}</p>
 
               {/* DNI */}
-              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)', fontFamily: 'var(--font-mono)' }}>{c.dni || '—'}</p>
+              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)', fontFamily: 'var(--font-mono)',
+                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}
+                 title={c.dni || ''}>{c.dni || '—'}</p>
 
-              {/* ERP / Reactivar */}
+              {/* Notas — popover con últimas 3 */}
+              <NotasPopover cliente={c} />
+
+              {/* Reactivar — solo para archivados (al activar se abre ERP) */}
               {c.enabled === false && tieneERP ? (
                 <button onClick={e => { e.stopPropagation(); setErpCliente({ ...c, _recaptacion: true }) }}
                         aria-label={`Reactivar y enviar ERP para ${c.name} ${c.surname}`}
@@ -396,21 +440,11 @@ export default function ClientList() {
                           padding: '5px 10px', borderRadius: 8, fontSize: 11, fontWeight: 600,
                           cursor: 'pointer', border: '1px solid var(--green-border)',
                           background: 'var(--green-bg)', color: 'var(--green)', transition: 'all 0.1s',
+                          whiteSpace: 'nowrap',
                         }}>
                   <Send size={11} aria-hidden="true" /> Reactivar
                 </button>
-              ) : tieneERP ? (
-                <button onClick={e => { e.stopPropagation(); setErpCliente(c) }}
-                        aria-label={`Enviar ERP para ${c.name} ${c.surname}`}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 5,
-                          padding: '5px 10px', borderRadius: 8, fontSize: 11, fontWeight: 500,
-                          cursor: 'pointer', border: '1px solid var(--blue-border)',
-                          background: 'var(--blue-bg)', color: 'var(--blue)', transition: 'all 0.1s',
-                        }}>
-                  <Send size={11} aria-hidden="true" /> ERP
-                </button>
-              ) : null}
+              ) : <span aria-hidden="true" />}
             </div>
           ))}
         </div>
@@ -455,8 +489,7 @@ export default function ClientList() {
       )}
 
       {erpCliente && (
-        <ERPModal cliente={erpCliente}
-                  erpConfig={erpConfig}
+        <AltaClienteModal cliente={erpCliente}
                   recaptacion={!!erpCliente._recaptacion}
                   onSaved={reloadClientes}
                   onClose={() => setErpCliente(null)} />

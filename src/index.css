@@ -78,6 +78,55 @@
   --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* ── TEMA CLARO ─────────────────────────────────────────────────────────
+   Activado con <html data-theme="light"> (lo gestiona ThemeToggle).
+   Solo se redefinen las variables que cambian; los acentos (green, blue,
+   red, amber…) se mantienen.
+*/
+:root[data-theme="light"] {
+  /* Fondos invertidos */
+  --bg-0: #F4F5F7;            /* fondo página */
+  --bg-1: #FFFFFF;            /* cards principales */
+  --bg-2: #F8F9FB;            /* paneles secundarios */
+  --bg-3: #EDEEF2;            /* hover / inputs */
+  --bg-4: #DCDEE3;            /* active / scrollbar */
+
+  /* Texto invertido */
+  --text-0: #0B0C10;          /* títulos */
+  --text-1: #1F2027;          /* texto principal */
+  --text-2: #51525B;          /* secundario */
+  --text-3: #6F707A;          /* terciario */
+
+  /* Líneas en negro alpha (en lugar de blanco alpha) */
+  --line-decorative: rgba(15, 16, 22, 0.06);
+  --line: rgba(15, 16, 22, 0.08);
+  --line-2: rgba(15, 16, 22, 0.12);
+  --line-strong: rgba(15, 16, 22, 0.18);
+
+  /* Sombras más ligeras */
+  --shadow-sm: 0 1px 2px rgba(15, 16, 22, 0.06);
+  --shadow-md: 0 4px 12px rgba(15, 16, 22, 0.08);
+  --shadow-lg: 0 12px 32px rgba(15, 16, 22, 0.12);
+
+  /* Tonos de acento ligeramente más fuertes para mantener contraste */
+  --green-bg: rgba(45, 212, 168, 0.12);
+  --green-border: rgba(45, 212, 168, 0.28);
+  --blue-bg: rgba(91, 156, 246, 0.12);
+  --blue-border: rgba(91, 156, 246, 0.28);
+  --red-bg: rgba(248, 113, 113, 0.14);
+  --red-border: rgba(248, 113, 113, 0.32);
+  --amber-bg: rgba(251, 191, 36, 0.16);
+  --amber-border: rgba(251, 191, 36, 0.36);
+  --violet-bg: rgba(167, 139, 250, 0.14);
+  --rose-bg: rgba(251, 113, 133, 0.14);
+}
+
+/* Selección de texto en tema claro */
+:root[data-theme="light"] ::selection {
+  background: rgba(45, 212, 168, 0.28);
+  color: #0B0C10;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; width: 100%; }
 

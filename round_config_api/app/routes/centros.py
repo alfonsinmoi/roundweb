@@ -15,6 +15,30 @@ bp = Blueprint('centros', __name__)
 log = logging.getLogger(__name__)
 
 
+# ── Catálogo de actividades del centro (para el selector admin) ─────────
+@bp.route('/<id_trainer>/actividades', methods=['GET'])
+@auth_required
+def list_actividades(id_trainer):
+    """Devuelve actividades únicas que tiene el trainer en las próximas 4
+    semanas en NoofitPro. Útil para que el admin pueda elegir qué actividades
+    se muestran al público."""
+    err = _manager_only()
+    if err: return err
+    try:
+        from ..slot_affluence import slots_disponibles
+        # Llamamos sin filtros para conseguir TODAS las actividades del trainer
+        # Excluimos el filtro de días pasando todos los días permitidos.
+        result = slots_disponibles(id_trainer=str(id_trainer),
+                                   dias_adelante=28,
+                                   max_resultados=0,
+                                   devolver_actividades=True,
+                                   dias_permitidos=[0, 1, 2, 3, 4, 5, 6])
+        return jsonify({'ok': True, 'actividades': result['actividades']})
+    except Exception as e:
+        log.exception('list_actividades')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 def _manager_only():
     if g.id_trainer:
         return jsonify({'ok': False, 'error': 'manager_only'}), 403
@@ -47,29 +71,50 @@ def upsert(id_trainer):
     err = _manager_only()
     if err: return err
     try:
+        import json as _json
         d = request.get_json() or {}
         if not d.get('email') or not d.get('nombre_centro'):
             return jsonify({'ok': False, 'error': 'email y nombre_centro requeridos'}), 400
+        # Validar dias_permitidos: lista de int 0-6 (lun=0 ... dom=6)
+        dias = d.get('dias_permitidos') or []
+        if not isinstance(dias, list):
+            return jsonify({'ok': False, 'error': 'dias_permitidos debe ser una lista'}), 400
+        try:
+            dias_norm = sorted({int(x) for x in dias if 0 <= int(x) <= 6})
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'dias_permitidos: solo enteros 0-6'}), 400
+        # Validar actividades_permitidas: lista de int (id_actividad NoofitPro)
+        actividades = d.get('actividades_permitidas') or []
+        if not isinstance(actividades, list):
+            return jsonify({'ok': False, 'error': 'actividades_permitidas debe ser una lista'}), 400
+        try:
+            actividades_norm = sorted({int(x) for x in actividades if str(x).strip()})
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'actividades_permitidas: solo enteros'}), 400
+
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO centro_contacto
                   (id_manager, id_trainer, nombre_centro, slug, email, email_cc,
                    telefono, ciudad, direccion, cif, razon_social,
-                   activo, recibe_round_robin, notas)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   activo, recibe_round_robin, notas,
+                   dias_permitidos, actividades_permitidas)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
                 ON CONFLICT (id_manager, id_trainer) DO UPDATE
-                SET nombre_centro       = EXCLUDED.nombre_centro,
-                    slug                = EXCLUDED.slug,
-                    email               = EXCLUDED.email,
-                    email_cc            = EXCLUDED.email_cc,
-                    telefono            = EXCLUDED.telefono,
-                    ciudad              = EXCLUDED.ciudad,
-                    direccion           = EXCLUDED.direccion,
-                    cif                 = EXCLUDED.cif,
-                    razon_social        = EXCLUDED.razon_social,
-                    activo              = EXCLUDED.activo,
-                    recibe_round_robin  = EXCLUDED.recibe_round_robin,
-                    notas               = EXCLUDED.notas
+                SET nombre_centro          = EXCLUDED.nombre_centro,
+                    slug                   = EXCLUDED.slug,
+                    email                  = EXCLUDED.email,
+                    email_cc               = EXCLUDED.email_cc,
+                    telefono               = EXCLUDED.telefono,
+                    ciudad                 = EXCLUDED.ciudad,
+                    direccion              = EXCLUDED.direccion,
+                    cif                    = EXCLUDED.cif,
+                    razon_social           = EXCLUDED.razon_social,
+                    activo                 = EXCLUDED.activo,
+                    recibe_round_robin     = EXCLUDED.recibe_round_robin,
+                    notas                  = EXCLUDED.notas,
+                    dias_permitidos        = EXCLUDED.dias_permitidos,
+                    actividades_permitidas = EXCLUDED.actividades_permitidas
                 RETURNING *
             """, (g.id_manager, str(id_trainer),
                   d.get('nombre_centro'),
@@ -81,7 +126,9 @@ def upsert(id_trainer):
                   d.get('razon_social') or None,
                   bool(d.get('activo', True)),
                   bool(d.get('recibe_round_robin', True)),
-                  d.get('notas')))
+                  d.get('notas'),
+                  _json.dumps(dias_norm),
+                  _json.dumps(actividades_norm)))
             row = cur.fetchone()
         return jsonify({'ok': True, 'row': row})
     except Exception as e:

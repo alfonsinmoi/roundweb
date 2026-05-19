@@ -102,9 +102,16 @@ function encodeAgeBuckets(birthdate) {
 /**
  * @param {Array<{date: Date, nameTraining: string}>} sesiones
  * @param {number} dias  ventana total analizada
- * @param {{ vocabulary?: string[], clientInfo?: object }} opts
+ * @param {{ vocabulary?: string[], clientInfo?: object, retosInfo?: {nRetos, ranking1to3, valorNorm} }} opts
+ *
+ * `retosInfo` permite añadir señales de participación en retos a las features:
+ *   - nRetos:      nº de retos en los que el cliente participa
+ *   - ranking1to3: nº de retos donde el cliente está en top 3
+ *   - valorNorm:   nivel medio de actividad acumulada (0..1) relativo al máx del centro
+ *
+ * Estas 3 dimensiones permiten separar clientes "engaged en retos" del resto.
  */
-export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = null } = {}) {
+export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = null, retosInfo = null } = {}) {
   const dow  = new Array(7).fill(0)
   const hour = new Array(HOUR_BUCKETS.length).fill(0)
   const types = new Map()
@@ -136,6 +143,11 @@ export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = 
   const genderVec = encodeGender(clientInfo?.gender)
   const ageVec    = encodeAgeBuckets(clientInfo?.birthdate)
 
+  // Señales de retos. Si no hay info, los 3 valores son 0 (no afectan).
+  const retosN = Math.min(1, (retosInfo?.nRetos || 0) / 3)        // ≥3 retos → 1.0
+  const top3N  = Math.min(1, (retosInfo?.ranking1to3 || 0) / 2)   // ≥2 podios → 1.0
+  const valN   = Math.max(0, Math.min(1, retosInfo?.valorNorm || 0))
+
   const vector = [
     ...dowN.map(v => v * 1.0),
     ...hourN.map(v => v * 1.0),
@@ -143,6 +155,10 @@ export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = 
     ...actN.map(v => v * 0.8),
     ...genderVec.map(v => v * 0.5),
     ...ageVec.map(v => v * 0.5),
+    // ── Retos (peso 0.7 a participación, 0.4 a podios y valor) ─────────────
+    retosN * 0.7,
+    top3N  * 0.4,
+    valN   * 0.4,
   ]
 
   return {
@@ -152,6 +168,8 @@ export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = 
     ageVec,
     genderRaw: clientInfo?.gender ?? null,
     ageRaw: calcAge(clientInfo?.birthdate),
+    retosVec: { nRetos: retosInfo?.nRetos || 0, ranking1to3: retosInfo?.ranking1to3 || 0,
+                valorNorm: valN },
   }
 }
 
@@ -339,6 +357,8 @@ export async function runUsageClustering({
   k = 'auto',
   minSessions = 4,
   soloActivos = true,
+  retosByClient = null,    // {idClient: {nRetos, ranking1to3, valor}}
+  // si null se ignora — no falla
 } = {}) {
   const hasta = new Date()
   const desde = new Date(); desde.setDate(desde.getDate() - dias)
@@ -347,6 +367,15 @@ export async function runUsageClustering({
     getSalasByRange(desde, hasta),
     getClientes().catch(() => []),
   ])
+
+  // Normalizar el "valor" del reto contra el máximo del centro para que
+  // sea una señal entre 0 y 1 comparable.
+  let maxValor = 0
+  if (retosByClient) {
+    for (const v of Object.values(retosByClient)) {
+      if (v?.valor > maxValor) maxValor = v.valor
+    }
+  }
 
   const clientMap = new Map()
   clientes.forEach(c => clientMap.set(String(c.id), c))
@@ -393,7 +422,14 @@ export async function runUsageClustering({
     if (!info) return
     if (soloActivos && info.enabled === false) return
     const nombre   = `${info.name || ''} ${info.surname || ''}`.trim() || `Cliente #${idClient}`
-    const features = extractFeatures(sesiones, dias, { vocabulary, clientInfo: info })
+    const retosInfo = retosByClient?.[String(idClient)]
+      ? {
+          nRetos:      retosByClient[String(idClient)].nRetos      || 0,
+          ranking1to3: retosByClient[String(idClient)].ranking1to3 || 0,
+          valorNorm:   maxValor > 0 ? (retosByClient[String(idClient)].valor || 0) / maxValor : 0,
+        }
+      : null
+    const features = extractFeatures(sesiones, dias, { vocabulary, clientInfo: info, retosInfo })
     const punto    = { idClient, nombre, imgUrl: info.imgUrl || '', features }
     if (features.total < minSessions) {
       outliers.push(punto)
