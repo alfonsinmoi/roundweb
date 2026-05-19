@@ -544,6 +544,18 @@ export const getClasesCliente = (idCliente) =>
   apiPost('api/dispositivos/getReservasByUser', { id: idCliente }, { initialId: '0' })
     .then(d => d.clases ?? d.reservas ?? [])
 
+// Test de Estado Físico — replica InformesEstadoFisicoCommand de NooFitPro.
+// Body: { UserId } — el servidor mapea `idUser` → `UserId` (ver TestEstadoFisicoSessionModel).
+// Devuelve sesiones ordenadas por testDate descendente.
+export const getEstadoFisicoSessions = (idCliente) =>
+  apiPost('api/dispositivos/getEstadoFisicoTestSessions', { UserId: idCliente })
+    .then(d => {
+      const sessions = d.estadoFisicoTestSessions ?? []
+      return sessions
+        .filter(s => s.idUser === idCliente || s.UserId === idCliente)
+        .sort((a, b) => new Date(b.testDate) - new Date(a.testDate))
+    })
+
 // ERP
 export const getERPConfiguraciones = () =>
   cached('erp-configs', () =>

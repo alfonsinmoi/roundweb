@@ -23,6 +23,7 @@ import {
 } from '../../utils/api'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
 import AltaClienteModal from '../../components/AltaClienteModal'
+import InformesEstadoFisicoButton from '../../components/InformesEstadoFisicoButton'
 import ClienteNotasTab from '../../components/notas/ClienteNotasTab'
 import CuotasClienteCard from '../../components/subs/CuotasClienteCard'
 import DescuentosClienteCard from '../../components/subs/DescuentosClienteCard'
@@ -432,6 +433,7 @@ export default function ClientProfile() {
           <Btn variant="secondary" size="md" onClick={() => setQrOpen(true)}>
             <QrCode size={15} aria-hidden="true" /> Mostrar QR
           </Btn>
+          <InformesEstadoFisicoButton cliente={cliente} />
           <Btn variant="secondary" size="md" onClick={handleArchivar} disabled={!!actionLoading}>
             {actionLoading === 'archivar'
               ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
