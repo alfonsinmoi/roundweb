@@ -1,0 +1,89 @@
+name: Auto-create feature branch from issue
+
+# Cuando un issue se etiqueta con `feature`, `bug`, `chore` o `docs`
+# el bot crea una rama nueva desde `main` con el nombre normalizado.
+# El dev solo tiene que hacer `git pull && git checkout <rama>` y empezar.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  create-branch:
+    if: contains(fromJSON('["feature", "bug", "chore", "docs", "refactor"]'), github.event.label.name)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Compute branch name
+        id: branch
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          # Mapea label → prefijo
+          case "$LABEL" in
+            feature)  PREFIX="feat" ;;
+            bug)      PREFIX="fix" ;;
+            chore)    PREFIX="chore" ;;
+            docs)     PREFIX="docs" ;;
+            refactor) PREFIX="refactor" ;;
+            *)        PREFIX="feat" ;;
+          esac
+
+          # Slug del título: lowercase, kebab, sin acentos, máx 40 chars
+          SLUG=$(echo "$ISSUE_TITLE" \
+            | iconv -t ASCII//TRANSLIT 2>/dev/null \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' \
+            | cut -c1-40 \
+            | sed 's/-$//')
+
+          BRANCH="${PREFIX}/${ISSUE_NUMBER}-${SLUG}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Create branch
+        env:
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Crear rama remota desde main si no existe
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "La rama $BRANCH ya existe — skip"
+          else
+            git checkout -b "$BRANCH"
+            git push origin "$BRANCH"
+          fi
+
+      - name: Comment on issue
+        env:
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="Rama creada: [\`$BRANCH\`](https://github.com/$REPO/tree/$BRANCH)
+
+          Cómo trabajar:
+          \`\`\`
+          git fetch origin
+          git checkout $BRANCH
+          # … haz tus cambios …
+          git push
+          \`\`\`
+          Cuando termines, abre una Pull Request a \`main\`."
+
+          curl -sS -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/issues/${{ github.event.issue.number }}/comments" \
+            -d "$(jq -n --arg b "$BODY" '{body:$b}')"

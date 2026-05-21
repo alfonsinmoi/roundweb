@@ -65,19 +65,32 @@ describe('Avatar', () => {
     expect(container.textContent).toBe('JP')
   })
 
-  it('renders initials when imgUrl is invalid', () => {
-    const { container } = render(<Avatar nombre="Ana B" size={44} imgUrl="not-a-url" />)
+  it('renders initials when imgUrl is empty', () => {
+    const { container } = render(<Avatar nombre="Ana B" size={44} imgUrl="" />)
     expect(container.textContent).toBe('AB')
   })
 
   it('renders img when imgUrl is valid https', () => {
-    render(<Avatar nombre="Test" size={44} imgUrl="https://example.com/photo.jpg" />)
-    expect(screen.getByRole('img')).toHaveAttribute('src', 'https://example.com/photo.jpg')
+    // El <img> tiene alt="" intencional (para no exponer nombre en imagen rota)
+    // así que role="img" no aplica — buscamos por aria-label que sí está puesto
+    const { container } = render(<Avatar nombre="Test" size={44} imgUrl="https://example.com/photo.jpg" />)
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img.getAttribute('src')).toBe('https://example.com/photo.jpg')
+    expect(img.getAttribute('aria-label')).toBe('Test')
   })
 
   it('does NOT render img for javascript: URLs', () => {
     const { container } = render(<Avatar nombre="Hack" size={44} imgUrl="javascript:alert(1)" />)
     expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).toBe('H')
+  })
+
+  it('does NOT render img for vbscript: or data:text/html URLs', () => {
+    const { container: c1 } = render(<Avatar nombre="A B" imgUrl="vbscript:msgbox(1)" />)
+    expect(c1.querySelector('img')).toBeNull()
+    const { container: c2 } = render(<Avatar nombre="A B" imgUrl="data:text/html,<script>alert(1)</script>" />)
+    expect(c2.querySelector('img')).toBeNull()
   })
 })
 
