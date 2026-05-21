@@ -66,10 +66,48 @@ Verifica que en GitHub aparecen:
 
 ### A.2 Activar Branch Protection en GitHub
 
-Abre en el navegador:
-`https://github.com/alfonsinmoi/roundweb/settings/branches`
+GitHub tiene **dos UIs distintas** para esto. El resultado es equivalente, pero
+los nombres de las casillas no coinciden. Elige la que prefieras:
 
-Click en **"Add branch ruleset"** (o "Add branch protection rule" si tienes la UI clásica) y rellena:
+---
+
+#### Opción A — UI nueva: **Rulesets** (recomendada por GitHub)
+
+URL: `https://github.com/alfonsinmoi/roundweb/settings/rules`
+
+Click en **"New ruleset" → "New branch ruleset"** y configura:
+
+| Campo | Valor |
+|---|---|
+| **Ruleset Name** | `Protect main` |
+| **Enforcement status** | **Active** |
+| **Bypass list** | **Déjala VACÍA** ← esto es el equivalente a "Do not allow bypassing". Si añades a alguien aquí, podrá saltarse las reglas. |
+| **Target branches** → Add target | "Include default branch" (o pattern `main`) |
+
+En **Branch rules** activa:
+
+| Rule | Detalle |
+|---|---|
+| ☑ **Restrict deletions** | impide borrar `main` |
+| ☑ **Require linear history** | fuerza squash/rebase, prohíbe merge commits sucios |
+| ☑ **Require a pull request before merging** | Required approvals = **1** · ☑ Dismiss stale pull request approvals · ☑ Require review from Code Owners |
+| ☑ **Require status checks to pass** | ☑ Require branches to be up to date · Status check: **`Build & Test`** |
+| ☑ **Block force pushes** | impide reescribir historial |
+| ☑ **Require code scanning results** *(opcional)* | si activas CodeQL en el futuro |
+
+**Save** → quedará activo inmediatamente.
+
+> En Rulesets, "Restrict who can push" se gestiona dejando la **Bypass list
+> vacía**. No hay una casilla con ese nombre — la mera existencia del ruleset
+> ya impide los push directos a `main` salvo para quien esté en bypass.
+
+---
+
+#### Opción B — UI clásica: **Branch protection rules**
+
+URL: `https://github.com/alfonsinmoi/roundweb/settings/branches`
+
+Click en **"Add branch protection rule"** y rellena:
 
 | Campo | Valor |
 |---|---|
@@ -82,15 +120,23 @@ Click en **"Add branch ruleset"** (o "Add branch protection rule" si tienes la U
 | └ ☑ Require branches to be up to date before merging | activado |
 | └ Status checks required (buscador) | `Build & Test` |
 | ☑ Require conversation resolution before merging | activado |
-| ☑ **Require linear history** | activado (fuerza squash/rebase, prohíbe merge commits sucios) |
-| ☑ **Block force pushes** | activado (impide reescribir historial publicado) |
-| ☑ **Restrict deletions** | activado (impide borrar `main` accidentalmente) |
-| ☑ Do not allow bypassing the above settings | activado (**te incluye a ti mismo** para que tampoco puedas pushear a main por error) |
-| ☑ Restrict who can push to matching branches | activado (deja la lista vacía → nadie pushea directo) |
+| ☑ **Require linear history** | activado |
+| **Rules applied to everyone including administrators** ↓ | |
+| ☑ **Allow force pushes** | **DESactivado** (= equivalente a "Block force pushes") |
+| ☑ **Allow deletions** | **DESactivado** (= equivalente a "Restrict deletions") |
+| ☑ **Do not allow bypassing the above settings** | activado (te incluye a ti mismo) |
+| ☑ **Restrict who can push to matching branches** | activado, lista vacía |
 
-**Save changes**. A partir de este momento:
+> ⚠️ En la UI clásica los nombres "Block force pushes" y "Restrict deletions"
+> NO existen como tal: en su lugar hay "**Allow force pushes**" y "**Allow
+> deletions**" que tienes que **DESmarcar**. Es la doble negación clásica de GitHub.
+
+---
+
+**Resultado en ambos casos**:
 - Nadie (ni tú) puede pushear directamente a `main`.
 - Cada PR necesita 1 aprobación + CI verde + reviewer de CODEOWNERS.
+- No se puede borrar `main` ni reescribir su historial.
 
 ### A.3 Etiquetas (labels) en GitHub
 
