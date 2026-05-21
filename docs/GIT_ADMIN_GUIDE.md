@@ -82,7 +82,10 @@ Click en **"Add branch ruleset"** (o "Add branch protection rule" si tienes la U
 | └ ☑ Require branches to be up to date before merging | activado |
 | └ Status checks required (buscador) | `Build & Test` |
 | ☑ Require conversation resolution before merging | activado |
-| ☑ Do not allow bypassing the above settings | activado |
+| ☑ **Require linear history** | activado (fuerza squash/rebase, prohíbe merge commits sucios) |
+| ☑ **Block force pushes** | activado (impide reescribir historial publicado) |
+| ☑ **Restrict deletions** | activado (impide borrar `main` accidentalmente) |
+| ☑ Do not allow bypassing the above settings | activado (**te incluye a ti mismo** para que tampoco puedas pushear a main por error) |
 | ☑ Restrict who can push to matching branches | activado (deja la lista vacía → nadie pushea directo) |
 
 **Save changes**. A partir de este momento:
@@ -105,12 +108,16 @@ Crea estas labels (si no existen) — son las que dispararán el bot:
 
 ### A.4 Crear el `.env.local` para los compañeros
 
-El `VITE_CONFIG_API_TOKEN` no se commitea. Tienes que pasárselo a cada
-compañero por canal seguro (Bitwarden, mensaje privado, etc.). Ellos lo
-guardarán en `RoundWeb/.env.local` así:
+El proyecto incluye un [`.env.example`](../.env.example) commiteado con la
+plantilla de variables (sin valores). El `VITE_CONFIG_API_TOKEN` real
+**no se commitea** — pásaselo a cada compañero por canal seguro
+(Bitwarden, mensaje cifrado, etc.).
 
-```
-VITE_CONFIG_API_TOKEN=<el-token-real>
+Tu compañero hará:
+
+```bash
+cp .env.example .env.local
+# Edita .env.local y pega el token que le pasaste
 ```
 
 Sin esa variable, todas las llamadas al backend Round dan 401 y la app no
@@ -240,7 +247,25 @@ Botón verde abajo: **"Squash and merge"** (recomendado — un commit limpio en 
 - Confirm squash and merge
 - GitHub borrará la rama automáticamente (si está marcado en Settings → "Automatically delete head branches")
 
-### C.5 Si la PR necesita cambios
+### C.5 Revisar la PR con ayuda de Claude (opcional)
+
+Si tienes `gh` CLI y Claude Code instalados, puedes pedirle a Claude que
+te haga una primera pasada por la PR antes de aprobarla:
+
+```bash
+# Te traes la rama de la PR a tu local
+gh pr checkout 42
+
+# Pides revisión a Claude
+claude "revisa los cambios de esta rama vs main: busca bugs, problemas de
+seguridad, código muerto o cosas que rompan las convenciones de
+docs/ARCHITECTURE.md"
+```
+
+Claude te listará posibles problemas. Tú decides cuáles son válidos y los
+comentas en la PR. No reemplaza tu review — la complementa.
+
+### C.6 Si la PR necesita cambios
 
 - Click "Request changes", deja tu feedback
 - El autor empuja nuevos commits a su rama
