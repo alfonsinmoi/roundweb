@@ -1,32 +1,52 @@
 #!/usr/bin/env bash
-# Antes de hacer push: lanza tests + build para evitar romper main / CI.
-# Si quieres saltarlo: git push --no-verify
+# Antes de hacer push:
+#   1. Si pusheas a `main` → exige confirmación interactiva (terminal) o bloquea
+#      (clientes GUI tipo Sourcetree no tienen TTY → bloqueo limpio).
+#   2. Lanza tests + build para evitar romper main / CI.
+#
+# Si quieres saltarlo (no recomendado): git push --no-verify
 
 set -eu
 
-REMOTE="$1"
-URL="$2"
-
 # Leer el ref que se está empujando
 while read -r local_ref local_sha remote_ref remote_sha; do
-  # Si empujas a main (force-push o no), avisa
   if [[ "$remote_ref" == "refs/heads/main" ]]; then
-    echo "⚠️  Empujando directamente a main."
-    echo "    El flujo normal es: crear rama → PR → review → merge."
-    printf "    ¿Seguro que quieres continuar? [y/N]: "
-    read -r ANS </dev/tty
-    if [[ ! "$ANS" =~ ^[Yy] ]]; then
-      echo "Cancelado."
+    echo ""
+    echo "⛔  Estás intentando empujar DIRECTAMENTE a main."
+    echo ""
+    echo "   El flujo normal es:"
+    echo "      1. Crear una rama:      ./scripts/new-feature.sh feat \"descripción\""
+    echo "      2. Pushear tu rama:     git push -u origin <tu-rama>"
+    echo "      3. Abrir Pull Request en GitHub"
+    echo "      4. Review + merge a main desde la UI"
+    echo ""
+
+    if [[ -t 0 ]]; then
+      # Hay TTY (terminal interactiva): pedir confirmación
+      printf "   ¿Estás seguro? [y/N]: "
+      read -r ANS
+      if [[ ! "$ANS" =~ ^[Yy] ]]; then
+        echo "   Cancelado. Crea una rama y abre PR."
+        exit 1
+      fi
+    else
+      # Sin TTY (Sourcetree, GitHub Desktop, IDE, CI…): bloquear sin más
+      echo "   No detecto TTY (Sourcetree / GitHub Desktop / IDE)."
+      echo "   Para confirmar, hazlo desde Terminal:"
+      echo "      cd $(pwd)"
+      echo "      git push origin main"
+      echo ""
       exit 1
     fi
   fi
 done
 
+# ── Tests + build (no requieren TTY) ─────────────────────────────────────
 echo "→ npm test"
 if ! npm test --silent; then
   echo ""
   echo "❌  Tests fallando — corrige antes de empujar."
-  echo "    (Para saltar: git push --no-verify)"
+  echo "    (Para saltar puntualmente: git push --no-verify)"
   exit 1
 fi
 
@@ -34,7 +54,7 @@ echo "→ npm run build"
 if ! npm run build --silent; then
   echo ""
   echo "❌  Build falló — corrige antes de empujar."
-  echo "    (Para saltar: git push --no-verify)"
+  echo "    (Para saltar puntualmente: git push --no-verify)"
   exit 1
 fi
 
