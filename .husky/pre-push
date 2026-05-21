@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Antes de hacer push: lanza tests + build para evitar romper main / CI.
+# Si quieres saltarlo: git push --no-verify
+
+set -eu
+
+REMOTE="$1"
+URL="$2"
+
+# Leer el ref que se está empujando
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Si empujas a main (force-push o no), avisa
+  if [[ "$remote_ref" == "refs/heads/main" ]]; then
+    echo "⚠️  Empujando directamente a main."
+    echo "    El flujo normal es: crear rama → PR → review → merge."
+    printf "    ¿Seguro que quieres continuar? [y/N]: "
+    read -r ANS </dev/tty
+    if [[ ! "$ANS" =~ ^[Yy] ]]; then
+      echo "Cancelado."
+      exit 1
+    fi
+  fi
+done
+
+echo "→ npm test"
+if ! npm test --silent; then
+  echo ""
+  echo "❌  Tests fallando — corrige antes de empujar."
+  echo "    (Para saltar: git push --no-verify)"
+  exit 1
+fi
+
+echo "→ npm run build"
+if ! npm run build --silent; then
+  echo ""
+  echo "❌  Build falló — corrige antes de empujar."
+  echo "    (Para saltar: git push --no-verify)"
+  exit 1
+fi
+
+echo "✓ Tests y build OK"

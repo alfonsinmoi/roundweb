@@ -1,0 +1,35 @@
+# CODEOWNERS — Round Web
+#
+# Cada PR exige aprobación del owner del área que toca. Si la PR cambia
+# varias áreas, GitHub pedirá aprobación de cada owner.
+#
+# Ajusta los handles GitHub a los reales de tu equipo.
+
+# ── Default: cualquier cambio necesita revisión del lead ─────────────────────
+*                                  @alfonsinmoi
+
+# ── Infra / config / CI ──────────────────────────────────────────────────────
+/.github/                          @alfonsinmoi
+/.husky/                           @alfonsinmoi
+/scripts/                          @alfonsinmoi
+/vite.config.js                    @alfonsinmoi
+/vitest.config.js                  @alfonsinmoi
+/package.json                      @alfonsinmoi
+/package-lock.json                 @alfonsinmoi
+
+# ── Capa de datos / API ──────────────────────────────────────────────────────
+/src/utils/api.js                  @alfonsinmoi
+/src/utils/authState.js            @alfonsinmoi
+/src/utils/authUsuarioApi.js       @alfonsinmoi
+/src/utils/configApi.js            @alfonsinmoi
+/src/contexts/                     @alfonsinmoi
+
+# ── Diseño / sistema de UI ───────────────────────────────────────────────────
+/src/components/UI.jsx             @alfonsinmoi
+/src/index.css                     @alfonsinmoi
+
+# ── Páginas (asignar a feature owners cuando se reparta) ─────────────────────
+# /src/pages/Clients/              @owner-clientes
+# /src/pages/Clases.jsx            @owner-clases
+# /src/pages/Listados.jsx          @owner-reporting
+# /src/pages/Dashboard.jsx         @owner-dashboard

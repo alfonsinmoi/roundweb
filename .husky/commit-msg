@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Valida que el mensaje de commit siga conventional commits:
+#   <tipo>(<scope opcional>): <descripción>
+#
+# Tipos válidos: feat, fix, refactor, chore, docs, style, test, perf, ci, build
+#
+# Si quieres saltarlo en un commit puntual: git commit --no-verify
+
+set -eu
+
+MSG_FILE="$1"
+FIRST_LINE=$(head -n1 "$MSG_FILE")
+
+# Saltar merges
+if [[ "$FIRST_LINE" =~ ^Merge ]]; then
+  exit 0
+fi
+# Saltar reverts automáticos
+if [[ "$FIRST_LINE" =~ ^Revert ]]; then
+  exit 0
+fi
+
+PATTERN='^(feat|fix|refactor|chore|docs|style|test|perf|ci|build)(\([a-z0-9-]+\))?: .{1,}$'
+
+if [[ ! "$FIRST_LINE" =~ $PATTERN ]]; then
+  echo ""
+  echo "❌  Mensaje de commit no sigue el formato Conventional Commits"
+  echo ""
+  echo "    Formato esperado:  <tipo>(<scope>): <descripción>"
+  echo ""
+  echo "    Tipos válidos:     feat, fix, refactor, chore, docs, style, test, perf, ci, build"
+  echo ""
+  echo "    Ejemplos:"
+  echo "      feat(clientes): añadir filtro por categoría"
+  echo "      fix(login): respetar parámetro return tras éxito"
+  echo "      chore(deps): actualizar vite a 8.0.8"
+  echo ""
+  echo "    Tu mensaje:        $FIRST_LINE"
+  echo ""
+  echo "    (Para saltar esta validación: git commit --no-verify)"
+  echo ""
+  exit 1
+fi
