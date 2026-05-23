@@ -63,6 +63,89 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='modo_facturacion') THEN
       ALTER TABLE manager_config ADD COLUMN modo_facturacion VARCHAR(20) DEFAULT 'recibo_trimestre';
     END IF;
+
+    -- Multi-company Odoo (cada manager S = una res.company en Odoo)
+    -- ─────────────────────────────────────────────────────────────────────
+    -- odoo_enabled:       el manager tiene contabilidad/CRM/recibos desplegados
+    -- odoo_company_id:    id de la res.company en Odoo (NULL = sin desplegar)
+    -- odoo_url:           opcional, URL del Odoo del manager. Si NULL usa el
+    --                     ODOO_URL global del backend. Permite migrar
+    --                     managers grandes a otro VPS en el futuro.
+    -- odoo_activated_at:  timestamp del primer despliegue (punto de corte)
+    -- wcommerce_cliente_id: id del cliente en wcommerce.wiemspro.com
+    -- tipo_pago_wc:       letra del tipoPago en wcommerce (S/B/C/T/…)
+    --                     Solo S permite desplegar Odoo desde la UI.
+    -- ─────────────────────────────────────────────────────────────────────
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='odoo_enabled') THEN
+      ALTER TABLE manager_config ADD COLUMN odoo_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='odoo_company_id') THEN
+      ALTER TABLE manager_config ADD COLUMN odoo_company_id INTEGER;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='odoo_url') THEN
+      ALTER TABLE manager_config ADD COLUMN odoo_url VARCHAR(255);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='odoo_activated_at') THEN
+      ALTER TABLE manager_config ADD COLUMN odoo_activated_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='wcommerce_cliente_id') THEN
+      ALTER TABLE manager_config ADD COLUMN wcommerce_cliente_id VARCHAR(32);
+    END IF;
+    -- Si la columna ya existe como INTEGER (de un deploy previo de fase 0),
+    -- la migramos a VARCHAR(32). En wcommerce el "id" real es el campo
+    -- `codigo`, una cadena tipo '00004645' con ceros a la izquierda.
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_name='manager_config' AND column_name='wcommerce_cliente_id'
+         AND data_type='integer'
+    ) THEN
+      ALTER TABLE manager_config
+        ALTER COLUMN wcommerce_cliente_id TYPE VARCHAR(32)
+        USING wcommerce_cliente_id::VARCHAR(32);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='manager_config' AND column_name='tipo_pago_wc') THEN
+      ALTER TABLE manager_config ADD COLUMN tipo_pago_wc VARCHAR(20);
+    END IF;
+
+    -- Backfill: el manager actual (Round, id=17675) ya tiene Odoo desplegado
+    -- en company_id=3 desde hace tiempo. No pasa por el wizard.
+    UPDATE manager_config
+       SET odoo_enabled = TRUE,
+           odoo_company_id = 3,
+           odoo_activated_at = COALESCE(odoo_activated_at, created_at)
+     WHERE id_manager = '17675'
+       AND odoo_company_id IS NULL;
+
+    -- ─── Suscripciones granulares: CRM / Cuotas / Contabilidad ────────
+    -- Permiten activar cada módulo Odoo de forma independiente. Un
+    -- manager puede tener solo CRM, solo Cuotas, solo Contabilidad o
+    -- cualquier combinación. `odoo_enabled` queda como helper computado
+    -- (TRUE si cualquiera de los 3 está activo).
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='manager_config'
+                      AND column_name='odoo_crm_enabled') THEN
+      ALTER TABLE manager_config
+        ADD COLUMN odoo_crm_enabled          BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN odoo_cuotas_enabled       BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN odoo_contabilidad_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        -- sistemas_cobro: array JSONB de strings con los métodos
+        -- habilitados por el manager al activar Cuotas. Valores válidos:
+        -- 'sepa', 'tpv_virtual', 'link_pago', 'efectivo', 'transferencia',
+        -- 'tokenizacion'. Solo se rellena cuando odoo_cuotas_enabled=TRUE.
+        ADD COLUMN sistemas_cobro            JSONB DEFAULT '[]'::jsonb;
+    END IF;
+
+    -- Backfill: si Round actual (17675) tiene odoo_enabled=true, marcamos
+    -- los 3 sub-flags a true (no hay forma técnica de saber si solo usa
+    -- una parte; asumimos completo porque históricamente lo tiene todo).
+    UPDATE manager_config
+       SET odoo_crm_enabled          = TRUE,
+           odoo_cuotas_enabled       = TRUE,
+           odoo_contabilidad_enabled = TRUE
+     WHERE odoo_enabled = TRUE
+       AND odoo_crm_enabled = FALSE
+       AND odoo_cuotas_enabled = FALSE
+       AND odoo_contabilidad_enabled = FALSE;
   END IF;
 
   -- email_proveedor: añadir id_trainer y eliminar unique antiguo (sólo manager)
@@ -573,6 +656,204 @@ CREATE TABLE IF NOT EXISTS cliente_categoria (
 );
 CREATE INDEX IF NOT EXISTS idx_clicat_categoria ON cliente_categoria(categoria_id);
 CREATE INDEX IF NOT EXISTS idx_clicat_manager   ON cliente_categoria(id_manager);
+
+
+-- ─── TEST DE ESTADO FÍSICO — cache local de NoofitPro ────────────────────
+-- NoofitPro solo permite consultar por idUser y tarda ~50ms por cliente,
+-- así que recorrer 300 clientes son 15s. Esta tabla cachea los resultados
+-- y solo refresca en background cuando son antiguos.
+-- `id` es el UUID que devuelve NoofitPro, así el UPSERT es idempotente.
+CREATE TABLE IF NOT EXISTS test_estado_fisico (
+  id                  UUID PRIMARY KEY,
+  id_manager          VARCHAR(64) NOT NULL,
+  id_trainer          VARCHAR(64),
+  user_id             INTEGER NOT NULL,
+  cliente_nombre      VARCHAR(240),
+  cliente_email       VARCHAR(160),
+  test_date           TIMESTAMPTZ,
+  edad                INTEGER,
+  peso_kg             NUMERIC(5,2),
+  sexo                VARCHAR(2),
+  categoria           VARCHAR(40),
+  has_squat_jump      BOOLEAN NOT NULL DEFAULT FALSE,
+  has_box_squat       BOOLEAN NOT NULL DEFAULT FALSE,
+  has_flamenco        BOOLEAN NOT NULL DEFAULT FALSE,
+  has_plancha         BOOLEAN NOT NULL DEFAULT FALSE,
+  has_push_up         BOOLEAN NOT NULL DEFAULT FALSE,
+  observations        TEXT,
+  is_completed        BOOLEAN NOT NULL DEFAULT FALSE,
+  puntuacion          NUMERIC(4,2),
+  last_modified_date  TIMESTAMPTZ,
+  raw_data            JSONB,
+  synced_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_test_ef_manager
+  ON test_estado_fisico(id_manager, test_date DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_test_ef_user
+  ON test_estado_fisico(id_manager, user_id, test_date DESC NULLS LAST);
+
+-- Estado de sincronización por cliente (cuándo se pidió por última vez a NF)
+CREATE TABLE IF NOT EXISTS test_estado_fisico_sync_cliente (
+  id_manager     VARCHAR(64) NOT NULL,
+  id_trainer     VARCHAR(64),
+  user_id        INTEGER NOT NULL,
+  synced_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  n_tests        INTEGER NOT NULL DEFAULT 0,
+  ultima_falla   TEXT,
+  PRIMARY KEY (id_manager, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_test_ef_sync_synced
+  ON test_estado_fisico_sync_cliente(id_manager, synced_at);
+
+
+-- ─── CLIENTE CACHE — réplica local de getClienteSimple de NoofitPro ─────
+-- La lista de clientes de NoofitPro tarda 2-3 s en la 1ª llamada del día
+-- (login + getClienteSimple). Esta tabla cachea la lista por manager para
+-- que las lecturas sean instantáneas (~50 ms). El sync se ejecuta:
+--   • En background al abrir la lista (anti-stampede de 60 s)
+--   • Vía cron horario (round_clientes_sync.timer)
+-- Guardamos el objeto entero como JSONB para no perder ningún campo;
+-- solo las columnas usadas para filtrar/ordenar van como columnas reales.
+CREATE TABLE IF NOT EXISTS cliente_cache (
+  id              INTEGER NOT NULL,
+  id_manager      VARCHAR(64) NOT NULL,
+  id_trainer      INTEGER,
+  enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+  name            VARCHAR(160),
+  surname         VARCHAR(240),
+  email           VARCHAR(160),
+  dt_edition_date BIGINT,
+  raw_data        JSONB NOT NULL,
+  synced_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id)
+);
+CREATE INDEX IF NOT EXISTS idx_cliente_cache_trainer
+  ON cliente_cache(id_manager, id_trainer);
+CREATE INDEX IF NOT EXISTS idx_cliente_cache_enabled
+  ON cliente_cache(id_manager, enabled);
+
+-- Estado de sync por manager (1 fila por manager activo).
+CREATE TABLE IF NOT EXISTS cliente_cache_sync (
+  id_manager   VARCHAR(64) NOT NULL,
+  synced_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  n_clientes   INTEGER NOT NULL DEFAULT 0,
+  ultima_falla TEXT,
+  PRIMARY KEY (id_manager)
+);
+
+
+-- ─── Fase 4: multi-trainer con analytic accounts ────────────────────────
+-- En Odoo cada `res.company` tendrá un `account.analytic.plan` propio
+-- (p. ej. "Trainers Round Málaga") y dentro un `account.analytic.account`
+-- por trainer. Así, cada factura / payment lleva su analytic_distribution
+-- y los informes contables se pueden filtrar por trainer.
+--
+-- Política por defecto: cuando un trainer se da de alta o existe ya, su
+-- contabilidad HEREDA del manager (todos van al analytic "GENERAL").
+-- Si el manager decide independizar a un trainer, se le crea analytic
+-- propio y `heredar_contabilidad=FALSE`.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+              WHERE table_name='manager_config') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='manager_config'
+                      AND column_name='odoo_analytic_plan_id') THEN
+      ALTER TABLE manager_config
+        ADD COLUMN odoo_analytic_plan_id    INTEGER,
+        ADD COLUMN odoo_analytic_default_id INTEGER;
+    END IF;
+  END IF;
+END$$;
+
+CREATE TABLE IF NOT EXISTS trainer_odoo_config (
+  id_manager           VARCHAR(64) NOT NULL,
+  id_trainer           VARCHAR(64) NOT NULL,
+  heredar_contabilidad BOOLEAN     NOT NULL DEFAULT TRUE,
+  -- Si heredar=true → analytic_account_id es NULL y los movimientos van
+  -- al `manager_config.odoo_analytic_default_id`. Si heredar=false →
+  -- apunta al analytic propio del trainer.
+  analytic_account_id  INTEGER,
+  notas                TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id_trainer)
+);
+CREATE INDEX IF NOT EXISTS idx_trainer_odoo_manager
+  ON trainer_odoo_config(id_manager);
+
+
+-- ─── Fase 3: tracking del sync inicial de partners ──────────────────────
+-- Tras un provisioning OK, replicamos los clientes de NoofitPro
+-- (cliente_cache) a res.partner de la nueva company. Estas columnas
+-- se rellenan en background y se actualizan a medida que progresa.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+              WHERE table_name='odoo_solicitud_despliegue') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='odoo_solicitud_despliegue'
+                      AND column_name='partners_sync_started_at') THEN
+      ALTER TABLE odoo_solicitud_despliegue
+        ADD COLUMN partners_sync_started_at  TIMESTAMPTZ,
+        ADD COLUMN partners_sync_finished_at TIMESTAMPTZ,
+        ADD COLUMN partners_total            INTEGER,
+        ADD COLUMN partners_synced           INTEGER,
+        ADD COLUMN partners_errors           JSONB DEFAULT '[]'::jsonb;
+    END IF;
+  END IF;
+END$$;
+
+
+-- ─── SOLICITUD DE DESPLIEGUE ODOO (Fase 2 — opción híbrida) ───────────────
+-- Cuando un manager con tipoPago='S' pulsa "Aceptar y continuar" en el
+-- wizard de despliegue, sus datos fiscales/contables se guardan aquí.
+-- Un admin de Wiemspro:
+--   1) Ve la solicitud (estado='pendiente')
+--   2) Crea manualmente la `res.company` en Odoo UI con esos datos
+--   3) Vuelve a Round, introduce el `odoo_company_id` recién creado
+--   4) Round automatiza el resto: journals, bank, secuencia, permisos
+-- Estados: 'pendiente' → 'en_proceso' → 'completada' / 'rechazada'
+CREATE TABLE IF NOT EXISTS odoo_solicitud_despliegue (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+  -- Datos del wizard (los del manager) ──────────────────────────────────
+  razon_social             VARCHAR(240) NOT NULL,
+  cif                      VARCHAR(40)  NOT NULL,
+  direccion                VARCHAR(240),
+  poblacion                VARCHAR(120),
+  cp                       VARCHAR(20),
+  provincia                VARCHAR(120),
+  pais                     VARCHAR(80) DEFAULT 'España',
+  telefono                 VARCHAR(40),
+  email_facturacion        VARCHAR(160),
+  -- Plan contable + numeración ──────────────────────────────────────────
+  plan_contable            VARCHAR(40) DEFAULT 'es_pymes',  -- es_pymes / es_full / es_assoc
+  factura_secuencia_prefijo VARCHAR(20),                    -- p.ej. "F-2026-"
+  factura_ultimo_numero    INTEGER DEFAULT 0,               -- p.ej. 247 → siguiente F-2026-248
+  -- Cuentas bancarias y journals ────────────────────────────────────────
+  iban_principal           VARCHAR(40),
+  banco_nombre             VARCHAR(120),
+  journals_extra           JSONB DEFAULT '[]'::jsonb,   -- [{nombre, tipo, ...}, ...]
+  -- Notas y resultado del provisioner ────────────────────────────────────
+  notas_manager            TEXT,
+  -- Tras procesar
+  odoo_company_id          INTEGER,                     -- el admin lo introduce
+  procesado_at             TIMESTAMPTZ,
+  procesado_por            VARCHAR(120),                -- email admin Wiemspro
+  resultado                JSONB,                       -- log del provisioner
+  motivo_rechazo           TEXT,
+  -- Auditoría
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_solicitud_manager   ON odoo_solicitud_despliegue(id_manager);
+CREATE INDEX IF NOT EXISTS idx_solicitud_estado    ON odoo_solicitud_despliegue(estado, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_solicitud_activa
+  ON odoo_solicitud_despliegue(id_manager)
+  WHERE estado IN ('pendiente','en_proceso');
 
 
 -- ─── RETO SNAPSHOT — histórico diario del estado de cada reto ─────────────
@@ -1215,6 +1496,7 @@ DROP TRIGGER IF EXISTS trg_trainer_creds_upd   ON trainer_noofit_creds;
 DROP TRIGGER IF EXISTS trg_recibo_upd          ON recibo;
 DROP TRIGGER IF EXISTS trg_recibo_lote_upd     ON recibo_lote_facturacion;
 DROP TRIGGER IF EXISTS trg_fpcli_upd            ON forma_pago_cliente;
+DROP TRIGGER IF EXISTS trg_trainer_odoo_upd     ON trainer_odoo_config;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -1271,6 +1553,8 @@ CREATE TRIGGER trg_recibo_upd          BEFORE UPDATE ON recibo
 CREATE TRIGGER trg_recibo_lote_upd     BEFORE UPDATE ON recibo_lote_facturacion
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_fpcli_upd           BEFORE UPDATE ON forma_pago_cliente
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trainer_odoo_upd    BEFORE UPDATE ON trainer_odoo_config
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 

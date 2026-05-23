@@ -7,6 +7,7 @@ import logging
 import os
 from flask import Blueprint, request, jsonify, g, Response
 from ..auth import auth_required
+from ..odoo_guard import require_feature
 from ..odoo_cuotas import get_cuotas
 from ..odoo_alta import get_alta
 from ..notif_sender import enviar_notificacion
@@ -98,6 +99,7 @@ def _serialize(rec):
 # ── Listado por cliente (pestaña Cuotas en ClientProfile) ─────────────────────
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def cuotas_cliente(id_noofit):
     try:
         recibos = get_cuotas().list_recibos_cliente(id_noofit)
@@ -111,6 +113,7 @@ def cuotas_cliente(id_noofit):
 @bp.route('', methods=['GET'])
 @bp.route('/', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def list_cuotas():
     try:
         mes = request.args.get('mes') or None
@@ -126,6 +129,7 @@ def list_cuotas():
 # ── Preemisión: generar borradores del mes ────────────────────────────────────
 @bp.route('/preemision/<mes>', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def preemision_generar(mes):
     """mes formato YYYY-MM"""
     try:
@@ -138,6 +142,7 @@ def preemision_generar(mes):
 
 @bp.route('/preemision/<mes>', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def preemision_listar(mes):
     """Lista los borradores creados para ese mes."""
     try:
@@ -150,6 +155,7 @@ def preemision_listar(mes):
 
 @bp.route('/preemision/recibo/<int:invoice_id>', methods=['PATCH'])
 @auth_required
+@require_feature('cuotas')
 def preemision_modificar(invoice_id):
     """Modificar un borrador: precio, fecha vencimiento, notas."""
     try:
@@ -165,6 +171,7 @@ def preemision_modificar(invoice_id):
 
 @bp.route('/preemision/recibo/<int:invoice_id>', methods=['DELETE'])
 @auth_required
+@require_feature('cuotas')
 def preemision_eliminar(invoice_id):
     try:
         get_cuotas().delete_borrador(invoice_id)
@@ -179,6 +186,7 @@ def preemision_eliminar(invoice_id):
 # ── Emisión: confirmar remesa → genera SEPA ───────────────────────────────────
 @bp.route('/emitir/<mes>', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def emitir_remesa(mes):
     try:
         result = get_cuotas().emitir_remesa(mes)
@@ -191,6 +199,7 @@ def emitir_remesa(mes):
 # ── Enviar factura por email al cliente (con PDF adjunto) ────────────────────
 @bp.route('/recibo/<int:invoice_id>/enviar', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def enviar_factura(invoice_id):
     """Envía la factura por email al cliente con PDF adjunto.
     Body opcional: { dest_email?: '...', mensaje?: '...' }
@@ -215,6 +224,7 @@ def enviar_factura(invoice_id):
 
 @bp.route('/alta-cliente', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def alta_cliente():
     """Crea cliente + suscripción + recibo alta + procesa pago en Odoo.
     Body: {cliente: {...}, suscripcion: {...}, alta: {...}}
@@ -336,10 +346,12 @@ def paycomet_callback():
         log.info(f'PayComet callback order={order} ok={ok} body={d}')
         if not order:
             return jsonify({'ok': False, 'error': 'order missing'}), 400
-        # Localizar invoice
+        # Localizar invoice. CRÍTICO multi-company: si dos managers usan el
+        # mismo formato de referencia, _call sin scope cogería la primera.
+        # _call_scoped fuerza company_id del manager actual.
         from ..odoo_cuotas import get_cuotas
-        oc = get_cuotas()
-        inv_ids = oc._call('account.move','search',[('name','=', order)], limit=1)
+        oc = get_cuotas(id_manager=getattr(g, 'id_manager', None))
+        inv_ids = oc._call_scoped('account.move','search',[('name','=', order)], limit=1)
         if not inv_ids:
             log.warning(f'PayComet callback: invoice {order} no encontrado')
             return jsonify({'ok': False, 'error': 'invoice not found'}), 200

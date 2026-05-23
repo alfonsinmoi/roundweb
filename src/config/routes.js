@@ -6,10 +6,14 @@ import {
 // Cada item lleva `perm`: clave del catálogo de permisos para gating.
 // Si el perfil del usuario no cubre esa sección, el item se oculta.
 // Manager NoofitPro (sin perfil) ve todo siempre.
+//
+// `featureFlag`: opcional. Mapea a las features del manager devueltas por
+// /api/manager/odoo-status. Si el flag está y la feature está a `false`,
+// el item se oculta del menú (módulos que requieren Odoo desplegado).
 export const navItems = [
   { to: '/dashboard',          icon: LayoutDashboard, label: 'Dashboard',  perm: 'inicio' },
   { to: '/clientes',           icon: Users,           label: 'Clientes',   perm: 'clientes' },
-  { id: 'crm', icon: UserPlus, label: 'CRM', perm: 'crm',
+  { id: 'crm', icon: UserPlus, label: 'CRM', perm: 'crm', featureFlag: 'crm',
     children: [
       { to: '/crm',            label: 'Leads',             perm: 'crm.leads' },
       { to: '/notificaciones', label: 'Clientes actuales', perm: 'crm.clientes_actuales' },
@@ -20,17 +24,19 @@ export const navItems = [
   { to: '/clases',             icon: CalendarDays,    label: 'Clases',     perm: 'clases' },
   { id: 'economico', icon: Euro, label: 'Económico', perm: 'economico',
     children: [
-      { to: '/cuotas-clientes', label: 'Cuotas mensuales', perm: 'economico.cuotas_mensuales' },
-      { to: '/contabilidad',    label: 'Contabilidad',     perm: 'economico.contabilidad' },
+      { to: '/cuotas-clientes', label: 'Cuotas mensuales', perm: 'economico.cuotas_mensuales', featureFlag: 'cuotas' },
+      { to: '/contabilidad',    label: 'Contabilidad',     perm: 'economico.contabilidad',     featureFlag: 'contabilidad' },
     ],
   },
   { to: '/informe-asistencia', icon: ClipboardCheck,  label: 'Informe Asistencia', perm: 'informe_asistencia' },
   { to: '/configuracion',      icon: Settings,        label: 'Configuración',      perm: 'configuracion' },
 ]
 
-// Items solo visibles cuando NO se está impersonando (solo para el gestor)
+// Items solo visibles cuando NO se está impersonando (solo para el gestor).
+// `featureFlag: 'contabilidad'` oculta "Config. ERP" si el manager NO tiene
+// Odoo desplegado (no tiene ERP que configurar todavía).
 export const managerItems = [
-  { to: '/erp-configuracion', icon: Database, label: 'Config. ERP' },
+  { to: '/erp-configuracion', icon: Database, label: 'Config. ERP', featureFlag: 'contabilidad' },
 ]
 
 export const configItems = []

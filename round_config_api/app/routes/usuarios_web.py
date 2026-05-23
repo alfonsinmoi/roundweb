@@ -53,13 +53,15 @@ tu email y la contraseña que elijas.</p>
     try:
         enviar(usuario['email'], subject, body_text, body_html=body_html,
                id_manager=usuario['id_manager'], id_trainer=usuario.get('id_trainer'))
-        return True
+        return True, None
     except Exception as e:
         log.warning(f'send welcome fail: {e}')
-        return False
+        return False, str(e)[:300]
 
 
 def _send_reset_by_manager(usuario):
+    """Envía el email de reset. Devuelve (ok, detalle). NO traga excepciones
+    silenciosamente — el caller debe poder reaccionar al fallo."""
     link = f"{WEB_URL}/reset?token={usuario['reset_token']}"
     subject = 'Tu contraseña Round se ha restablecido'
     body_text = (
@@ -75,10 +77,10 @@ def _send_reset_by_manager(usuario):
     try:
         enviar(usuario['email'], subject, body_text, body_html=body_html,
                id_manager=usuario['id_manager'], id_trainer=usuario.get('id_trainer'))
-        return True
+        return True, None
     except Exception as e:
         log.warning(f'send reset fail: {e}')
-        return False
+        return False, str(e)[:300]
 
 
 # ─── ENDPOINTS ─────────────────────────────────────────────────────────────────
@@ -164,14 +166,19 @@ def create_usuario():
             log.exception('create_usuario')
             return jsonify({'ok': False, 'error': 'db_error', 'detail': str(e)}), 500
 
-    _send_welcome(row)
-    audit(row['id'], email, 'usuario_creado', f'by_manager={g.id_manager}')
+    ok_mail, detalle_mail = _send_welcome(row)
+    audit(row['id'], email, 'usuario_creado', f'by_manager={g.id_manager} mail_ok={ok_mail}')
     log_action(actor_from_request(), entidad='usuario_web', entidad_id=row['id'],
                accion='create', resumen=f"Usuario creado: {email}",
                cambios={'after': {'email': email, 'nombre': nombre, 'perfil_id': perfil_id}})
     return jsonify({'ok': True, 'usuario': {
         'id': row['id'], 'email': row['email'], 'nombre': row['nombre'],
-    }})
+    }, 'email_sent': ok_mail,
+       'email_error': detalle_mail if not ok_mail else None,
+       'email_warning': (
+           'Usuario creado en BD, pero NO se ha podido enviar el email de '
+           'bienvenida. Comprueba la configuración SMTP en Configuración → Email.'
+       ) if not ok_mail else None})
 
 
 @bp.route('/<int:uid>', methods=['PATCH', 'PUT'])
@@ -204,7 +211,11 @@ def update_usuario(uid):
 @bp.route('/<int:uid>/reset-password', methods=['POST'])
 @auth_required
 def reset_password(uid):
-    """Manager fuerza un reset. Genera nuevo token y manda email."""
+    """Manager fuerza un reset. Genera nuevo token y manda email.
+
+    Si el envío del email falla, REVIERTE el cambio en BD (sin token, sin
+    must_change_password) y devuelve HTTP 502. Así el usuario no queda
+    bloqueado esperando un enlace que nunca recibirá."""
     token = random_token()
     exp = dt.datetime.utcnow() + dt.timedelta(minutes=RESET_TTL_MINUTES)
     with get_conn() as conn, conn.cursor() as cur:
@@ -219,7 +230,25 @@ def reset_password(uid):
         row = cur.fetchone()
     if not row:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
-    _send_reset_by_manager(row)
+
+    ok, detalle = _send_reset_by_manager(row)
+    if not ok:
+        # Rollback: dejar al usuario como estaba antes del intento
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE usuario_web
+                   SET reset_token=NULL, reset_exp=NULL,
+                       must_change_password=FALSE
+                 WHERE id_manager=%s AND id=%s
+            """, (str(g.id_manager), uid))
+        audit(uid, row['email'], 'pwd_reset_failed', f'by={g.id_manager} err={detalle}')
+        return jsonify({'ok': False, 'error': 'email_send_failed',
+                        'detalle': detalle,
+                        'sugerencia': 'Comprueba la configuración SMTP en Configuración → Email. '
+                                      'Si usas Gmail con verificación en 2 pasos, debes usar una '
+                                      'contraseña de aplicación (16 caracteres) en lugar de la '
+                                      'contraseña normal de la cuenta.'}), 502
+
     audit(uid, row['email'], 'pwd_reset_by_manager', f'by={g.id_manager}')
     log_action(actor_from_request(), entidad='usuario_web', entidad_id=uid,
                accion='reset_password', resumen=f"Reset password forzado: {row['email']}")
@@ -242,7 +271,14 @@ def resend_verification(uid):
         row = cur.fetchone()
     if not row:
         return jsonify({'ok': False, 'error': 'not_found_or_already_verified'}), 404
-    _send_welcome(row)
+    ok_mail, detalle_mail = _send_welcome(row)
+    if not ok_mail:
+        audit(uid, row['email'], 'verification_resend_failed', f'by={g.id_manager} err={detalle_mail}')
+        return jsonify({'ok': False, 'error': 'email_send_failed',
+                        'detalle': detalle_mail,
+                        'sugerencia': 'Comprueba la configuración SMTP en Configuración → Email. '
+                                      'Con Gmail + verificación en 2 pasos hay que usar contraseña '
+                                      'de aplicación (16 caracteres).'}), 502
     audit(uid, row['email'], 'verification_resent', f'by={g.id_manager}')
     return jsonify({'ok': True})
 

@@ -17,19 +17,79 @@ log = logging.getLogger(__name__)
 
 
 class OdooCuotas:
-    def __init__(self):
+    """Cliente XML-RPC a Odoo, con awareness de multi-company.
+
+    Cada instancia está vinculada a UN manager Round (`id_manager`). De ahí
+    resuelve la `company_id` en Odoo (vía `manager_config.odoo_company_id`)
+    y, opcionalmente, la URL de Odoo si el manager tiene una propia
+    (`manager_config.odoo_url`). Si `id_manager` es None se usan los
+    defaults del `.env` (`ODOO_URL`, `ODOO_COMPANY`) — comportamiento
+    histórico para no romper código legacy.
+
+    Toda búsqueda que pase por `_call_scoped(...)` lleva inyectado
+    automáticamente `('company_id','=',self.company_id)` en el dominio,
+    evitando filtraciones entre managers cuando convivan varias compañías
+    en el mismo Odoo.
+    """
+
+    def __init__(self, id_manager=None):
         self._uid = None
         self._models = None
+        self._id_manager = str(id_manager) if id_manager else None
+        # Lazy: company_id y odoo_url se resuelven en la primera conexión
+        self._company_id = None
+        self._odoo_url = None
 
+    # ── Resolución de identidad del manager ─────────────────────────────────
+    def _ensure_identity(self):
+        """Resuelve company_id y odoo_url desde manager_config (lazy)."""
+        if self._company_id is not None:
+            return
+        if self._id_manager:
+            try:
+                from .db import get_conn
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT odoo_company_id, odoo_url
+                          FROM manager_config
+                         WHERE id_manager = %s
+                    """, (self._id_manager,))
+                    row = cur.fetchone()
+                if row and row.get('odoo_company_id'):
+                    self._company_id = int(row['odoo_company_id'])
+                    self._odoo_url = (row.get('odoo_url') or '').strip() or None
+                    return
+                log.warning(f'OdooCuotas: manager_id={self._id_manager} '
+                            f'no tiene odoo_company_id en BD; usando default '
+                            f'cfg.ODOO_COMPANY={cfg.ODOO_COMPANY}')
+            except Exception as e:
+                log.exception(f'OdooCuotas: error resolviendo identidad '
+                              f'del manager {self._id_manager}: {e}')
+        # Fallback al .env (manager histórico Round, id=17675, company_id=3)
+        self._company_id = int(cfg.ODOO_COMPANY)
+        self._odoo_url = None
+
+    @property
+    def company_id(self):
+        self._ensure_identity()
+        return self._company_id
+
+    @property
+    def odoo_url(self):
+        self._ensure_identity()
+        return self._odoo_url or cfg.ODOO_URL
+
+    # ── XML-RPC ────────────────────────────────────────────────────────────
     def _connect(self):
         if self._uid is not None:
             return True
         try:
-            common = xmlrpc.client.ServerProxy(f'{cfg.ODOO_URL}/xmlrpc/2/common', allow_none=True)
+            url = self.odoo_url  # resuelve identity también
+            common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common', allow_none=True)
             self._uid = common.authenticate(cfg.ODOO_DB, cfg.ODOO_USER, cfg.ODOO_PWD, {})
             if not self._uid:
                 return False
-            self._models = xmlrpc.client.ServerProxy(f'{cfg.ODOO_URL}/xmlrpc/2/object', allow_none=True)
+            self._models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object', allow_none=True)
             return True
         except Exception as e:
             log.error(f'Odoo connect: {e}')
@@ -62,6 +122,29 @@ class OdooCuotas:
                 return True
             raise
 
+    # ── Helper defensivo multi-company ─────────────────────────────────────
+    @staticmethod
+    def _domain_has_company(domain):
+        """Inspecciona el dominio para ver si ya hay una tupla company_id."""
+        if not domain:
+            return False
+        for term in domain:
+            if isinstance(term, (list, tuple)) and len(term) >= 1 and term[0] == 'company_id':
+                return True
+        return False
+
+    def _call_scoped(self, model, method, domain, *args, **kwargs):
+        """Como `_call` pero auto-inyecta `('company_id','=',self.company_id)`
+        en el dominio si no estaba ya. Solo para métodos que aceptan dominio
+        como primer argumento: search, search_read, search_count.
+
+        IMPORTANTE: para `read([ids])` o `create({...})` NO usar esto — los
+        primeros argumentos no son un dominio.
+        """
+        if not self._domain_has_company(domain):
+            domain = [('company_id', '=', self.company_id)] + list(domain or [])
+        return self._call(model, method, domain, *args, **kwargs)
+
     # ── Helpers de fechas ────────────────────────────────────────────────────
     def _periodos_mes(self, mes_str):
         """mes_str = 'YYYY-MM' → (fecha_inicio, fecha_fin) de ese mes."""
@@ -79,9 +162,9 @@ class OdooCuotas:
         un borrador/posted del mes, crea account.move en estado draft."""
         inicio, fin = self._periodos_mes(mes_str)
 
-        subs = self._call('round.subscription','search_read',
+        subs = self._call_scoped('round.subscription','search_read',
             [('estado','=','activa')],
-            ['id','partner_id','cuota_id','periodicidad','forma_pago','mandate_id',
+            fields=['id','partner_id','cuota_id','periodicidad','forma_pago','mandate_id',
              'pasarela_id','trainer_analytic_id','company_id','descuentos_activos_ids',
              'fecha_inicio','token_tarjeta'])
         log.info(f'Preemisión {mes_str}: {len(subs)} suscripciones activas')
@@ -91,7 +174,7 @@ class OdooCuotas:
         for s in subs:
             sub_id = s['id']
             # Comprobar si ya existe recibo de este mes
-            existing = self._call('account.move','search',
+            existing = self._call_scoped('account.move','search',
                 [('round_subscription_id','=',sub_id),
                  ('move_type','=','out_invoice'),
                  ('invoice_date','>=',str(inicio)),
@@ -117,11 +200,23 @@ class OdooCuotas:
             if tipo == 'alta':
                 descripcion += ' (alta)'
 
+            # Multi-trainer (Fase 4): si la subscription tiene
+            # trainer_analytic_id, propagar a analytic_distribution de la
+            # línea para que el reporte por trainer funcione en Odoo.
+            line_extras = {}
+            tai = s.get('trainer_analytic_id')
+            if tai:
+                # tai puede venir como [id, "nombre"] o como int
+                aid = tai[0] if isinstance(tai, (list, tuple)) else tai
+                if aid:
+                    line_extras['analytic_distribution'] = {str(aid): 100.0}
+
             line_vals = [(0,0,{
                 'name': descripcion,
                 'quantity': 1,
                 'price_unit': calc['precio_final'],
                 'product_id': cuota['product_id'][0] if cuota.get('product_id') else False,
+                **line_extras,
             })]
             # Notas en narration (queda como referencia para el banco)
             narration = ''
@@ -143,8 +238,8 @@ class OdooCuotas:
             # Mandato + payment_mode si SEPA
             if s.get('forma_pago') == 'sepa' and s.get('mandate_id'):
                 invoice_vals['mandate_id'] = s['mandate_id'][0]
-                # Payment mode SEPA Direct Debit
-                pm = self._call('account.payment.mode','search',
+                # Payment mode SEPA Direct Debit (per-company en Odoo)
+                pm = self._call_scoped('account.payment.mode','search',
                     [('payment_method_id.code','=','sepa_direct_debit')], limit=1)
                 if pm:
                     invoice_vals['payment_mode_id'] = pm[0]
@@ -181,9 +276,9 @@ class OdooCuotas:
                 if inicio_sub > mes_str: return False
             return True
         # Buscar último recibo
-        last = self._call('account.move','search_read',
+        last = self._call_scoped('account.move','search_read',
             [('round_subscription_id','=',sub_id),('move_type','=','out_invoice')],
-            ['invoice_date'], limit=1, order='invoice_date desc')
+            fields=['invoice_date'], limit=1, order='invoice_date desc')
         if not last:
             return True  # nunca se ha emitido → emitir ahora
         last_date = last[0].get('invoice_date')
@@ -197,7 +292,7 @@ class OdooCuotas:
 
     def _detectar_tipo(self, sub_id):
         """Si la suscripción no tiene recibos previos → alta. Si los tiene → mensualidad."""
-        n = self._call('account.move','search_count',
+        n = self._call_scoped('account.move','search_count',
             [('round_subscription_id','=',sub_id),('move_type','=','out_invoice')])
         return 'alta' if n == 0 else 'mensualidad'
 
@@ -227,11 +322,11 @@ class OdooCuotas:
 
         # Modificaciones vigentes este mes
         inicio, fin = self._periodos_mes(mes_str)
-        mods = self._call('round.modificacion.recibo','search_read',
+        mods = self._call_scoped('round.modificacion.recibo','search_read',
             [('subscription_id','=',s['id']),('estado','=','activa'),
              ('fecha_desde','<=',str(fin)),
              '|',('fecha_hasta','=',False),('fecha_hasta','>=',str(inicio))],
-            ['id','tipo','valor','razon'])
+            fields=['id','tipo','valor','razon'])
         mod_descs, mod_total = [], 0.0
         for m in mods:
             v = float(m['valor'])
@@ -468,11 +563,11 @@ class OdooCuotas:
                 mods_aplicadas = []
                 if mes_str:
                     inicio, fin = self._periodos_mes(mes_str)
-                    mods = self._call('round.modificacion.recibo','search_read',
+                    mods = self._call_scoped('round.modificacion.recibo','search_read',
                         [('subscription_id','=',sub_id),('estado','=','activa'),
                          ('fecha_desde','<=',str(fin)),
                          '|',('fecha_hasta','=',False),('fecha_hasta','>=',str(inicio))],
-                        ['tipo','valor','razon'])
+                        fields=['tipo','valor','razon'])
                     for mo in mods:
                         v = float(mo['valor'])
                         if mo['tipo'] == 'descuento':
@@ -601,7 +696,7 @@ class OdooCuotas:
            4. Registrar pago automático para SEPA + tokenización (se asume cobrado)
         """
         inicio, fin = self._periodos_mes(mes_str)
-        borradores = self._call('account.move','search',
+        borradores = self._call_scoped('account.move','search',
             [('state','=','draft'),('move_type','=','out_invoice'),
              ('invoice_date','>=',str(inicio)),('invoice_date','<=',str(fin)),
              ('round_subscription_id','!=',False)])
@@ -615,13 +710,13 @@ class OdooCuotas:
         # Auto-pago SEPA + tokenización (asumimos cobrado salvo devolución posterior)
         cobrados_auto = self._registrar_pagos_auto(borradores)
 
-        # Crear payment.order SEPA
-        sepa_pm = self._call('account.payment.mode','search',
+        # Crear payment.order SEPA (payment.mode es per-company en Odoo)
+        sepa_pm = self._call_scoped('account.payment.mode','search',
             [('payment_method_id.code','=','sepa_direct_debit')],limit=1)
         sepa_attachment_id = None
         sepa_filename = None
         if sepa_pm:
-            sepa_invoices = self._call('account.move','search',
+            sepa_invoices = self._call_scoped('account.move','search',
                 [('id','in',borradores),('payment_mode_id','=',sepa_pm[0])])
             if sepa_invoices:
                 po_id = self._call('account.payment.order','create',{
@@ -785,9 +880,21 @@ class OdooCuotas:
         }
 
 
-_singleton = None
-def get_cuotas():
-    global _singleton
-    if _singleton is None:
-        _singleton = OdooCuotas()
-    return _singleton
+# Cache de instancias por manager. La identidad se resuelve lazy en la
+# primera llamada, así que crear la instancia es barato.
+# Llamadas sin id_manager (legacy) reciben la instancia 'default' que usa
+# los valores del .env (manager histórico Round, company_id=3).
+_instances = {}
+def get_cuotas(id_manager=None):
+    """Devuelve la instancia OdooCuotas para el manager dado.
+
+    - `get_cuotas()` → instancia default (compatible con código legacy).
+    - `get_cuotas(id_manager='17675')` → instancia ligada a ese manager,
+      con su company_id y odoo_url resueltos desde manager_config.
+    """
+    key = str(id_manager or 'default')
+    inst = _instances.get(key)
+    if inst is None:
+        inst = OdooCuotas(id_manager=id_manager)
+        _instances[key] = inst
+    return inst

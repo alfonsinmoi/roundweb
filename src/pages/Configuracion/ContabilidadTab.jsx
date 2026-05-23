@@ -10,6 +10,8 @@ import {
   contabListadosGet, contabListadoVisPut,
 } from '../../utils/configApi'
 import { getEntrenadores } from '../../utils/api'
+import { useOdooStatus } from '../../hooks/useOdooStatus'
+import TrainersContabilidad from '../../components/TrainersContabilidad'
 
 const TIPOS = [
   { id: 'gasto',     label: 'Gasto' },
@@ -29,9 +31,15 @@ const COLORES = ['amber','blue','green','red','purple','cyan','orange','gray']
 export default function ContabilidadTab({ identity }) {
   const toast = useToast()
   const [tab, setTab] = useState('trainers')   // trainers | categorias | listados
+  // En Fase 6 esta pestaña SOLO se ve si el módulo Contabilidad ya está
+  // activado (gateada vía featureFlag='contabilidad' en Configuracion.jsx).
+  // Ya no necesitamos el banner de activación — vive en Suscripciones.
 
   return (
     <div>
+      {/* Analytic per-trainer (heredar/no heredar contabilidad) */}
+      <TrainersContabilidad identity={identity} />
+
       <div role="tablist" style={{ display: 'flex', gap: 6, marginBottom: 16, borderBottom: '1px solid var(--line)' }}>
         {[
           ['trainers', '⚙️ Activación per trainer'],

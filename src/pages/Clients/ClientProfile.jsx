@@ -22,6 +22,7 @@ import {
   getSalasByRange, getUsuariosBySala,
 } from '../../utils/api'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
+import { useOdooStatus } from '../../hooks/useOdooStatus'
 import AltaClienteModal from '../../components/AltaClienteModal'
 import InformesEstadoFisicoButton from '../../components/InformesEstadoFisicoButton'
 import ClienteNotasTab from '../../components/notas/ClienteNotasTab'
@@ -292,6 +293,9 @@ export default function ClientProfile() {
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [actionLoading, setActionLoading] = useState('')
+  // Si el manager no tiene Odoo desplegado, ocultamos las cards/botones
+  // relacionados (cuotas, descuentos, modificaciones, familiares, alta ERP).
+  const { odooEnabled: hasOdoo } = useOdooStatus()
 
   const [confirmArchivar, setConfirmArchivar] = useState(false)
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
@@ -354,9 +358,18 @@ export default function ClientProfile() {
   )
 
   if (notFound || !cliente) return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '120px 0' }}>
-      <p style={{ color: 'var(--text-3)', fontSize: 15 }}>Cliente no encontrado</p>
-      <Btn onClick={() => navigate('/clientes')} variant="secondary"><ArrowLeft size={14} aria-hidden="true" /> Volver</Btn>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '120px 0', textAlign: 'center', maxWidth: 480, margin: '0 auto' }}>
+      <p style={{ color: 'var(--text-1)', fontSize: 16, fontWeight: 600 }}>
+        Cliente no encontrado
+      </p>
+      <p style={{ color: 'var(--text-3)', fontSize: 13, lineHeight: 1.55 }}>
+        Este cliente (id <code style={{ fontFamily: 'var(--font-mono)' }}>{id}</code>) no aparece
+        en tu listado de NoofitPro. Posibles causas:
+        <br/>· No pertenece a tu manager.
+        <br/>· La sesión NoofitPro caducó (cierra y vuelve a entrar).
+        <br/>· El cliente fue eliminado.
+      </p>
+      <Btn onClick={() => navigate('/clientes')} variant="secondary"><ArrowLeft size={14} aria-hidden="true" /> Volver al listado</Btn>
     </div>
   )
 
@@ -449,10 +462,12 @@ export default function ClientProfile() {
         </div>
       </Card>
 
-      {/* Tabs */}
+      {/* Tabs. La pestaña "Recibos" depende de Odoo (lee `cuotas/cliente/<id>`
+          que toca account.move). Sin Odoo desplegado la ocultamos del
+          listado para no exponer un botón que terminaría en 500. */}
       <div role="tablist" aria-label="Secciones del cliente"
            style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4, marginBottom: 24 }}>
-        {tabs.map(({ id: tid, label, icon: Icon }) => (
+        {tabs.filter(t => t.id !== 'cuotas' || hasOdoo).map(({ id: tid, label, icon: Icon }) => (
           <button key={tid} role="tab" aria-selected={tab === tid} onClick={() => setTab(tid)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
@@ -474,7 +489,7 @@ export default function ClientProfile() {
       {tab === 'notas'           && <ClienteNotasTab cliente={cliente} />}
       {tab === 'clases'          && <TabClases clienteId={cliente.id} />}
       {tab === 'analisis'        && <TabAnalisis cliente={cliente} />}
-      {tab === 'cuotas'          && <TabCuotas cliente={cliente} />}
+      {tab === 'cuotas'          && hasOdoo && <TabCuotas cliente={cliente} />}
       {tab === 'notificaciones'  && <TabNotificaciones cliente={cliente} />}
       {/* Compatibilidad: enlaces antiguos ?tab=erp → redirigen a personal */}
       {tab === 'erp'             && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
@@ -573,6 +588,11 @@ function TabPersonal({ cliente, onClienteUpdate }) {
   const [editForm, setEditForm] = useState(null)
   const [authOpen, setAuthOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  // hasOdoo se usa para ocultar cards que dependen de Odoo desplegado
+  // (Cuotas, Descuentos, Modificaciones, Familiares). Tiene que estar
+  // en este scope porque `TabPersonal` es función a nivel de módulo,
+  // no anidada en ClientProfile.
+  const { odooEnabled: hasOdoo } = useOdooStatus()
 
   // Categoría: la guardamos en NUESTRA BD, no en NoofitPro
   const { categorias, getCategoria, setCategoria } = useCategoriasMap()
@@ -687,16 +707,21 @@ function TabPersonal({ cliente, onClienteUpdate }) {
 
         {/* Columna 2 del grid padre: Categoría + Descuentos + Modificaciones
             apiladas verticalmente. Forma una "celda" del grid auto-fit, así
-            cabe junto a "Datos contacto" y "Cuota y fechas". */}
+            cabe junto a "Datos contacto" y "Cuota y fechas".
+            Las cards de Descuentos / Modificaciones / Familiares dependen
+            de Odoo (replican catálogos a `round.subscription`); solo se
+            muestran si el manager tiene Odoo desplegado. La de Categoría
+            es BD local y siempre visible. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <CategoriaYFechasCard cliente={cliente} />
-          <DescuentosClienteCard cliente={cliente} />
-          <ModificacionesClienteCard cliente={cliente} />
-          <FamiliaresClienteCard cliente={cliente} />
+          {hasOdoo && <DescuentosClienteCard cliente={cliente} />}
+          {hasOdoo && <ModificacionesClienteCard cliente={cliente} />}
+          {hasOdoo && <FamiliaresClienteCard cliente={cliente} />}
         </div>
 
-        {/* Columna 3: Cuota y fechas (la card grande con sus subs) */}
-        <CuotasClienteCard cliente={cliente} />
+        {/* Columna 3: Cuota y fechas (la card grande con sus subs).
+            Toda esta card requiere Odoo desplegado. */}
+        {hasOdoo && <CuotasClienteCard cliente={cliente} />}
 
         {/* Estado */}
         <Card style={{ padding: 24 }}>

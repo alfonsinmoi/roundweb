@@ -5,6 +5,7 @@ import Header from './Header'
 import Breadcrumbs from './Breadcrumbs'
 import ErrorBoundary from './ErrorBoundary'
 import BannerNuevosClientes from './BannerNuevosClientes'
+import BannerNoRegistrado from './BannerNoRegistrado'
 import NotasBanner from './notas/NotasBanner'
 import BannerTrimestre from './BannerTrimestre'
 import { prefetchPopularRoutes } from '../utils/prefetch'
@@ -65,6 +66,7 @@ export default function Layout() {
 
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <Header onMenuClick={() => setSidebarOpen(true)} />
+        <BannerNoRegistrado />
         <BannerTrimestre />
         <NotasBanner />
         <BannerNuevosClientes />

@@ -8,6 +8,7 @@ import os, json, logging, re, time
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required
+from ..odoo_guard import require_feature
 from ..db import get_conn
 from ..odoo_cuotas import get_cuotas
 from .centros import buscar_centro, proximo_centro_round_robin, get_centros_activos
@@ -244,6 +245,7 @@ def crear_lead_publico():
 # ── Listar leads para el dashboard Round (manager + trainer) ────────────────
 @bp.route('/leads/<int:lead_id>', methods=['PATCH'])
 @auth_required
+@require_feature('crm')
 def update_lead(lead_id):
     """Actualiza un lead (etapa, prioridad, notas...).
     Body: { stage_id?, priority?, description?, name?, notes?, lost_reason_id? }
@@ -366,6 +368,7 @@ def update_lead(lead_id):
 
 @bp.route('/stages', methods=['GET'])
 @auth_required
+@require_feature('crm')
 def list_stages():
     """Lista las etapas del pipeline CRM (crm.stage)."""
     try:
@@ -382,6 +385,7 @@ def list_stages():
 
 @bp.route('/leads', methods=['GET'])
 @auth_required
+@require_feature('crm')
 def list_leads():
     """Manager ve todos. Trainer (impersonando) ve solo los suyos."""
     try:
@@ -423,18 +427,28 @@ def list_leads():
                     if key not in reservas_por_lead:
                         reservas_por_lead[key] = r
 
-        # Enriquecer con datos de Odoo crm.lead
+        # Enriquecer con datos de Odoo crm.lead. Usamos search_read en lugar de
+        # read([ids]) — el read falla ENTERO si algún id no pasa las record
+        # rules (p.ej. multi-company: leads de otra compañía bloquean toda la
+        # llamada). search_read filtra silenciosamente los inaccesibles y
+        # devuelve los visibles. Si un lead queda fuera de leads_by_id se
+        # devuelve con `lead: {}` y avisamos en logs.
         oc = get_cuotas()
         ids = [a['odoo_lead_id'] for a in asignaciones if a.get('odoo_lead_id')]
         leads_by_id = {}
         if ids:
             try:
-                arr = oc._call('crm.lead', 'read', ids,
-                    ['id','name','contact_name','email_from','phone','stage_id',
-                     'priority','create_date','date_deadline','description','probability'])
+                arr = oc._call('crm.lead', 'search_read',
+                    [('id', 'in', ids)],
+                    fields=['id','name','contact_name','email_from','phone','stage_id',
+                            'priority','create_date','date_deadline','description','probability'])
                 leads_by_id = {l['id']: l for l in arr}
+                faltan = sorted(set(ids) - set(leads_by_id.keys()))
+                if faltan:
+                    log.warning(f'crm.lead search_read: {len(faltan)} leads no accesibles '
+                                f'(probable record rule multi-company): {faltan}')
             except Exception as e:
-                log.warning(f'crm.lead read: {e}')
+                log.warning(f'crm.lead search_read: {e}')
 
         out = []
         now = datetime.now(timezone.utc)
@@ -504,6 +518,7 @@ def list_leads():
 
 @bp.route('/lost-reasons', methods=['GET'])
 @auth_required
+@require_feature('crm')
 def list_lost_reasons():
     """Lista los motivos de pérdida estándar (frontend los usa en dropdown)."""
     return jsonify({'ok': True, 'reasons': LOST_REASONS})
@@ -511,6 +526,7 @@ def list_lost_reasons():
 
 @bp.route('/funnel', methods=['GET'])
 @auth_required
+@require_feature('crm')
 def funnel_analytics():
     """Analítica del embudo: conteo por etapa, tasa de conversión, motivos perdida,
     tiempo medio entre etapas, score medio. Manager ve todos, trainer solo los suyos."""
@@ -531,10 +547,14 @@ def funnel_analytics():
         leads_by_id = {}
         if ids:
             try:
-                arr = oc._call('crm.lead','read', ids, ['id','stage_id'])
+                arr = oc._call('crm.lead', 'search_read',
+                    [('id', 'in', ids)], fields=['id','stage_id'])
                 leads_by_id = {l['id']: l for l in arr}
+                faltan = sorted(set(ids) - set(leads_by_id.keys()))
+                if faltan:
+                    log.warning(f'funnel: {len(faltan)} leads bloqueados por rules: {faltan}')
             except Exception as e:
-                log.warning(f'funnel odoo read: {e}')
+                log.warning(f'funnel search_read: {e}')
 
         # ── Conteo por etapa actual + perdidos ──
         stages_count = defaultdict(int)

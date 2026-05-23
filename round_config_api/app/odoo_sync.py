@@ -17,25 +17,83 @@ log = logging.getLogger(__name__)
 
 
 class OdooSync:
-    def __init__(self):
+    """Cliente XML-RPC de sincronización. Multi-company aware igual que
+    OdooCuotas (ver doc allí). Si Odoo está caído devuelve None en vez de
+    levantar excepción (sync es secundario, Postgres es la fuente)."""
+
+    def __init__(self, id_manager=None):
         self._uid = None
         self._models = None
+        self._id_manager = str(id_manager) if id_manager else None
+        self._company_id = None
+        self._odoo_url = None
+
+    def _ensure_identity(self):
+        if self._company_id is not None:
+            return
+        if self._id_manager:
+            try:
+                from .db import get_conn
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT odoo_company_id, odoo_url
+                          FROM manager_config
+                         WHERE id_manager = %s
+                    """, (self._id_manager,))
+                    row = cur.fetchone()
+                if row and row.get('odoo_company_id'):
+                    self._company_id = int(row['odoo_company_id'])
+                    self._odoo_url = (row.get('odoo_url') or '').strip() or None
+                    return
+                log.warning(f'OdooSync: manager_id={self._id_manager} sin '
+                            f'odoo_company_id; usando default '
+                            f'cfg.ODOO_COMPANY={cfg.ODOO_COMPANY}')
+            except Exception as e:
+                log.warning(f'OdooSync: error resolviendo identidad: {e}')
+        self._company_id = int(cfg.ODOO_COMPANY)
+        self._odoo_url = None
+
+    @property
+    def company_id(self):
+        self._ensure_identity()
+        return self._company_id
+
+    @property
+    def odoo_url(self):
+        self._ensure_identity()
+        return self._odoo_url or cfg.ODOO_URL
 
     def _connect(self):
         if self._uid is not None:
             return True
         try:
-            common = xmlrpc.client.ServerProxy(f'{cfg.ODOO_URL}/xmlrpc/2/common', allow_none=True)
+            url = self.odoo_url
+            common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common', allow_none=True)
             self._uid = common.authenticate(cfg.ODOO_DB, cfg.ODOO_USER, cfg.ODOO_PWD, {})
             if not self._uid:
                 log.warning('Odoo: autenticación devolvió uid vacío')
                 return False
-            self._models = xmlrpc.client.ServerProxy(f'{cfg.ODOO_URL}/xmlrpc/2/object', allow_none=True)
+            self._models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object', allow_none=True)
             log.info(f'Odoo conectado uid={self._uid}')
             return True
         except Exception as e:
             log.warning(f'Odoo: no se pudo conectar: {e}')
             return False
+
+    # ── Helper defensivo multi-company (igual que OdooCuotas) ──────────────
+    @staticmethod
+    def _domain_has_company(domain):
+        if not domain:
+            return False
+        for term in domain:
+            if isinstance(term, (list, tuple)) and len(term) >= 1 and term[0] == 'company_id':
+                return True
+        return False
+
+    def _call_scoped(self, model, method, domain, *args, **kwargs):
+        if not self._domain_has_company(domain):
+            domain = [('company_id', '=', self.company_id)] + list(domain or [])
+        return self._call(model, method, domain, *args, **kwargs)
 
     def _call(self, model, method, *args, **kwargs):
         if not self._connect():
@@ -226,9 +284,16 @@ class OdooSync:
         return sub_ids
 
 
-_singleton = None
-def get_sync():
-    global _singleton
-    if _singleton is None:
-        _singleton = OdooSync()
-    return _singleton
+# Cache de instancias por manager — ver get_cuotas() para detalles.
+_instances = {}
+def get_sync(id_manager=None):
+    """Devuelve la instancia OdooSync para el manager dado.
+
+    - `get_sync()` → instancia default (legacy).
+    - `get_sync(id_manager='17675')` → ligada a ese manager."""
+    key = str(id_manager or 'default')
+    inst = _instances.get(key)
+    if inst is None:
+        inst = OdooSync(id_manager=id_manager)
+        _instances[key] = inst
+    return inst

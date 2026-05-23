@@ -3,6 +3,7 @@ import { Settings, ChevronRight } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Card } from '../../components/UI'
 import { getRoundIdentity } from '../../utils/configApi'
+import { useOdooStatus } from '../../hooks/useOdooStatus'
 import CuotasTab        from './CuotasTab'
 import DescuentosTab    from './DescuentosTab'
 import ModificacionesTab from './ModificacionesTab'
@@ -19,19 +20,39 @@ import ContabilidadTab    from './ContabilidadTab'
 import FormaFacturarTab   from './FormaFacturarTab'
 import PerfilesTab        from './PerfilesTab'
 import UsuariosWebTab     from './UsuariosWebTab'
+import SuscripcionesTab   from './SuscripcionesTab'
 
+// `featureFlag`: si está y la feature está a `false` en useOdooStatus, la
+// pestaña se oculta. Convención:
+//   - 'cuotas': pestañas que sólo tienen sentido con Odoo desplegado (sus
+//     catálogos se replican a Odoo: cuotas, descuentos, modificaciones,
+//     forma de facturar).
+//   - 'contabilidad': pasarelas PayComet (los pagos llegan a Odoo).
+//   - ninguno: pestaña independiente de Odoo (categorías, email, perfiles…).
+// La pestaña 'contab' (Contabilidad) NO se gatea: es donde el manager
+// activa Odoo por primera vez.
 const TABS_BASE = [
-  { id: 'cuotas',         label: 'Cuotas',         comp: CuotasTab },
-  { id: 'descuentos',     label: 'Descuentos',     comp: DescuentosTab },
-  { id: 'modificaciones', label: 'Modificaciones', comp: ModificacionesTab },
-  { id: 'formas_pago',    label: 'Formas de pago', comp: FormasPagoInfo },
-  { id: 'periodicidad',   label: 'Periodicidad',   comp: PeriodicidadInfo },
+  { id: 'cuotas',         label: 'Cuotas',         comp: CuotasTab,         featureFlag: 'cuotas' },
+  { id: 'descuentos',     label: 'Descuentos',     comp: DescuentosTab,     featureFlag: 'cuotas' },
+  { id: 'modificaciones', label: 'Modificaciones', comp: ModificacionesTab, featureFlag: 'cuotas' },
+  // Formas de pago y Periodicidad son info estática (sin backend) pero
+  // solo tienen sentido si hay sistema de cobros = Odoo desplegado.
+  { id: 'formas_pago',    label: 'Formas de pago', comp: FormasPagoInfo,    featureFlag: 'cuotas' },
+  { id: 'periodicidad',   label: 'Periodicidad',   comp: PeriodicidadInfo,  featureFlag: 'cuotas' },
 ]
 const TAB_CATEGORIAS = { id: 'categorias', label: 'Categorías clientes',   comp: CategoriasTab,     managerOnly: true }
 const TAB_NOTIF      = { id: 'notif',      label: 'Notificaciones',         comp: NotificacionesTab, managerOnly: true }
-const TAB_CONTAB     = { id: 'contab',     label: 'Contabilidad',           comp: ContabilidadTab,   managerOnly: true }
-const TAB_FORMA_FACT = { id: 'forma_fact',  label: 'Forma de facturar',      comp: FormaFacturarTab,  managerOnly: true }
-const TAB_PASARELAS = { id: 'pasarelas', label: 'Pasarelas (PayComet)', comp: PasarelasTab, managerOnly: true }
+// "Suscripciones" sustituye al antiguo wizard "Despliegue total" — desde
+// aquí el manager activa CRM, Cuotas y Contabilidad por separado.
+// SIEMPRE visible para el manager (no featureFlag): es el entry point para
+// activar Odoo por primera vez.
+const TAB_SUSCRIP   = { id: 'suscrip',    label: 'Suscripciones',           comp: SuscripcionesTab,  managerOnly: true }
+// La pestaña antigua "Contabilidad" pasa a gatearse por featureFlag —
+// solo aparece si el módulo ya está activo (entonces sirve para la config
+// per-trainer, categorías de gasto y visibilidad de listados).
+const TAB_CONTAB     = { id: 'contab',     label: 'Contabilidad',           comp: ContabilidadTab,   managerOnly: true, featureFlag: 'contabilidad' }
+const TAB_FORMA_FACT = { id: 'forma_fact',  label: 'Forma de facturar',      comp: FormaFacturarTab,  managerOnly: true, featureFlag: 'cuotas' }
+const TAB_PASARELAS = { id: 'pasarelas', label: 'Pasarelas (PayComet)', comp: PasarelasTab, managerOnly: true, featureFlag: 'cuotas' }
 const TAB_CENTROS   = { id: 'centros',   label: 'Centros',                comp: CentrosTab,   managerOnly: true }
 const TAB_EMAIL     = { id: 'email',     label: 'Email (transaccional)',  comp: EmailTab,     managerOnly: true }
 const TAB_EMAIL_TPL = { id: 'email_tpl', label: 'Plantillas email',       comp: EmailTemplatesTab, managerOnly: true }
@@ -41,13 +62,33 @@ const TAB_USUARIOS  = { id: 'usuarios',  label: 'Usuarios web',           comp: 
 
 export default function Configuracion() {
   const { user, isImpersonating } = useAuth()
-  const [activeTab, setActiveTab] = useState('cuotas')
+  // Por defecto la pestaña Suscripciones (managers sin Odoo aún empiezan
+  // por ahí; managers con Odoo ya activo pueden navegar a Cuotas/etc. desde
+  // ahí). Si el usuario está impersonando trainer, no hay Suscripciones →
+  // useEffect saltará a la primera visible.
+  const [activeTab, setActiveTab] = useState(isImpersonating ? 'cuotas' : 'suscrip')
   const identity = getRoundIdentity(user)
-  // Tabs solo visibles para el manager (no impersonando trainer)
-  const TABS = isImpersonating
+  const { features } = useOdooStatus()
+  // Tabs solo visibles para el manager (no impersonando trainer).
+  // Suscripciones va PRIMERO (entry point principal — desde aquí se activa
+  // Odoo por primera vez), seguido de los catálogos (Cuotas/Descuentos/etc.).
+  const TABS_ALL = isImpersonating
     ? TABS_BASE
-    : [...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_PASARELAS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS]
-  const ActiveComp = TABS.find(t => t.id === activeTab)?.comp ?? CuotasTab
+    : [TAB_SUSCRIP, ...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_PASARELAS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS]
+  // Filtrar por features: pestañas con featureFlag se ocultan si la
+  // feature está false (Odoo no desplegado).
+  const TABS = TABS_ALL.filter(t => !t.featureFlag || features?.[t.featureFlag] !== false)
+
+  // Si la tab activa quedó fuera del filtro (manager sin Odoo, activeTab
+  // por defecto 'cuotas' que requiere Odoo), saltar a la primera visible.
+  useEffect(() => {
+    if (!TABS.find(t => t.id === activeTab)) {
+      const first = TABS[0]
+      if (first) setActiveTab(first.id)
+    }
+  }, [TABS, activeTab])
+
+  const ActiveComp = TABS.find(t => t.id === activeTab)?.comp ?? TABS[0]?.comp ?? CuotasTab
 
   return (
     <div style={{ maxWidth: 1100, padding: '0 4px' }}>

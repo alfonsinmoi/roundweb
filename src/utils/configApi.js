@@ -229,6 +229,36 @@ export const retoGet = (identity, retoId) =>
 export const retosSnapshot = (identity) =>
   _requestRoot('POST', '/api/retos/snapshot', identity)
 
+// ── Estado físico (test sessions agregado vía NoofitPro) ───────────────
+export const estadoFisicoDashboard = (identity, force = false) => {
+  const q = force ? '?force=1' : ''
+  return _requestRoot('GET', `/api/estado-fisico/dashboard${q}`, identity)
+}
+export const estadoFisicoSessions = (identity, force = false) => {
+  const q = force ? '?force=1' : ''
+  return _requestRoot('GET', `/api/estado-fisico/sessions${q}`, identity)
+    .then(d => d.sessions || [])
+}
+// Sesiones de UN cliente concreto (usado por la ficha de cliente).
+// Acepta `identity` como argumento (preferido) o lo deriva del sessionStorage
+// como fallback para no romper callers existentes.
+export async function estadoFisicoSessionsCliente(idCliente, identity = null) {
+  if (!identity) {
+    try {
+      const raw = sessionStorage.getItem('round_session')
+      const s = raw ? JSON.parse(raw) : {}
+      // Construir identity mínimo desde los campos guardados
+      identity = {
+        managerId: s.id_manager || s.manager || s.managerNoofit || '',
+        trainerId: s.id_trainer || s.trainer || null,
+      }
+    } catch { identity = { managerId: '', trainerId: null } }
+  }
+  return _requestRoot('GET', `/api/estado-fisico/sessions/${idCliente}`,
+                       identity)
+    .then(d => d.sessions || [])
+}
+
 // ── Modificaciones ──────────────────────────────────────────────────────────
 // ── Proveedor de email transaccional (Resend / Postmark / SMTP / Gmail) ───
 // Si trainerId omitido → config global del manager. Si pasa trainerId → override por centro.
@@ -599,3 +629,50 @@ export const modificacionesList  = (identity, params = {}) => {
 export const modificacionCreate  = (identity, data) => _request('POST',  '/modificaciones', identity, data).then(d => d.modificacion)
 export const modificacionUpdate  = (identity, id, data) => _request('PATCH', `/modificaciones/${id}`, identity, data).then(d => d.modificacion)
 export const modificacionDelete  = (identity, id) => _request('DELETE', `/modificaciones/${id}`, identity)
+
+
+// ── Estado del Odoo per-manager (Fase 1: gate y wcommerce check) ──────────
+// Endpoints vive en /api/manager/ (no /api/config/), por eso _requestRoot.
+export const managerOdooStatus = (identity) =>
+  _requestRoot('GET', '/api/manager/odoo-status', identity)
+
+/** Consulta wcommerce on-demand. Si wcId está, sobreescribe el guardado en BD.
+ *  Devuelve { ok, ya_desplegado, tipo_pago, elegible, cliente, error, motivo }. */
+export const managerWcCheck = (identity, wcommerce_cliente_id = null) =>
+  _requestRoot('POST', '/api/manager/wc-check', identity,
+               wcommerce_cliente_id ? { wcommerce_cliente_id } : {})
+
+/** Guarda el id wcommerce del manager (admin). */
+export const managerSetWcommerceId = (identity, wcommerce_cliente_id) =>
+  _requestRoot('PATCH', '/api/manager/wcommerce-cliente', identity,
+               { wcommerce_cliente_id })
+
+/** Devuelve la solicitud de despliegue activa del manager (o null). */
+export const managerGetSolicitudDespliegue = (identity) =>
+  _requestRoot('GET', '/api/manager/solicitud-despliegue', identity)
+    .then(d => d.solicitud)
+
+/** Crea una nueva solicitud de despliegue de Odoo. Lanza error si:
+ *  - faltan campos obligatorios (razon_social, cif)
+ *  - el manager ya tiene Odoo desplegado
+ *  - el manager no es elegible (tipoPago != 'S')
+ *  - ya hay otra solicitud pendiente/en_proceso  */
+export const managerSolicitudDespliegue = (identity, datos) =>
+  _requestRoot('POST', '/api/manager/solicitud-despliegue', identity, datos)
+
+/** Activa un módulo concreto (crm / cuotas / contabilidad). Idempotente.
+ *  Body: payload del wizard correspondiente. Devuelve {ok, modulo, company_id,
+ *  mensaje, log}. */
+export const managerProvisionModulo = (identity, modulo, datos = {}) =>
+  _requestRoot('POST', `/api/manager/provision/${modulo}`, identity, datos)
+
+/** Lista la config analytic per-trainer del manager (Fase 4).
+ *  Devuelve { trainers: [...], manager_analytic_default_id }. */
+export const managerTrainersContabilidad = (identity) =>
+  _requestRoot('GET', '/api/manager/trainers-contabilidad', identity)
+
+/** Cambia el modo (heredar contabilidad sí/no) de un trainer.
+ *  Si heredar=false → crea analytic propio para ese trainer. */
+export const managerSetTrainerContabilidad = (identity, idTrainer, heredar, nombreTrainer = '') =>
+  _requestRoot('PATCH', `/api/manager/trainers-contabilidad/${idTrainer}`, identity,
+               { heredar_contabilidad: heredar, nombre_trainer: nombreTrainer })

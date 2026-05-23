@@ -478,12 +478,31 @@ export function invalidateSalasCache() {
   }
 }
 
-export const postClientes = (clienteList) =>
-  apiPost('api/dispositivos/clientePlusv2', clienteList.map(c => ({ ...c, toSend: true }))).then(r => {
-    invalidateCache('clientes')
-    clearPersistedCache('clientes')
-    return r
-  })
+export const postClientes = async (clienteList) => {
+  const r = await apiPost(
+    'api/dispositivos/clientePlusv2',
+    clienteList.map(c => ({ ...c, toSend: true }))
+  )
+  invalidateCache('clientes')
+  clearPersistedCache('clientes')
+  // Tras crear/editar en NoofitPro, refrescar la cache local del backend
+  // para que el banner de "Nuevos clientes" y el listado lo detecten al
+  // instante (no haya que esperar al sync background de 60 s ni al cron).
+  // Solo aplica a usuario_web — el manager nativo no usa cache de backend.
+  try {
+    const { jwt, isUsuarioWeb } = getProxyAuth()
+    if (isUsuarioWeb && jwt) {
+      await fetch('/api/trainer-data/clientes/sync', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${jwt}` },
+      })
+    }
+  } catch {
+    /* Si el sync falla no rompemos el alta: la BD local se refrescará en
+       el siguiente polling (≤ 30 s) o en el cron horario. */
+  }
+  return r
+}
 
 export const saveSala = (sala) =>
   apiPost('api/dispositivos/saveSala', sala).then(d => d.sala ?? null)
@@ -544,17 +563,10 @@ export const getClasesCliente = (idCliente) =>
   apiPost('api/dispositivos/getReservasByUser', { id: idCliente }, { initialId: '0' })
     .then(d => d.clases ?? d.reservas ?? [])
 
-// Test de Estado Físico — replica InformesEstadoFisicoCommand de NooFitPro.
-// Body: { UserId } — el servidor mapea `idUser` → `UserId` (ver TestEstadoFisicoSessionModel).
-// Devuelve sesiones ordenadas por testDate descendente.
-export const getEstadoFisicoSessions = (idCliente) =>
-  apiPost('api/dispositivos/getEstadoFisicoTestSessions', { UserId: idCliente })
-    .then(d => {
-      const sessions = d.estadoFisicoTestSessions ?? []
-      return sessions
-        .filter(s => s.idUser === idCliente || s.UserId === idCliente)
-        .sort((a, b) => new Date(b.testDate) - new Date(a.testDate))
-    })
+// Test de Estado Físico — re-export desde configApi (que tira de nuestro
+// backend proxy autenticado como trainer, cachea 10 min, y soporta usuarios
+// web sin sesión NoofitPro directa).
+export { estadoFisicoSessionsCliente as getEstadoFisicoSessions } from './configApi'
 
 // ERP
 export const getERPConfiguraciones = () =>

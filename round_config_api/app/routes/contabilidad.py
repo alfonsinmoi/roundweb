@@ -28,6 +28,7 @@ from datetime import datetime, date
 from flask import Blueprint, request, jsonify, g, send_file, abort
 from werkzeug.utils import secure_filename
 from ..auth import auth_required
+from ..odoo_guard import require_feature
 from ..db import get_conn, seed_gasto_categorias_for_manager
 
 bp = Blueprint('contabilidad', __name__)
@@ -93,6 +94,7 @@ def _hash_file(path: Path) -> str:
 
 @bp.route('/config', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def get_contab_config():
     """Devuelve { trainers: [{id_trainer, activo, notas, ...}] } del manager."""
     err = _manager_only()
@@ -114,6 +116,7 @@ def get_contab_config():
 
 @bp.route('/config/<id_trainer>', methods=['PUT'])
 @auth_required
+@require_feature("contabilidad")
 def put_contab_config(id_trainer):
     err = _manager_only()
     if err: return err
@@ -142,6 +145,7 @@ def put_contab_config(id_trainer):
 
 @bp.route('/config/listados', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def get_listados_visibilidad():
     """Devuelve catálogo listados + visibilidad per (manager, trainer)."""
     try:
@@ -164,6 +168,7 @@ def get_listados_visibilidad():
 
 @bp.route('/config/listados/<id_trainer>/<listado_id>', methods=['PUT'])
 @auth_required
+@require_feature("contabilidad")
 def put_listado_visibilidad(id_trainer, listado_id):
     err = _manager_only()
     if err: return err
@@ -189,6 +194,7 @@ def put_listado_visibilidad(id_trainer, listado_id):
 
 @bp.route('/categorias', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def list_categorias():
     """Lista categorías + visibilidad per trainer (filtrada si trainer impersona)."""
     try:
@@ -222,6 +228,7 @@ def list_categorias():
 
 @bp.route('/categorias', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def create_categoria():
     err = _manager_only()
     if err: return err
@@ -265,6 +272,7 @@ def create_categoria():
 
 @bp.route('/categorias/<int:cat_id>', methods=['PATCH'])
 @auth_required
+@require_feature("contabilidad")
 def update_categoria(cat_id):
     err = _manager_only()
     if err: return err
@@ -296,6 +304,7 @@ def update_categoria(cat_id):
 
 @bp.route('/categorias/<int:cat_id>', methods=['DELETE'])
 @auth_required
+@require_feature("contabilidad")
 def delete_categoria(cat_id):
     err = _manager_only()
     if err: return err
@@ -324,6 +333,7 @@ def delete_categoria(cat_id):
 
 @bp.route('/categorias/<int:cat_id>/visibilidad/<id_trainer>', methods=['PUT'])
 @auth_required
+@require_feature("contabilidad")
 def put_categoria_visibilidad(cat_id, id_trainer):
     err = _manager_only()
     if err: return err
@@ -353,6 +363,7 @@ def put_categoria_visibilidad(cat_id, id_trainer):
 
 @bp.route('/documentos', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def list_documentos():
     """Filtros: estado, categoria_id, id_trainer, periodo, desde, hasta, tipo, q"""
     try:
@@ -400,6 +411,7 @@ def list_documentos():
 
 @bp.route('/documentos', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def upload_documento():
     """Upload multipart/form-data: campo 'file' + form fields opcionales:
     categoria_id, id_trainer, proveedor, num_factura, fecha_documento,
@@ -527,6 +539,7 @@ def upload_documento():
 
 @bp.route('/documentos/<int:doc_id>', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def get_documento(doc_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -547,6 +560,7 @@ def get_documento(doc_id):
 
 @bp.route('/documentos/<int:doc_id>/file', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def get_documento_file(doc_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -571,6 +585,7 @@ def get_documento_file(doc_id):
 
 @bp.route('/documentos/<int:doc_id>', methods=['PATCH'])
 @auth_required
+@require_feature("contabilidad")
 def patch_documento(doc_id):
     try:
         d = request.get_json() or {}
@@ -601,6 +616,7 @@ def patch_documento(doc_id):
 
 @bp.route('/documentos/<int:doc_id>/escanear', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def escanear_documento(doc_id):
     """Llama al LLM para extraer campos del archivo y rellena el doc.
 
@@ -799,6 +815,7 @@ def escanear_documento(doc_id):
 
 @bp.route('/documentos/<int:doc_id>/validar', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def validar_documento(doc_id):
     """Marca como validado. Fase 2: crea account.move en Odoo.
 
@@ -907,6 +924,7 @@ def validar_documento(doc_id):
 
 @bp.route('/documentos/<int:doc_id>/a-borrador', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def desvalidar_documento(doc_id):
     """Revierte un documento validado a estado 'borrador'.
 
@@ -991,6 +1009,7 @@ def desvalidar_documento(doc_id):
 
 @bp.route('/documentos/<int:doc_id>/asiento', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def asiento_documento(doc_id):
     """Devuelve el asiento contable de un documento.
 
@@ -1376,6 +1395,7 @@ def asiento_documento(doc_id):
 
 @bp.route('/documentos/<int:doc_id>/rechazar', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def rechazar_documento(doc_id):
     try:
         d = request.get_json() or {}
@@ -1404,6 +1424,7 @@ def rechazar_documento(doc_id):
 
 @bp.route('/listados/totales', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def listado_totales():
     """Totales agregados de gasto_documento.
 
@@ -1458,6 +1479,7 @@ def listado_totales():
 
 @bp.route('/listados/faltantes', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def listado_faltantes():
     """Detecta categorías con periodicidad cuyo período tiene 0 documentos.
 
@@ -1589,6 +1611,7 @@ def listado_faltantes():
 
 @bp.route('/listados/faltantes/ignorar', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def faltante_ignorar():
     """Archiva un faltante para que no aparezca en el listado.
     Body: { categoria_id, periodo_faltante, motivo? }
@@ -1621,6 +1644,7 @@ def faltante_ignorar():
 
 @bp.route('/listados/faltantes/ignorar/<int:cat_id>/<periodo>', methods=['DELETE'])
 @auth_required
+@require_feature("contabilidad")
 def faltante_restaurar(cat_id, periodo):
     """Quita el archivado: el faltante volverá a aparecer."""
     err = _manager_only()
@@ -1789,6 +1813,7 @@ def _periodo_a_rango(periodo: str):
 
 @bp.route('/listados/resultados/disponibles', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def listado_resultados_disponibles():
     """Devuelve qué meses/trimestres/años tienen al menos 1 movimiento
     (gasto Round o ingreso Odoo) en los últimos 5 años.
@@ -1849,6 +1874,7 @@ def listado_resultados_disponibles():
 
 @bp.route('/listados/resultados', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def listado_resultados():
     """Cuenta de resultados (P&L) por período.
 
@@ -1980,6 +2006,7 @@ def listado_resultados():
 
 @bp.route('/banco/importar', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def banco_importar():
     """Sube un extracto bancario (CSV / XLSX) y crea filas en banco_movimiento.
 
@@ -2095,6 +2122,7 @@ def banco_importar():
 
 @bp.route('/banco/movimientos', methods=['GET'])
 @auth_required
+@require_feature("contabilidad")
 def banco_movimientos():
     """Lista movimientos bancarios con filtros."""
     try:
@@ -2134,6 +2162,7 @@ def banco_movimientos():
 
 @bp.route('/banco/movimientos/<int:mov_id>', methods=['PATCH'])
 @auth_required
+@require_feature("contabilidad")
 def banco_movimiento_link(mov_id):
     """Vincula un movimiento a una factura, lo desvincula o cambia estado.
 
@@ -2172,6 +2201,7 @@ def banco_movimiento_link(mov_id):
 
 @bp.route('/banco/matching', methods=['POST'])
 @auth_required
+@require_feature("contabilidad")
 def banco_matching():
     """Ejecuta matching 1:1 entre movimientos sin cuadrar y facturas validadas.
 
@@ -2238,6 +2268,7 @@ def banco_matching():
 
 @bp.route('/documentos/<int:doc_id>', methods=['DELETE'])
 @auth_required
+@require_feature("contabilidad")
 def delete_documento(doc_id):
     err = _manager_only()
     if err: return err

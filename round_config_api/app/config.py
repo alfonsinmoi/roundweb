@@ -19,6 +19,16 @@ ODOO_SYNC_ENABLED = os.getenv('CONFIG_ODOO_SYNC', '1') == '1'
 # Token compartido entre frontend Round y este backend
 API_TOKEN = os.getenv('CONFIG_API_TOKEN', '')
 
+# wcommerce.wiemspro.com — consulta de tipoPago para el gate de Odoo
+# (managers con tipoPago='S' pueden desplegar su propio Odoo).
+# Las credenciales se comparten con GestionNoofit, por eso reutilizamos los
+# mismos nombres de variable.
+WCOMMERCE_BASE     = os.getenv('WCOMMERCE_BASE', 'https://wcommerce.wiemspro.com/Wcommerce_2020').rstrip('/')
+WCOMMERCE_EMAIL    = os.getenv('WCOMMERCE_EMAIL', '')
+WCOMMERCE_PASSWORD = os.getenv('WCOMMERCE_PASSWORD', '')
+WCOMMERCE_APP_VER  = os.getenv('WCOMMERCE_APP_VERSION', '1.0')
+WCOMMERCE_APP_ID   = os.getenv('WCOMMERCE_APP_ID', '1')
+
 # CORS — orígenes permitidos
 CORS_ORIGINS = [
     o.strip() for o in os.getenv(

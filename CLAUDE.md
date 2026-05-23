@@ -182,6 +182,10 @@ ssh round-vps "systemctl stop odoo17 && \
 - `categoria` + `cliente_categoria` — categorías de cliente per manager
   (Gympass / Trabajador / Invitado / …) con flags `puede_reservar`,
   `tiene_cuota`, `activa`
+- `manager_config` (cols Fase 6) — `odoo_crm_enabled`,
+  `odoo_cuotas_enabled`, `odoo_contabilidad_enabled` (booleanos
+  granulares), `sistemas_cobro` (JSONB lista). Sustituyen al monolítico
+  `odoo_enabled` (que se conserva para compat retro).
 
 ## Credenciales y secretos (NO subir a git)
 
@@ -219,7 +223,44 @@ POST   /api/cuotas/recibo/<id>/enviar  → enviar factura PDF
 POST   /api/cuotas/alta-cliente
 GET/PUT /api/config/centros|email|email-templates|pasarelas
 GET/PUT /api/social/cuentas|posts
+
+# Despliegue Odoo per-manager (multimanager)
+POST   /api/auth/round-bootstrap        → auto-registro manager+trainer tras login NF
+GET    /api/manager/odoo-status         → estado granular (3 flags + sistemas_cobro)
+POST   /api/manager/wc-check            → consulta tipo S en wcommerce
+PATCH  /api/manager/wcommerce-cliente   → set id wcommerce manual
+POST   /api/manager/provision/<modulo>  → activar módulo (crm|cuotas|contabilidad), idempotente
+POST   /api/manager/solicitud-despliegue → legacy: activar los 3 a la vez
+GET    /api/manager/trainers-contabilidad
+PATCH  /api/manager/trainers-contabilidad/<id_trainer>
 ```
+
+## Activación granular Odoo (Fase 6, mayo 2026)
+
+A partir de Fase 6 cada módulo Odoo se activa por separado desde
+**Configuración → Suscripciones** (pestaña principal). El antiguo wizard
+"Desplegar contabilidad" queda como legacy.
+
+- **3 columnas booleanas en manager_config**:
+  `odoo_crm_enabled`, `odoo_cuotas_enabled`, `odoo_contabilidad_enabled`
+  + `sistemas_cobro` JSONB (lista, valores válidos: `sepa`,
+  `tpv_virtual`, `link_pago`, `efectivo`, `transferencia_manual`,
+  `tokenizacion_tarjeta`).
+- **Provisioner modular** en `app/odoo_provisioner.py`:
+  `provision_crm()`, `provision_cuotas()`, `provision_contabilidad()`.
+  Cada uno IDEMPOTENTE — se puede llamar N veces sin duplicar. Comparten
+  helpers `ensure_company`, `ensure_chart`, `ensure_journals`,
+  `ensure_bank`, `ensure_sequence`, `ensure_adminround`,
+  `ensure_analytic`, `save_sistemas_cobro`.
+- **Decorador granular**: `@require_feature('crm'|'cuotas'|'contabilidad')`
+  (en `app/odoo_guard.py`). Endpoints de cada módulo ya decorados.
+  Devuelve `403 feature_not_enabled` si la flag está a `false`.
+- **Frontend**: tab `SuscripcionesTab.jsx` con 3 cards + 3 wizards
+  (`WizardActivarCRM/Cuotas/Contabilidad.jsx`).
+- **Manager por defecto (Round 17675)**: exento del check `tipo_pago_wc=S`
+  (siempre puede reactivar/reconfigurar). Sus 3 flags se backfillearon en
+  la migración A1.
+- Detalle completo en `docs/DESPLIEGUE_ODOO.md` (sección "Fase 6").
 
 ## Cosas que NO hay que hacer
 
@@ -280,5 +321,11 @@ Tras la prueba, el trainer da de alta al cliente:
   hasta que NoofitPro las publique): `docs/INTEGRACION_NOOFIT_PENDIENTE.md`
 - PayComet (sandbox + decisión de cobros vía Odoo, no vía suscripciones
   PayComet): `docs/PAYCOMET.md`
+- **Despliegue Odoo per-manager** (Fases 1-5, mayo 2026):
+  `docs/DESPLIEGUE_ODOO.md` — managers con suscripción wcommerce
+  tipo S pueden activar su propio Odoo (contabilidad + remesas + CRM)
+  desde Configuración → Contabilidad. 100% automático en ~15-30s vía
+  provisioner: crea res.company, aplica plan PYMES, journals, IBAN,
+  secuencias, analytic per-trainer. Manager actual (17675) exento.
 - Mantener este CLAUDE.md actualizado cuando cambien tablas, servicios o
   flujos críticos.

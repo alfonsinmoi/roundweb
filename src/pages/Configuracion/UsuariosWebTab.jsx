@@ -50,14 +50,36 @@ export default function UsuariosWebTab() {
   }
   useEffect(() => { if (identity?.managerId) reload() }, [identity?.managerId])
 
+  // Si el backend devuelve `email_send_failed`, el mensaje real está en
+  // `e.body.detalle` (+ `e.body.sugerencia`). Lo desglosamos para que el
+  // manager sepa exactamente qué pasa (típicamente "Gmail necesita App Password").
+  const formatEmailError = (e) => {
+    const b = e?.body || {}
+    if (b.error === 'email_send_failed') {
+      const detalle = b.detalle ? `\n${b.detalle}` : ''
+      const sug = b.sugerencia ? `\n\n${b.sugerencia}` : ''
+      return `No se ha podido enviar el email.${detalle}${sug}`
+    }
+    return 'Error: ' + (e.message || 'desconocido')
+  }
+
   const handleResetPwd = async (u) => {
     if (!window.confirm(`¿Forzar reset de contraseña a ${u.email}?\nLe llegará un email para que cree una nueva.`)) return
-    try { await usuarioWebResetPassword(identity, u.id); toast.success('Email enviado'); reload() }
-    catch (e) { toast.error('Error: ' + e.message) }
+    try {
+      await usuarioWebResetPassword(identity, u.id)
+      toast.success(`Email de reset enviado a ${u.email}`)
+      reload()
+    } catch (e) {
+      toast.error(formatEmailError(e))
+    }
   }
   const handleResendVerif = async (u) => {
-    try { await usuarioWebResendVerification(identity, u.id); toast.success('Email de verificación reenviado') }
-    catch (e) { toast.error('Error: ' + e.message) }
+    try {
+      await usuarioWebResendVerification(identity, u.id)
+      toast.success(`Email de verificación reenviado a ${u.email}`)
+    } catch (e) {
+      toast.error(formatEmailError(e))
+    }
   }
   const handleDelete = async (u) => {
     if (!window.confirm(`¿Desactivar usuario ${u.email}?`)) return
@@ -193,9 +215,17 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
         nombre: nombre.trim(), apellidos: apellidos.trim(), telefono: telefono.trim(),
         perfil_id: Number(perfilId), id_trainer: idTrainer || null,
       }
+      let resp = null
       if (isEdit) await usuarioWebUpdate(identity, usuario.id, { ...payload, activo })
-      else await usuarioWebCreate(identity, payload)
-      toast.success(isEdit ? 'Usuario actualizado' : 'Usuario creado — email de verificación enviado')
+      else resp = await usuarioWebCreate(identity, payload)
+      // Si el alta fue OK pero el email NO se envió, avisamos en vez de
+      // dar éxito silencioso. El usuario queda creado en BD igualmente.
+      if (!isEdit && resp && resp.email_sent === false) {
+        const sug = resp.email_warning || resp.email_error || 'comprueba la configuración SMTP'
+        toast.error(`Usuario creado, pero NO se envió el email: ${sug}`)
+      } else {
+        toast.success(isEdit ? 'Usuario actualizado' : 'Usuario creado — email de verificación enviado')
+      }
       onSaved()
     } catch (e) {
       const detail = e.body?.error

@@ -34,17 +34,20 @@ class OdooAlta(OdooCuotas):
         """datos = {nombre, apellidos, dni, email, movil, direccion, localidad,
                     cp, fecha_nacimiento, sexo, idnoofit, iban}"""
         idnoofit = str(datos.get('idnoofit') or '').strip() or None
-        # 1) Buscar por id_noofit (el que usamos para sync)
+        # 1) Buscar por id_noofit (el que usamos para sync). Multi-company:
+        #    res.partner es global en Odoo pero queremos limitar al partner
+        #    de la company del manager actual (para evitar colisiones cuando
+        #    dos managers tengan el mismo cliente con el mismo idnoofit).
         partner_id = None
         if idnoofit:
-            ids = self._call('res.partner', 'search', [('id_noofit','=',idnoofit)], limit=1)
+            ids = self._call_scoped('res.partner', 'search', [('id_noofit','=',idnoofit)], limit=1)
             if ids: partner_id = ids[0]
         # 2) Si no, buscar por DNI (vat) o email
         if not partner_id and datos.get('dni'):
-            ids = self._call('res.partner', 'search', [('vat','=',datos['dni'])], limit=1)
+            ids = self._call_scoped('res.partner', 'search', [('vat','=',datos['dni'])], limit=1)
             if ids: partner_id = ids[0]
         if not partner_id and datos.get('email'):
-            ids = self._call('res.partner', 'search', [('email','=ilike',datos['email'])], limit=1)
+            ids = self._call_scoped('res.partner', 'search', [('email','=ilike',datos['email'])], limit=1)
             if ids: partner_id = ids[0]
 
         vals = {
@@ -85,7 +88,7 @@ class OdooAlta(OdooCuotas):
     # ── Cuota lookup / autocreación ──────────────────────────────────────────
     def get_cuota_by_codigo(self, codigo):
         if not codigo: return None
-        ids = self._call('round.cuota.catalogo', 'search',
+        ids = self._call_scoped('round.cuota.catalogo', 'search',
             [('codigo','=', str(codigo))], limit=1)
         if not ids: return None
         return self._call('round.cuota.catalogo', 'read', [ids[0]],
@@ -111,7 +114,7 @@ class OdooAlta(OdooCuotas):
             'codigo': str(codigo),
             'descripcion': f'{codigo} (creada desde alta cliente)',
             precio_field: float(fallback_precio),
-            'company_id': cfg.ODOO_COMPANY,
+            'company_id': self.company_id,
             'activo': True,
         }
         cuota_id = self._call('round.cuota.catalogo', 'create', vals)
@@ -126,7 +129,7 @@ class OdooAlta(OdooCuotas):
         out = []
         for cod in (codigos or []):
             if not cod: continue
-            ids = self._call('round.descuento.catalogo', 'search',
+            ids = self._call_scoped('round.descuento.catalogo', 'search',
                 [('codigo','=', str(cod))], limit=1)
             if ids: out.append(ids[0])
         return out
@@ -202,9 +205,47 @@ class OdooAlta(OdooCuotas):
             if desc_ids:
                 vals['descuentos_activos_ids'] = [(6, 0, desc_ids)]
 
+        # Multi-trainer (Fase 4): si el manager tiene Odoo desplegado con
+        # analytic plan, resolvemos el analytic del trainer del cliente y
+        # lo guardamos en la subscription. `generar_preemision` lo usa
+        # luego para inyectar analytic_distribution en cada factura.
+        if self._id_manager:
+            try:
+                from .odoo_analytics import resolve_analytic
+                # Lookup del id_trainer del partner en cliente_cache (Fase 1)
+                analytic_id = self._resolve_analytic_for_partner(partner_id)
+                if analytic_id:
+                    vals['trainer_analytic_id'] = analytic_id
+            except Exception as e:
+                log.warning(f'crear_subscription: resolve_analytic falló: {e}')
+
         sub_id = self._call('round.subscription', 'create', vals)
         log.info(f'Subscription creada id={sub_id}')
         return sub_id
+
+    def _resolve_analytic_for_partner(self, partner_id):
+        """Dado un partner_id en Odoo, devuelve el analytic_id que le
+        corresponde según el trainer del cliente en NoofitPro (vía
+        cliente_cache.id_trainer).
+
+        Si no encontramos el cliente o el manager no tiene analytic plan,
+        devolvemos None (no se aplica analytic)."""
+        from .odoo_analytics import resolve_analytic
+        from .db import get_conn
+        # 1) Sacar id_noofit del partner Odoo
+        info = self._call('res.partner', 'read', [partner_id], ['id_noofit'])
+        if not info or not info[0].get('id_noofit'):
+            return resolve_analytic(self._id_manager, None)
+        idnoofit = info[0]['id_noofit']
+        # 2) Buscar el trainer en cliente_cache
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_trainer FROM cliente_cache
+                 WHERE id_manager=%s AND id=%s
+            """, (str(self._id_manager), int(idnoofit)))
+            row = cur.fetchone()
+        id_trainer = (row or {}).get('id_trainer')
+        return resolve_analytic(self._id_manager, id_trainer)
 
     # ── Recibo de alta ───────────────────────────────────────────────────────
     def crear_recibo_alta(self, partner_id, sub_id, cuota_dict, importe_alta,
@@ -213,6 +254,19 @@ class OdooAlta(OdooCuotas):
         importe_alta es el TOTAL final del recibo (sin matrícula adicional aparte)."""
         if mes_str is None:
             mes_str = date.today().strftime('%Y-%m')
+        # Multi-trainer: resolver analytic vía la subscription que acabamos
+        # de crear (que YA tiene trainer_analytic_id si aplica).
+        line_extras = {}
+        try:
+            sub = self._call('round.subscription', 'read', [sub_id],
+                             ['trainer_analytic_id'])
+            tai = (sub[0] if sub else {}).get('trainer_analytic_id')
+            aid = tai[0] if isinstance(tai, (list, tuple)) else tai
+            if aid:
+                line_extras['analytic_distribution'] = {str(aid): 100.0}
+        except Exception as e:
+            log.warning(f'crear_recibo_alta: resolve analytic falló: {e}')
+
         line_vals = []
         product_id = cuota_dict.get('product_id', [False])[0] if cuota_dict.get('product_id') else False
         line_vals.append((0, 0, {
@@ -220,6 +274,7 @@ class OdooAlta(OdooCuotas):
             'quantity': 1,
             'price_unit': float(importe_alta),
             'product_id': product_id,
+            **line_extras,
         }))
         if matricula and float(matricula) > 0:
             line_vals.append((0, 0, {
@@ -227,6 +282,7 @@ class OdooAlta(OdooCuotas):
                 'quantity': 1,
                 'price_unit': float(matricula),
                 'product_id': product_id,
+                **line_extras,
             }))
         inv_vals = {
             'partner_id': partner_id,
@@ -236,7 +292,7 @@ class OdooAlta(OdooCuotas):
             'invoice_line_ids': line_vals,
             'round_subscription_id': sub_id,
             'narration': f'Alta cliente {date.today().isoformat()}',
-            'company_id': cfg.ODOO_COMPANY,
+            'company_id': self.company_id,
         }
         inv_id = self._call('account.move', 'create', inv_vals)
         return inv_id
@@ -579,9 +635,16 @@ class OdooAlta(OdooCuotas):
             return None
 
 
-_singleton = None
-def get_alta():
-    global _singleton
-    if _singleton is None:
-        _singleton = OdooAlta()
-    return _singleton
+# Cache de instancias por manager — ver get_cuotas() para detalles.
+_instances = {}
+def get_alta(id_manager=None):
+    """Devuelve la instancia OdooAlta para el manager dado.
+
+    - `get_alta()` → instancia default (legacy).
+    - `get_alta(id_manager='17675')` → ligada a ese manager."""
+    key = str(id_manager or 'default')
+    inst = _instances.get(key)
+    if inst is None:
+        inst = OdooAlta(id_manager=id_manager)
+        _instances[key] = inst
+    return inst

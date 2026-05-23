@@ -1,10 +1,47 @@
 import { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react'
 import { loginEasy, getEntrenador, invalidateCache, abortRequests, clearPersistedCache } from '../utils/api'
 import { loginUsuarioWeb, meUsuarioWeb } from '../utils/authUsuarioApi'
+import { getRoundIdentity } from '../utils/configApi'
 
 const AuthContext = createContext(null)
 
 const STORAGE_KEY = 'round_session'
+
+// ── Auto-registro multimanager ─────────────────────────────────────────────
+// Tras un login NoofitPro exitoso, llamamos a /api/auth/round-bootstrap
+// para asegurar que el manager (+ trainer) están en BD local. Fire-and-forget
+// — si falla no rompemos el login (los siguientes endpoints fallarán con
+// 403 odoo_not_enabled o mostrarán el banner "no registrado" cuando toque).
+const ROUND_API_TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+function _roundBootstrap(payload) {
+  if (!ROUND_API_TOKEN) return  // no hay token compartido configurado
+  try {
+    fetch('/api/auth/round-bootstrap', {
+      method: 'POST',
+      headers: {
+        'X-Round-Token': ROUND_API_TOKEN,
+        'X-Round-Manager-Id': String(payload.id_manager || ''),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }).then(r => r.json())
+      .then(d => {
+        // Tras un bootstrap exitoso (haya o no creado fila nueva),
+        // invalidamos la cache de odoo-status y notificamos a los hooks
+        // suscritos para que recarguen y oculten el banner "no registrado"
+        // sin necesitar recargar la página.
+        try {
+          const key = `round.odoo_status:${payload.id_manager}`
+          sessionStorage.removeItem(key)
+        } catch { /* noop */ }
+        try {
+          window.dispatchEvent(new CustomEvent('round.odoo-status-changed',
+                                                { detail: { id_manager: payload.id_manager } }))
+        } catch { /* noop */ }
+      })
+      .catch(() => { /* silencioso */ })
+  } catch { /* noop */ }
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser]       = useState(null)
@@ -42,6 +79,25 @@ export function AuthProvider({ children }) {
           }).catch(() => { /* JWT expirado: forzar logout suave */
             sessionStorage.removeItem(STORAGE_KEY); setUser(null)
           })
+        }
+        // Bootstrap "soft" para sesiones que arrancaron ANTES del
+        // auto-registro multimanager: sin password (no se puede sin login
+        // fresh), solo crea/actualiza placeholder de manager_config para
+        // que el banner "no registrado" desaparezca. La próxima vez que
+        // el usuario haga login fresh, se completarán las creds NF.
+        if (parsed?.kind === 'manager') {
+          try {
+            const identity = getRoundIdentity(parsed)
+            if (identity?.managerId && parsed?.email) {
+              _roundBootstrap({
+                id_user:    String(parsed?.id ?? identity.managerId),
+                id_manager: String(identity.managerId),
+                email:      parsed.email,
+                password:   '',  // soft mode (sin password)
+                nombre:     parsed?.nombre || null,
+              })
+            }
+          } catch { /* noop */ }
         }
       } catch { sessionStorage.removeItem(STORAGE_KEY) }
     }
@@ -142,6 +198,20 @@ export function AuthProvider({ children }) {
       const userData = buildUserData(token, manager, entrenador, email)
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(userData))
       setUser(userData)
+      // Auto-registro en Round (multimanager). Fire-and-forget — si falla
+      // el banner "manager no registrado" lo avisará en próximas pantallas.
+      // Usamos getRoundIdentity (que filtra booleanos disfrazados de NF y
+      // cae a entrenador.id) para tener el id_manager REAL — sin esto,
+      // los managers nativos llegaban a BD como id_manager='true'/'false'.
+      const identity = getRoundIdentity(userData)
+      _roundBootstrap({
+        id_user: String(entrenador?.id ?? identity.managerId),
+        id_manager: identity.managerId,
+        email, password,
+        nombre: entrenador?.name
+                  ? `${entrenador.name} ${entrenador.surname || ''}`.trim()
+                  : null,
+      })
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err.message ?? 'Credenciales incorrectas' }
@@ -164,6 +234,16 @@ export function AuthProvider({ children }) {
       const newUser = { ...buildUserData(token, manager, entrenador, trainerEmail), originalSession }
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(newUser))
       setUser(newUser)
+      // Auto-registrar al trainer impersonado en trainer_noofit_creds
+      const identity = getRoundIdentity(newUser)
+      _roundBootstrap({
+        id_user: String(entrenador?.id ?? identity.managerId),
+        id_manager: identity.managerId,
+        email: trainerEmail, password,
+        nombre: entrenador?.name
+                  ? `${entrenador.name} ${entrenador.surname || ''}`.trim()
+                  : null,
+      })
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err.message ?? 'Credenciales incorrectas' }

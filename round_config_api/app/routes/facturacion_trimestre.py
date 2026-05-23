@@ -13,6 +13,7 @@ from collections import defaultdict
 from flask import Blueprint, request, jsonify, g, send_file
 
 from ..auth import auth_required
+from ..odoo_guard import require_feature
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 
@@ -41,6 +42,7 @@ def _trimestre_a_meses(trim):
 
 @bp.route('/<trim>', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def preview(trim):
     """Lista los recibos del trimestre (cobrados pendientes de facturar +
     los ya facturados a título informativo)."""
@@ -83,6 +85,7 @@ def preview(trim):
 
 @bp.route('/<trim>/excel', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def preview_excel(trim):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -140,6 +143,7 @@ def preview_excel(trim):
 
 @bp.route('/<trim>/facturar', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def facturar(trim):
     """Crea account.move out_invoice agrupando por cliente.
     body = {recibo_ids: [...], agrupar_por_cliente: bool=True}

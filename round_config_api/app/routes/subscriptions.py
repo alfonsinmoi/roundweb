@@ -18,6 +18,7 @@ from flask import Blueprint, request, jsonify, g
 
 from ..auth import auth_required
 from ..audit_log import log_action, actor_from_request
+from ..odoo_guard import require_feature
 
 bp = Blueprint('subscriptions', __name__)
 log = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ def _company_id():
 
 @bp.route('/cuotas-catalogo', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def cuotas_catalogo():
     """Lista cuotas del catálogo Odoo (para dropdowns)."""
     try:
@@ -60,6 +62,7 @@ def cuotas_catalogo():
 
 @bp.route('/descuentos-catalogo', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def descuentos_catalogo():
     try:
         o = _odoo()
@@ -95,6 +98,7 @@ def _serialize_sub(s):
 
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
+@require_feature('cuotas')
 def list_by_cliente(id_noofit):
     """Lista subscriptions del cliente (activas + canceladas) ordenadas."""
     try:
@@ -125,6 +129,7 @@ def list_by_cliente(id_noofit):
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def create_subscription():
     """Crea una nueva subscription para el cliente.
     body = {
@@ -176,6 +181,7 @@ def create_subscription():
 
 @bp.route('/<int:sid>/replace', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def replace_subscription(sid):
     """Cierra la subscription <sid> (fecha_fin=hoy, estado=cancelada) y crea
     una nueva con los datos del body. Mantiene histórico estricto.
@@ -231,6 +237,7 @@ def replace_subscription(sid):
 
 @bp.route('/<int:sid>/cancel', methods=['POST'])
 @auth_required
+@require_feature('cuotas')
 def cancel_subscription(sid):
     """Cancela una subscription sin crear sustituto.
     body = {motivo?: str, fecha_corte?: YYYY-MM-DD}"""

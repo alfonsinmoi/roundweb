@@ -9,6 +9,7 @@ import {
 import { useAuth } from '../contexts/AuthContext'
 import { navItems, managerItems, configItems } from '../config/routes'
 import { canAccessSection } from '../config/permissions'
+import { useOdooStatus } from '../hooks/useOdooStatus'
 import { useClaseEnCurso } from '../hooks/useClaseEnCurso'
 import { formatHora } from '../utils/formatters'
 import { Avatar } from './UI'
@@ -36,12 +37,35 @@ function filterByPerms(items, user) {
     .filter(Boolean)
 }
 
+// Filtra items del menú por features del manager (Odoo desplegado o no).
+// Items con `featureFlag` cuya feature esté a `false` se ocultan; los
+// que no tienen `featureFlag` pasan tal cual. Si la feature no está
+// definida en `features` (loading o error), se considera habilitada
+// para no romper la navegación.
+function filterByFeatures(items, features) {
+  const isDisabled = (flag) => flag && features?.[flag] === false
+  return items
+    .map(item => {
+      // Si el item tiene featureFlag y está disabled, lo ocultamos del
+      // todo (aunque tenga hijos). Caso CRM con featureFlag='crm'.
+      if (isDisabled(item.featureFlag)) return null
+      if (item.children) {
+        const childrenAllowed = item.children.filter(c => !isDisabled(c.featureFlag))
+        if (!childrenAllowed.length) return null
+        return { ...item, children: childrenAllowed }
+      }
+      return item
+    })
+    .filter(Boolean)
+}
+
 export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
   const { logout, user, loginAsTrainer, switchBackToManager, isImpersonating } = useAuth()
   const { pathname } = useLocation()
   const navigate     = useNavigate()
   const [configOpen, setConfigOpen] = useState(true)
   const claseEnCurso = useClaseEnCurso()
+  const { features } = useOdooStatus()
 
   // Trainer switcher
   const [menuOpen,     setMenuOpen]     = useState(false)
@@ -446,7 +470,7 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
 
       {/* ── Nav ─────────────────────────────────────────────────────────── */}
       <nav style={{ flex: 1, padding: '0 10px', display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', overflowX: 'hidden' }}>
-        {filterByPerms(navItems, user).map(item => <NavItem key={item.id || item.to} {...item} />)}
+        {filterByFeatures(filterByPerms(navItems, user), features).map(item => <NavItem key={item.id || item.to} {...item} />)}
 
         {/* Items solo para el gestor (sin impersonar) */}
         {!isImpersonating && managerItems.length > 0 && (
@@ -460,7 +484,7 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
               </div>
             )}
             {collapsed && <div style={{ height: 10 }} />}
-            {managerItems.map(item => <NavItem key={item.to} {...item} />)}
+            {filterByFeatures(managerItems, features).map(item => <NavItem key={item.to} {...item} />)}
           </>
         )}
 

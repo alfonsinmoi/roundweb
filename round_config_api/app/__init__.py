@@ -12,6 +12,7 @@ from .routes.modificaciones   import bp as bp_modificaciones
 from .routes.familias          import bp as bp_familias
 from .routes.clientes_atendidos import bp as bp_clientes_atendidos
 from .routes.retos          import bp as bp_retos
+from .routes.estado_fisico  import bp as bp_estado_fisico
 from .routes.cuotas_clientes  import bp as bp_cuotas_clientes
 from .routes.cliente_gympass  import bp as bp_cliente_gympass
 from .routes.categorias       import bp as bp_categorias
@@ -36,6 +37,8 @@ from .routes.recibos           import bp as bp_recibos
 from .routes.subscriptions     import bp as bp_subscriptions
 from .routes.forma_pago        import bp as bp_forma_pago
 from .routes.modo_facturacion  import bp as bp_modo_facturacion
+from .routes.manager_odoo      import bp as bp_manager_odoo
+from .routes.auth_bootstrap    import bp as bp_auth_bootstrap
 from .routes.preemision_validar import bp as bp_preemision_validar
 from .routes.preemision_v2     import bp as bp_preemision_v2
 from .routes.emision_v2        import bp as bp_emision_v2
@@ -106,6 +109,8 @@ def create_app():
                                 name=f'cat_b{prefix}', url_prefix=prefix)
     for prefix in ('/retos', '/api/retos'):
         app.register_blueprint(bp_retos, name=f'retos{prefix}', url_prefix=prefix)
+    for prefix in ('/estado-fisico', '/api/estado-fisico'):
+        app.register_blueprint(bp_estado_fisico, name=f'ef{prefix}', url_prefix=prefix)
     for prefix in ('/cuotas-clientes', '/api/cuotas'):
         app.register_blueprint(bp_cuotas_clientes, name=f'cc{prefix}', url_prefix=prefix)
     for prefix in ('/cliente-gympass', '/api/config/cliente-gympass'):
@@ -178,6 +183,14 @@ def create_app():
     # ── Modo de facturación (config del manager)
     for prefix in ('/modo-facturacion', '/api/config/modo-facturacion'):
         app.register_blueprint(bp_modo_facturacion, name=f'mf{prefix}', url_prefix=prefix)
+
+    # ── Estado del Odoo per-manager y gate de despliegue (Fase 1)
+    for prefix in ('/manager', '/api/manager'):
+        app.register_blueprint(bp_manager_odoo, name=f'mo{prefix}', url_prefix=prefix)
+
+    # ── Auto-registro del manager/trainer tras login NF (multimanager)
+    for prefix in ('/auth', '/api/auth'):
+        app.register_blueprint(bp_auth_bootstrap, name=f'ab{prefix}', url_prefix=prefix)
 
     # ── Validación previa antes de emitir (preemision)
     for prefix in ('/preemision-validar', '/api/cuotas/preemision'):

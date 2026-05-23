@@ -33,11 +33,14 @@ def _find_or_create_supplier(oc, nombre, vat):
     """
     vat_n = _normalizar_vat(vat)
     partner_id = None
+    # CRÍTICO multi-company: buscar proveedor scoped a la company del manager.
+    # Si no, dos managers que compartan VAT del mismo proveedor (típico:
+    # luz, telefonía nacional) cogerían el partner del primero.
     if vat_n:
-        ids = oc._call('res.partner', 'search', [('vat','=',vat_n)], limit=1)
+        ids = oc._call_scoped('res.partner', 'search', [('vat','=',vat_n)], limit=1)
         if ids: partner_id = ids[0]
     if not partner_id and nombre:
-        ids = oc._call('res.partner', 'search',
+        ids = oc._call_scoped('res.partner', 'search',
                        [('name','=ilike',nombre.strip()),('is_company','=',True)],
                        limit=1)
         if ids: partner_id = ids[0]
@@ -60,6 +63,7 @@ def _find_or_create_supplier(oc, nombre, vat):
         'is_company': True,
         'company_type': 'company',
         'supplier_rank': 1,
+        'company_id': oc.company_id,   # multi-company: amarrar a la del manager
     }
     if vat_n:
         vals['vat'] = vat_n
@@ -75,18 +79,18 @@ def _find_account_by_code(oc, code):
     code = str(code).strip()
     # 1) match exacto
     ids = oc._call('account.account', 'search',
-                   [('code','=', code), ('company_id','=', cfg.ODOO_COMPANY)],
+                   [('code','=', code), ('company_id','=', oc.company_id)],
                    limit=1)
     if ids: return ids[0]
     # 2) startswith (cuando viene 6 cifras y la cuenta es de 4)
     ids = oc._call('account.account', 'search',
-                   [('code','=like', f'{code}%'), ('company_id','=', cfg.ODOO_COMPANY)],
+                   [('code','=like', f'{code}%'), ('company_id','=', oc.company_id)],
                    limit=1)
     if ids: return ids[0]
     # 3) buscar la 4-prefijo (ej. 6280 si nos pasaron 628000)
     if len(code) >= 4:
         ids = oc._call('account.account', 'search',
-                       [('code','=like', f'{code[:4]}%'), ('company_id','=', cfg.ODOO_COMPANY)],
+                       [('code','=like', f'{code[:4]}%'), ('company_id','=', oc.company_id)],
                        limit=1)
         if ids: return ids[0]
     return None
@@ -106,7 +110,7 @@ def _find_purchase_tax(oc, iva_pct):
     ids = oc._call('account.tax', 'search', [
         ('type_tax_use','=','purchase'),
         ('amount','=', amt),
-        ('company_id','=', cfg.ODOO_COMPANY),
+        ('company_id','=', oc.company_id),
         ('active','=', True),
     ], limit=1)
     if ids: return ids[0]
@@ -168,7 +172,7 @@ def crear_factura_proveedor(doc: dict, post: bool = False) -> dict:
             'move_type': 'in_invoice',
             'partner_id': partner_id,
             'invoice_date': fecha or False,
-            'company_id': cfg.ODOO_COMPANY,
+            'company_id': oc.company_id,
             'invoice_line_ids': [(0, 0, line_vals)],
         }
         if doc.get('num_factura'):
