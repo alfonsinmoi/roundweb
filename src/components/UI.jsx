@@ -37,6 +37,30 @@ export function Badge({ children, color = 'green' }) {
   )
 }
 
+/**
+ * Tabla key/value para resúmenes (paso "revisar" de wizards, panels de
+ * detalle, etc). Cada fila es [label, value]. Renderiza:
+ *
+ *   <DatosTabla rows={[
+ *     ['Razón social', 'Round Málaga Centro SL'],
+ *     ['CIF', 'B12345678'],
+ *   ]} />
+ */
+export function DatosTabla({ rows }) {
+  return (
+    <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+      <tbody>
+        {rows.map(([k, v], i) => (
+          <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
+            <td style={{ padding: '8px 0', color: 'var(--text-3)', width: '40%' }}>{k}</td>
+            <td style={{ padding: '8px 0', color: 'var(--text-0)', fontWeight: 500 }}>{v}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
 export function StatCard({ label, value, sub, icon: Icon, color = 'var(--green)' }) {
   return (
     <div style={{ background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: 20, padding: '28px 24px' }}>

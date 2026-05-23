@@ -237,6 +237,22 @@ _MODULE_PROVISIONERS = {
     'contabilidad': ('provision_contabilidad', 'odoo_contabilidad_enabled'),
 }
 
+# Campos requeridos del wizard. Lista canónica: si alguno falta, 400.
+# (Definido aquí en lugar de más abajo para que tanto el endpoint nuevo
+# `/provision/<modulo>` como el legacy `/solicitud-despliegue` lo usen.
+# Python lo resolvería en cualquier orden por lexical scoping at-call-time,
+# pero ponerlo arriba aclara la lectura.)
+_REQUIRED_FIELDS = ['razon_social', 'cif']
+
+# Campos opcionales que persistimos si vienen (legacy wizard)
+_OPTIONAL_FIELDS = [
+    'direccion', 'poblacion', 'cp', 'provincia', 'pais',
+    'telefono', 'email_facturacion',
+    'plan_contable', 'factura_secuencia_prefijo', 'factura_ultimo_numero',
+    'iban_principal', 'banco_nombre',
+    'notas_manager',
+]
+
 
 def _validar_elegibilidad(row, modulo_flag_col=None):
     """Devuelve None si OK, tuple (response, status) si denegado.
@@ -318,19 +334,9 @@ def provision_modulo(modulo):
                     'mensaje': f'Módulo {modulo} activado correctamente.'})
 
 
-# ─── Solicitud de despliegue (Fase 2A) ─────────────────────────────────────
-
-# Campos requeridos del wizard. Lista canónica: si alguno falta, 400.
-_REQUIRED_FIELDS = ['razon_social', 'cif']
-
-# Campos opcionales que persistimos si vienen
-_OPTIONAL_FIELDS = [
-    'direccion', 'poblacion', 'cp', 'provincia', 'pais',
-    'telefono', 'email_facturacion',
-    'plan_contable', 'factura_secuencia_prefijo', 'factura_ultimo_numero',
-    'iban_principal', 'banco_nombre',
-    'notas_manager',
-]
+# ─── Solicitud de despliegue (Fase 2A — legacy) ────────────────────────────
+# `_REQUIRED_FIELDS` y `_OPTIONAL_FIELDS` están definidos arriba (los usa
+# también /provision/<modulo>).
 
 
 @bp.route('/solicitud-despliegue', methods=['GET'])

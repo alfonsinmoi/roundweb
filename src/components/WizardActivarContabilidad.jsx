@@ -13,10 +13,9 @@
  */
 import { useState } from 'react'
 import { Loader2, Calculator, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react'
-import { Btn } from './UI'
+import { Btn, DatosTabla } from './UI'
 import { managerProvisionModulo } from '../utils/configApi'
 import { ModalShell, Label, Input } from './WizardActivarCRM'
-import { DatosTabla } from './WizardActivarCuotas'
 
 
 const PLANES = [

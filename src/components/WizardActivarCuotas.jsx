@@ -16,7 +16,7 @@
 import { useState, useEffect } from 'react'
 import { ChevronLeft, ChevronRight, Loader2, ReceiptText, AlertCircle,
          CheckCircle2 } from 'lucide-react'
-import { Btn } from './UI'
+import { Btn, DatosTabla } from './UI'
 import { useToast } from './Toast'
 import { managerProvisionModulo } from '../utils/configApi'
 import { ModalShell, Label, Input } from './WizardActivarCRM'
@@ -440,17 +440,8 @@ function FormRevisar({ data, companyExists, status }) {
 }
 
 
-export function DatosTabla({ rows }) {
-  return (
-    <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-      <tbody>
-        {rows.map(([k, v], i) => (
-          <tr key={i} style={{ borderBottom: '1px solid var(--line)' }}>
-            <td style={{ padding: '8px 0', color: 'var(--text-3)', width: '40%' }}>{k}</td>
-            <td style={{ padding: '8px 0', color: 'var(--text-0)', fontWeight: 500 }}>{v}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
+// DatosTabla movido a `./UI.jsx` para que ambos wizards (cuotas y
+// contabilidad) lo importen del componente reutilizable, no del otro
+// wizard. Se mantiene el re-export por si algún día se necesita el
+// import original.
+export { DatosTabla } from './UI'

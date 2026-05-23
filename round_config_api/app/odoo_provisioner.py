@@ -413,11 +413,21 @@ def save_sistemas_cobro(id_manager, sistemas, steps=None):
 
 # ─── Flag setters ────────────────────────────────────────────────────────
 
+_FLAG_COLUMNS_WHITELIST = ('odoo_crm_enabled', 'odoo_cuotas_enabled',
+                            'odoo_contabilidad_enabled')
+
+
 def _set_flag(id_manager, column):
-    """Activa una columna booleana en manager_config."""
-    # Whitelist para evitar SQL injection (la columna viene de constante)
-    assert column in ('odoo_crm_enabled', 'odoo_cuotas_enabled',
-                       'odoo_contabilidad_enabled')
+    """Activa una columna booleana en manager_config.
+
+    Validamos `column` contra whitelist con un raise (no `assert`, que se
+    desactiva con `python -O` y dejaría el SQL abierto a inyección).
+    """
+    if column not in _FLAG_COLUMNS_WHITELIST:
+        raise ValueError(
+            f'_set_flag: columna {column!r} no permitida. '
+            f'Válidas: {_FLAG_COLUMNS_WHITELIST}'
+        )
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""UPDATE manager_config
                            SET {column} = TRUE
