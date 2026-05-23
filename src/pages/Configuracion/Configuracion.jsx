@@ -60,13 +60,26 @@ const TAB_META      = { id: 'meta',      label: 'Cuentas Meta',           comp: 
 const TAB_PERFILES  = { id: 'perfiles',  label: 'Perfiles',               comp: PerfilesTab,       managerOnly: true }
 const TAB_USUARIOS  = { id: 'usuarios',  label: 'Usuarios web',           comp: UsuariosWebTab,    managerOnly: true }
 
+// Lee la pestaña inicial desde ?tab=<id> o #<id> (deep-link).
+// Si llega vacío o no existe, devuelve null y el componente decide default.
+function _readTabFromLocation() {
+  try {
+    const u = new URL(window.location.href)
+    const fromQuery = (u.searchParams.get('tab') || '').trim()
+    if (fromQuery) return fromQuery
+    const fromHash  = (u.hash || '').replace(/^#/, '').trim()
+    if (fromHash)  return fromHash
+  } catch { /* SSR / no-window: ignore */ }
+  return null
+}
+
 export default function Configuracion() {
   const { user, isImpersonating } = useAuth()
-  // Por defecto la pestaña Suscripciones (managers sin Odoo aún empiezan
-  // por ahí; managers con Odoo ya activo pueden navegar a Cuotas/etc. desde
-  // ahí). Si el usuario está impersonando trainer, no hay Suscripciones →
-  // useEffect saltará a la primera visible.
-  const [activeTab, setActiveTab] = useState(isImpersonating ? 'cuotas' : 'suscrip')
+  // Default: Suscripciones para el manager (entry point); Cuotas para trainer impersonado.
+  // Si la URL trae ?tab=<id> o #<id>, gana eso. Si la pestaña no existe (filtrada
+  // por feature flag o nombre inválido) el useEffect cae a la primera visible.
+  const _initial = _readTabFromLocation() || (isImpersonating ? 'cuotas' : 'suscrip')
+  const [activeTab, setActiveTab] = useState(_initial)
   const identity = getRoundIdentity(user)
   const { features } = useOdooStatus()
   // Tabs solo visibles para el manager (no impersonando trainer).
@@ -85,6 +98,34 @@ export default function Configuracion() {
     if (!TABS.find(t => t.id === activeTab)) {
       const first = TABS[0]
       if (first) setActiveTab(first.id)
+    }
+  }, [TABS, activeTab])
+
+  // Sync activeTab → URL hash (sin polución de history). Permite copiar/pegar
+  // el link y volver a la misma pestaña, y que el botón "atrás" funcione.
+  useEffect(() => {
+    try {
+      const u = new URL(window.location.href)
+      if (u.hash.replace(/^#/, '') !== activeTab) {
+        u.hash = activeTab
+        window.history.replaceState({}, '', u.toString())
+      }
+    } catch { /* ignore */ }
+  }, [activeTab])
+
+  // Si el usuario navega entre URLs (back/forward) reaccionamos al cambio.
+  useEffect(() => {
+    function onPop() {
+      const next = _readTabFromLocation()
+      if (next && TABS.find(t => t.id === next) && next !== activeTab) {
+        setActiveTab(next)
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    window.addEventListener('hashchange', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      window.removeEventListener('hashchange', onPop)
     }
   }, [TABS, activeTab])
 
