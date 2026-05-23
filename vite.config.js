@@ -10,6 +10,7 @@ export default defineConfig({
   server: {
     allowedHosts: ['localhost'],
     proxy: {
+      // Proxy a NoofitPro (sólo se usa en algunas pantallas, llamada directa).
       '/wiemspro': {
         target: 'https://pro.wiemspro.com',
         changeOrigin: true,
@@ -31,6 +32,19 @@ export default defineConfig({
             console.log(`\x1b[36m[${time}]\x1b[0m ${color}${status}\x1b[0m ← ${req.method} ${req.url}`)
           })
         },
+      },
+      // Proxy al backend Round Config API en producción (vive en noofit.wiemspro.com).
+      // En dev (localhost:5173) reenviamos /api/* y /reserva/* a producción para
+      // ver datos reales sin tener que levantar Flask local.
+      '/api': {
+        target: 'https://noofit.wiemspro.com',
+        changeOrigin: true,
+        secure: true,
+      },
+      '/reserva': {
+        target: 'https://noofit.wiemspro.com',
+        changeOrigin: true,
+        secure: true,
       },
     },
   },
