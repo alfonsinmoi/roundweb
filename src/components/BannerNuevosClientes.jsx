@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Bell, ChevronDown, X, ArrowRight } from 'lucide-react'
 import { Avatar } from './UI'
 import { useNuevosClientes } from '../hooks/useNuevosClientes'
+import { useOdooStatus } from '../hooks/useOdooStatus'
 import AltaClienteModal from './AltaClienteModal'
 
 /**
@@ -15,6 +16,11 @@ export default function BannerNuevosClientes() {
   const { nuevos, markSeen, markAllSeen, reload } = useNuevosClientes()
   const [expanded, setExpanded] = useState(false)
   const [clienteModal, setClienteModal] = useState(null)
+  // El banner es señal de "clientes que esperan a que les des de alta en
+  // el ERP". Sin Odoo no hay ERP que enviar, así que el banner pierde
+  // sentido: lo ocultamos completamente.
+  const { odooEnabled } = useOdooStatus()
+  if (!odooEnabled) return null
 
   if (!nuevos || nuevos.length === 0) return null
 
