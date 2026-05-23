@@ -66,7 +66,14 @@ def nf_login(email, pwd):
               'password': hashlib.md5(pwd.encode()).hexdigest().upper()},
         headers={'Content-Type': 'application/json'},
         verify=False, timeout=30)
-    return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', '')
+    r.raise_for_status()
+    tok = r.headers.get('X-CustomToken')
+    if not tok:
+        raise RuntimeError(
+            f'nf_login: NoofitPro no devolvió X-CustomToken (status={r.status_code}). '
+            f'Verifica que las credenciales del trainer {email} son válidas.'
+        )
+    return tok, r.headers.get('X-TRAINER_MANAGER', '')
 
 
 def nf_headers(tok, mgr):
@@ -220,6 +227,11 @@ def main():
                             WHERE id_manager = %s""", (MANAGER_ID,))
             atendidos = {r['cliente_idnoofit'] for r in cur.fetchall()}
 
+    if not cred:
+        raise RuntimeError(
+            f'No hay credenciales NoofitPro en trainer_noofit_creds para id_trainer={ID_TRAINER}. '
+            f'Inserta una fila con noofit_email + noofit_password antes de relanzar.'
+        )
     log.info(f'NoofitPro login {cred["noofit_email"]}')
     tok, mgr_h = nf_login(cred['noofit_email'], cred['noofit_password'])
     clientes_nf = nf_get_clientes(tok, mgr_h)

@@ -222,12 +222,21 @@ export default function InformeAsistencia() {
 
   // Cargar tests de estado físico para el algoritmo "En riesgo" (y la pestaña).
   // Tira de /api/estado-fisico/sessions (con cache backend 10 min).
+  //
+  // `loadedRef` controla la idempotencia: necesitamos cargar UNA vez por
+  // manager. No usamos `estadoFisicoByClient` en las deps porque crearía
+  // un loop (un manager sin tests deja el state en `{}` y el guard de
+  // length>0 no protege; la setState con nuevo `{}` retriggerea el effect).
+  const estadoFisicoLoadedRef = useRef({ managerId: null })
   useEffect(() => {
     if (!identity?.managerId) return
     if (tab !== 'estado_fisico' && tab !== 'riesgo') return
-    if (Object.keys(estadoFisicoByClient).length > 0) return     // ya cargado
+    if (estadoFisicoLoadedRef.current.managerId === identity.managerId) return
+    let active = true
+    estadoFisicoLoadedRef.current = { managerId: identity.managerId }
     import('../utils/configApi').then(mod => mod.estadoFisicoSessions(identity))
       .then(sessions => {
+        if (!active) return
         // Agrupar por cliente con datos derivados
         const ahora = Date.now()
         const byCli = {}
@@ -256,8 +265,15 @@ export default function InformeAsistencia() {
         }
         setEstadoFisicoByClient(out)
       })
-      .catch(e => console.warn('estadoFisicoSessions:', e?.message))
-  }, [tab, identity, estadoFisicoByClient])
+      .catch(e => {
+        if (!active) return
+        // Si falla, reseteamos el ref para permitir reintento manual
+        // cambiando de pestaña y volviendo.
+        estadoFisicoLoadedRef.current = { managerId: null }
+        console.warn('estadoFisicoSessions:', e?.message)
+      })
+    return () => { active = false }
+  }, [tab, identity])
 
   const filteredSalas = useMemo(() => {
     const dDesde = new Date(desde + 'T00:00:00')
