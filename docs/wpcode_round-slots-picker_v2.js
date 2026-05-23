@@ -136,13 +136,15 @@
         slotsBox.appendChild(h);
         for (const s of dia.slots) {
           const lab = document.createElement('label');
-          lab.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 12px; margin:4px 0; border:1px solid #ddd; border-radius:8px; cursor:pointer; background:#fff';
+          // color:#1a1a1a fuerza texto oscuro sobre fondo blanco — sin esto, en
+          // temas WP oscuros el <b> hereda color blanco del body y queda invisible.
+          lab.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 12px; margin:4px 0; border:1px solid #ddd; border-radius:8px; cursor:pointer; background:#fff; color:#1a1a1a';
           const radio = document.createElement('input');
           radio.type = 'radio'; radio.name = 'round_slot'; radio.value = s.id_sala;
           radio.style.marginRight = '10px';
           const info = document.createElement('div');
           info.style.flex = '1';
-          info.innerHTML = '<b style="display:block">' + s.hora + ' — ' + s.nombre + '</b>' +
+          info.innerHTML = '<b style="display:block; color:#1a1a1a; font-size:14px">' + s.hora + ' — ' + s.nombre + '</b>' +
             '<span style="font-size:12px; color:#666">' + s.libres + ' de ' + s.aforo + ' plazas libres</span>';
           const badge = document.createElement('span');
           badge.style.cssText = 'font-size:11px; padding:3px 8px; border-radius:99px; color:#fff; background:' + nivelColor(s.nivel);
