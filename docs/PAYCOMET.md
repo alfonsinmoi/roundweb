@@ -70,13 +70,13 @@ Más:
 
 URLs OK / KO / notificación (`PAYCOMET_URL_OK`, `_URL_KO`, `_URL_NOTIF`
 en `.env` o las columnas `url_ok / url_ko / url_notif` por trainer)
-deben apuntar a `https://round.wiemspro.com` o `https://round.noofit.com`.
+deben apuntar a `https://noofit.wiemspro.com` o `https://round.noofit.com`.
 Hoy están preconfiguradas a:
 
 ```
-url_ok    = https://round.wiemspro.com/cuotas-clientes
-url_ko    = https://round.wiemspro.com/cuotas-clientes
-url_notif = https://round.wiemspro.com/api/cuotas/paycomet-callback
+url_ok    = https://noofit.wiemspro.com/cuotas-clientes
+url_ko    = https://noofit.wiemspro.com/cuotas-clientes
+url_notif = https://noofit.wiemspro.com/api/cuotas/paycomet-callback
 ```
 
 Si necesitas cambiar el dominio en sandbox (porque el JS no permite el

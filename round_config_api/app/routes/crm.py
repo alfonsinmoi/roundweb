@@ -64,7 +64,7 @@ def _build_ctx(lead_id, lead_name, lead_email, lead_phone, lead_message,
         'lead_email':    lead_email or '',
         'lead_phone':    lead_phone or '',
         'lead_message':  lead_message or '',
-        'lead_url':      f'https://round.wiemspro.com/crm',
+        'lead_url':      f'https://noofit.wiemspro.com/crm',
         'cuota_interes': cuota_interes or '',
         'trainer_name':  centro.get('nombre_centro') or '' if centro else '',
         'trainer_phone': centro.get('telefono') or '' if centro else '',
@@ -226,7 +226,7 @@ def crear_lead_publico():
   <tr><td><b>Teléfono:</b></td><td>{telefono}</td></tr>
   {'<tr><td><b>Mensaje:</b></td><td>'+mensaje+'</td></tr>' if mensaje else ''}
 </table>
-<p>Gestionar: <a href="https://round.wiemspro.com/crm">panel CRM</a></p>"""
+<p>Gestionar: <a href="https://noofit.wiemspro.com/crm">panel CRM</a></p>"""
             enviar_email(centro['email'],
                          f'Nuevo lead web — {full_name} ({centro["nombre_centro"]})',
                          f'Nuevo lead {full_name}\n{email}\n{telefono}',

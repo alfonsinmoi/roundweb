@@ -1,5 +1,5 @@
 (function() {
-  const API_BASE = 'https://round.wiemspro.com';
+  const API_BASE = 'https://noofit.wiemspro.com';
   const PREFIX_LABELS = {
     'RT': 'Round Funcional',
     'CI': 'Ciclo Experience',

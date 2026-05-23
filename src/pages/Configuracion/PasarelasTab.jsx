@@ -65,7 +65,7 @@ export default function PasarelasTab({ identity: identityProp }) {
           PayComet de cada cuenta es:
           <code style={{ background: 'var(--bg-3)', padding: '2px 8px', borderRadius: 6,
                          fontSize: 11, marginLeft: 6, fontFamily: 'var(--font-mono)' }}>
-            https://round.wiemspro.com/api/cuotas/paycomet-callback
+            https://noofit.wiemspro.com/api/cuotas/paycomet-callback
           </code>
         </p>
       </Card>
@@ -141,7 +141,7 @@ export default function PasarelasTab({ identity: identityProp }) {
                           const s = String(v ?? '').trim()
                           return !s || s === ph
                         }
-                        const dft = 'https://round.wiemspro.com/cuotas-clientes'
+                        const dft = 'https://noofit.wiemspro.com/cuotas-clientes'
                         const url_ok = isPlaceholderOrEmpty(editing.url_ok, dft) ? null : editing.url_ok
                         const url_ko = isPlaceholderOrEmpty(editing.url_ko, dft) ? null : editing.url_ko
                         await pasarelaUpsert(identity, t.id, {
@@ -210,11 +210,11 @@ function CredForm({ value, onChange, onSave, onDelete }) {
       </Field>
       <Field label="URL OK (redirección éxito)">
         <input value={value.url_ok} onChange={e => set({ url_ok: e.target.value })}
-               placeholder="https://round.wiemspro.com/cuotas-clientes" style={inputStyle} />
+               placeholder="https://noofit.wiemspro.com/cuotas-clientes" style={inputStyle} />
       </Field>
       <Field label="URL KO (redirección fallo)">
         <input value={value.url_ko} onChange={e => set({ url_ko: e.target.value })}
-               placeholder="https://round.wiemspro.com/cuotas-clientes" style={inputStyle} />
+               placeholder="https://noofit.wiemspro.com/cuotas-clientes" style={inputStyle} />
       </Field>
       <Field label="Notas internas">
         <input value={value.notas} onChange={e => set({ notas: e.target.value })}

@@ -22,7 +22,7 @@ trainer" cuando el Manager te está impersonando.
 
 ## URL y acceso
 
-- Web: `https://round.wiemspro.com` (también `https://round.noofit.com`)
+- Web: `https://noofit.wiemspro.com` (también `https://round.noofit.com`)
 - Login: tu email + contraseña NoofitPro
 
 ## Índice

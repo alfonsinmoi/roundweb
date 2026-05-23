@@ -27,7 +27,7 @@ from ..audit_log import log_action, actor_from_request, diff_dict
 bp = Blueprint('usuarios_web', __name__)
 log = logging.getLogger(__name__)
 
-WEB_URL = 'https://round.wiemspro.com'
+WEB_URL = 'https://noofit.wiemspro.com'
 
 
 def _send_welcome(usuario):
@@ -39,7 +39,7 @@ def _send_welcome(usuario):
         f"Tu manager te ha dado acceso a la plataforma Round.\n\n"
         f"Para entrar necesitas verificar tu email y elegir una contraseña personal.\n\n"
         f"Pulsa este enlace (válido {VERIF_TTL_HOURS} horas):\n{link}\n\n"
-        f"Una vez verificado, podrás entrar en https://round.wiemspro.com con tu email y "
+        f"Una vez verificado, podrás entrar en https://noofit.wiemspro.com con tu email y "
         f"la contraseña que elijas.\n\n— Round Training Center"
     )
     body_html = f"""<p>Hola <b>{nombre}</b>,</p>
@@ -47,7 +47,7 @@ def _send_welcome(usuario):
 <p>Para entrar necesitas verificar tu email y elegir una contraseña personal.</p>
 <p><a href="{link}" style="display:inline-block;padding:12px 24px;background:#2DD4A8;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Verificar email y crear contraseña</a></p>
 <p style="font-size:12px;color:#888">Enlace válido durante {VERIF_TTL_HOURS} horas.</p>
-<p>Una vez verificado, entrarás en <a href="{WEB_URL}">round.wiemspro.com</a> con
+<p>Una vez verificado, entrarás en <a href="{WEB_URL}">noofit.wiemspro.com</a> con
 tu email y la contraseña que elijas.</p>
 <p style="font-size:11px;color:#aaa;margin-top:24px">— Round Training Center</p>"""
     try:

@@ -33,7 +33,7 @@ WCOMMERCE_APP_ID   = os.getenv('WCOMMERCE_APP_ID', '1')
 CORS_ORIGINS = [
     o.strip() for o in os.getenv(
         'CONFIG_CORS_ORIGINS',
-        'https://round.wiemspro.com,http://localhost:5173'
+        'https://noofit.wiemspro.com,http://localhost:5173'
     ).split(',') if o.strip()
 ]
 

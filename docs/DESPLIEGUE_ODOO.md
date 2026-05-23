@@ -187,17 +187,17 @@ TK=$(ssh round-vps "grep '^CONFIG_API_TOKEN=' /opt/round_config_api/.env | cut -
 
 # Status (debería mostrar las 3 flags + sistemas_cobro)
 curl -s -H "X-Round-Token: $TK" -H "X-Round-Manager-Id: 17675" \
-     https://round.wiemspro.com/api/manager/odoo-status | jq .
+     https://noofit.wiemspro.com/api/manager/odoo-status | jq .
 
 # Activar idempotente (no rompe si ya está activo)
 curl -s -X POST -H "X-Round-Token: $TK" -H "X-Round-Manager-Id: 17675" \
      -H "Content-Type: application/json" \
      -d '{"sistemas_cobro":["sepa","tpv_virtual","link_pago"]}' \
-     https://round.wiemspro.com/api/manager/provision/cuotas | jq .
+     https://noofit.wiemspro.com/api/manager/provision/cuotas | jq .
 
 # Gate funcionando: manager sin la flag → 403
 curl -s -H "X-Round-Token: $TK" -H "X-Round-Manager-Id: 17679" \
-     https://round.wiemspro.com/api/subscriptions/cuotas-catalogo | jq .
+     https://noofit.wiemspro.com/api/subscriptions/cuotas-catalogo | jq .
 # → {"error":"feature_not_enabled","feature":"cuotas",…}
 ```
 
@@ -392,13 +392,13 @@ El cambio es reversible — si vuelves a desmarcar, el trainer hereda otra vez, 
 ```bash
 # Listar trainers y su config
 curl -H "X-Round-Token: ..." -H "X-Round-Manager-Id: <id>" \
-     https://round.wiemspro.com/api/manager/trainers-contabilidad
+     https://noofit.wiemspro.com/api/manager/trainers-contabilidad
 
 # Cambiar uno a contabilidad propia
 curl -X PATCH -H "X-Round-Token: ..." -H "X-Round-Manager-Id: <id>" \
      -H "Content-Type: application/json" \
      -d '{"heredar_contabilidad": false, "nombre_trainer": "Centro Málaga"}' \
-     https://round.wiemspro.com/api/manager/trainers-contabilidad/<id_trainer>
+     https://noofit.wiemspro.com/api/manager/trainers-contabilidad/<id_trainer>
 ```
 
 ---
@@ -428,15 +428,15 @@ ADMIN_KEY=$(ssh round-vps "grep '^ROUND_ADMIN_KEY=' /opt/round_config_api/.env |
 # Listar solicitudes pendientes con error
 curl -H "X-Round-Token: <token>" -H "X-Round-Manager-Id: 17675" \
      -H "X-Round-Admin-Key: $ADMIN_KEY" \
-     https://round.wiemspro.com/api/manager/admin/solicitudes-despliegue
+     https://noofit.wiemspro.com/api/manager/admin/solicitudes-despliegue
 
 # Listar TODAS (sin filtrar)
 curl -H "..." \
-     "https://round.wiemspro.com/api/manager/admin/solicitudes-despliegue?estado=completada"
+     "https://noofit.wiemspro.com/api/manager/admin/solicitudes-despliegue?estado=completada"
 
 # Ver detalle completo de una solicitud (con log del provisioner)
 curl -H "..." \
-     https://round.wiemspro.com/api/manager/admin/solicitudes-despliegue/<id>
+     https://noofit.wiemspro.com/api/manager/admin/solicitudes-despliegue/<id>
 
 # Corregir datos en BD (psql directo) si hace falta:
 ssh round-vps 'sudo -u postgres psql round_config -c \
@@ -444,7 +444,7 @@ ssh round-vps 'sudo -u postgres psql round_config -c \
 
 # Reintentar el provisioner
 curl -X POST -H "..." \
-     https://round.wiemspro.com/api/manager/admin/solicitudes-despliegue/<id>/reintentar
+     https://noofit.wiemspro.com/api/manager/admin/solicitudes-despliegue/<id>/reintentar
 ```
 
 ### Escenario C — El manager se quedó colgado
@@ -500,7 +500,7 @@ Verificación de regresión tras cualquier cambio en `odoo_*.py`:
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" \
      -H "X-Round-Token: <token>" -H "X-Round-Manager-Id: 17675" \
-     https://round.wiemspro.com/api/crm/leads   # debe ser 200
+     https://noofit.wiemspro.com/api/crm/leads   # debe ser 200
 ```
 
 ---

@@ -123,7 +123,7 @@ npm install
 
 ### 8. Login en Round (frontend)
 
-Abre `https://round.wiemspro.com` o `https://round.noofit.com` en el
+Abre `https://noofit.wiemspro.com` o `https://round.noofit.com` en el
 navegador y haz login con tus credenciales habituales.
 
 ## Comandos útiles

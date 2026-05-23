@@ -9,7 +9,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                  Round (manager) — round.wiemspro.com                   │
+│                  Round (manager) — noofit.wiemspro.com                   │
 │  Manager crea notificación / cron diario / hooks PayComet+SEPA          │
 │  ──────────────►  ENVÍA via OneSignal REST API ────────────────────────►│
 └──────────────────────────────────────────────────────────────────────────┘
@@ -103,7 +103,7 @@ Cuando Round envía una notificación, el payload OneSignal lleva:
 {
   "headings": { "en": "...", "es": "Recibo pendiente" },
   "contents": { "en": "...", "es": "Tienes un recibo de 45,00 € pendiente." },
-  "url": "https://round.wiemspro.com/algo (opcional, deep link)",
+  "url": "https://noofit.wiemspro.com/algo (opcional, deep link)",
   "data": {
     "seccion":   "cobros",
     "tipo":      "impago_efectivo",
@@ -227,7 +227,7 @@ estadísticas de "X de Y leídas".
 ### Endpoint
 
 ```
-PUT https://round.wiemspro.com/api/notif/<envio_id>/leida?cliente=<idClienteNoofit>
+PUT https://noofit.wiemspro.com/api/notif/<envio_id>/leida?cliente=<idClienteNoofit>
 Header: X-Round-Token: <token de servicio>
 ```
 
@@ -257,7 +257,7 @@ val clienteId = currentUserId  // el mismo que pasaste a OneSignal.login()
 
 OkHttpClient().newCall(
     Request.Builder()
-        .url("https://round.wiemspro.com/api/notif/$envioId/leida?cliente=$clienteId")
+        .url("https://noofit.wiemspro.com/api/notif/$envioId/leida?cliente=$clienteId")
         .put("".toRequestBody(null))
         .addHeader("X-Round-Token", BuildConfig.ROUND_TOKEN)
         .build()

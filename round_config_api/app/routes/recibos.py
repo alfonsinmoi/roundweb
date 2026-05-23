@@ -397,12 +397,12 @@ def generar_link_pago(rid):
     if r.get('link_pago_token') and not regenerar:
         # Devolver el ya generado
         return jsonify({'ok': True, 'token': r['link_pago_token'],
-                        'url': f"https://round.wiemspro.com/pago/{r['link_pago_token']}",
+                        'url': f"https://noofit.wiemspro.com/pago/{r['link_pago_token']}",
                         'reused': True})
 
     # Generar token nuevo
     token = secrets.token_urlsafe(24)
-    url = f"https://round.wiemspro.com/pago/{token}"
+    url = f"https://noofit.wiemspro.com/pago/{token}"
 
     # TODO: cuando haya credenciales PayComet, crear orden en pasarela aquí.
     # Por ahora se guarda el token local; el handler /pago/<token> hará el

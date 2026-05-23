@@ -88,7 +88,7 @@ def _new_token():
 
 
 def _public_url():
-    return os.getenv('ROUND_PUBLIC_URL', 'https://round.wiemspro.com')
+    return os.getenv('ROUND_PUBLIC_URL', 'https://noofit.wiemspro.com')
 
 
 def _email_valid(s):

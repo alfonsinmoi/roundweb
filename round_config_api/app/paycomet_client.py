@@ -43,11 +43,11 @@ class PayCometClient:
     ):
         self.api_token = api_token or os.getenv('PAYCOMET_API_TOKEN', '')
         self.terminal = int(terminal or os.getenv('PAYCOMET_TERMINAL', '0') or '0')
-        self.url_ok = url_ok or os.getenv('PAYCOMET_URL_OK', 'https://round.wiemspro.com/cuotas-clientes')
-        self.url_ko = url_ko or os.getenv('PAYCOMET_URL_KO', 'https://round.wiemspro.com/cuotas-clientes')
+        self.url_ok = url_ok or os.getenv('PAYCOMET_URL_OK', 'https://noofit.wiemspro.com/cuotas-clientes')
+        self.url_ko = url_ko or os.getenv('PAYCOMET_URL_KO', 'https://noofit.wiemspro.com/cuotas-clientes')
         self.url_notif = url_notif or os.getenv(
             'PAYCOMET_URL_NOTIF',
-            'https://round.wiemspro.com/api/cuotas/paycomet-callback'
+            'https://noofit.wiemspro.com/api/cuotas/paycomet-callback'
         )
         self.sandbox = (str(sandbox or os.getenv('PAYCOMET_SANDBOX', '0')).lower() in ('1', 'true', 'yes'))
 
@@ -84,7 +84,7 @@ class PayCometClient:
         """
         if not self.configurado:
             # Modo stub: la URL apunta a nuestra página de pago simulado
-            base = os.getenv('ROUND_PUBLIC_BASE', 'https://round.wiemspro.com')
+            base = os.getenv('ROUND_PUBLIC_BASE', 'https://noofit.wiemspro.com')
             return f'{base}/api/cuotas/paycomet-stub/{order_ref}?amount={amount_eur:.2f}'
 
         amount_cents = str(int(round(float(amount_eur) * 100)))

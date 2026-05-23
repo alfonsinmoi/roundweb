@@ -340,7 +340,7 @@ async function build() {
           width: { size: 9360, type: WidthType.DXA },
           columnWidths: [2200, 7160],
           rows: [
-            ['Frontend dashboard', 'React 18 + Vite, lazy-loading por ruta. SPA servida en round.noofit.com / round.wiemspro.com. Sesión basada en JWT (X-CustomToken) emitido por NoofitPro. Soporta impersonación trainer↔manager.'],
+            ['Frontend dashboard', 'React 18 + Vite, lazy-loading por ruta. SPA servida en round.noofit.com / noofit.wiemspro.com. Sesión basada en JWT (X-CustomToken) emitido por NoofitPro. Soporta impersonación trainer↔manager.'],
             ['Backend Round Config API', 'Flask + Gunicorn (Python 3.12) en VPS dedicado (212.227.40.122:8095). Capa de orquestación entre NoofitPro, Odoo, PostgreSQL y servicios externos. Auth por tokens internos (X-Round-Token + X-Round-Manager-Id).'],
             ['Base de datos local', 'PostgreSQL 16 (round_config). 14 tablas que extienden el modelo NoofitPro: catálogos de cuotas/descuentos/modificaciones, asignaciones cliente, plantillas email, configuración pasarelas, reservas slot, leads CRM. Schema idempotente con migraciones automáticas al boot.'],
             ['NoofitPro (proveedor)', 'SaaS de gestión de gimnasios (pro.wiemspro.com). Mantiene clientes, clases, asistencia, sensores. Consumo vía REST con MD5 de password en login y JWT con TTL ~60 min.'],
@@ -414,7 +414,7 @@ async function build() {
         BULLET('Endpoints públicos protegidos con: rate limit por IP (8 req/5 min), honeypot anti-spam (campo oculto), validación estricta de entrada.'),
         BULLET('Validación DNI/NIE algorítmica con letra de control; pasaporte por regex. Justificado al lead por necesidades del seguro de instalación.'),
         BULLET('Secretos de proveedores (Resend, PayComet, SMTP) cifrados y nunca devueltos al frontend (solo preview tipo "abc…xyz").'),
-        BULLET('CORS allowlist explícita: round.wiemspro.com, round.noofit.com, roundtrainingcenter.com, www.roundtrainingcenter.com.'),
+        BULLET('CORS allowlist explícita: noofit.wiemspro.com, round.noofit.com, roundtrainingcenter.com, www.roundtrainingcenter.com.'),
         BULLET('Logging estructurado en journald, con métricas de envío email, llamadas a NoofitPro y triggers de eventos.'),
         BULLET('Persistencia de stage_history y raw_payload de formularios → trazabilidad GDPR completa.'),
 

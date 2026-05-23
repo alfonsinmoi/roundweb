@@ -211,7 +211,7 @@ def test(tpl_id):
             'lead_email':    'juan.perez@example.com',
             'lead_phone':    '+34 666 123 456',
             'lead_message':  'Quiero información sobre los planes mensuales',
-            'lead_url':      'https://round.wiemspro.com/crm',
+            'lead_url':      'https://noofit.wiemspro.com/crm',
             'lead_id':       '999',
             'trainer_name':  'Trainer Demo',
             'trainer_phone': '+34 600 000 000',

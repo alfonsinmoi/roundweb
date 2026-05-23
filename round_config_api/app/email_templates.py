@@ -130,7 +130,7 @@ o llamarnos al <a href="tel:{{trainer_phone}}">{{trainer_phone}}</a>.</p>
   <tr><td><b>Mensaje:</b></td><td>{{lead_message}}</td></tr>
 </table>
 <p>Recuerda contactar en las próximas 24h. Puedes ver y gestionar este lead desde
-<a href="https://round.wiemspro.com/crm">tu panel CRM</a>.</p>
+<a href="https://noofit.wiemspro.com/crm">tu panel CRM</a>.</p>
 <hr/>
 <p style="color:#888;font-size:12px">Round Training Center · Lead #{{lead_id}}</p>"""
     },

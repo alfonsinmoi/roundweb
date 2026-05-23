@@ -70,7 +70,7 @@ def _noofit_login_with_manager_creds(id_manager: str):
 bp = Blueprint('auth_usuario', __name__)
 log = logging.getLogger(__name__)
 
-WEB_URL = 'https://round.wiemspro.com'  # FIXME: leer de config
+WEB_URL = 'https://noofit.wiemspro.com'  # FIXME: leer de config
 
 
 # ─── Helpers email ─────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ flujo concreto** con pasos, capturas y tips.
 
 ## URL y acceso
 
-- Web: `https://round.wiemspro.com` (también `https://round.noofit.com`)
+- Web: `https://noofit.wiemspro.com` (también `https://round.noofit.com`)
 - Login: tu email + contraseña NoofitPro
 - Una vez dentro, el menú lateral muestra todas las funcionalidades a las
   que tienes acceso como Manager.

@@ -166,7 +166,7 @@ const portada = [
     children: [new TextRun({ text: `Versión 1.0 · ${new Date().toLocaleDateString('es-ES', { year:'numeric', month:'long' })}`,
                               font: FONT, size: 20, color: C.text3 })] }),
   new Paragraph({ alignment: AlignmentType.CENTER,
-    children: [new TextRun({ text: 'round.wiemspro.com', font: FONT, size: 22, color: C.green })] }),
+    children: [new TextRun({ text: 'noofit.wiemspro.com', font: FONT, size: 22, color: C.green })] }),
   new Paragraph({ children: [new PageBreak()] }),
 ]
 
@@ -252,7 +252,7 @@ const seccion2 = [
   bullet('Activar el modo sandbox para pruebas.'),
   bullet('Marcar la cuenta como Activa o desactivada.'),
   empty(),
-  warn('En el panel de PayComet de cada cuenta tienes que poner como URL de notificación: https://round.wiemspro.com/api/cuotas/paycomet-callback. Sin esto, los pagos no se marcan automáticamente como cobrados en Round.'),
+  warn('En el panel de PayComet de cada cuenta tienes que poner como URL de notificación: https://noofit.wiemspro.com/api/cuotas/paycomet-callback. Sin esto, los pagos no se marcan automáticamente como cobrados en Round.'),
   empty(),
   note('Si todavía no tienes credenciales reales de PayComet, Round funciona en modo "stub" para pruebas: genera enlaces simulados que abren una página interna donde puedes pulsar "Pagar" para ver el flujo completo.'),
   new Paragraph({ children: [new PageBreak()] }),
@@ -451,7 +451,7 @@ const seccion8 = [
 
   h3('"El cliente pagó pero el recibo sigue como Pendiente"'),
   p('Verifica:'),
-  bullet('Que has configurado la URL de notificación en el panel PayComet del trainer: https://round.wiemspro.com/api/cuotas/paycomet-callback.'),
+  bullet('Que has configurado la URL de notificación en el panel PayComet del trainer: https://noofit.wiemspro.com/api/cuotas/paycomet-callback.'),
   bullet('Que las credenciales del trainer (api_token + terminal) están en Configuración → Pasarelas y la pasarela está marcada como Activa.'),
   bullet('Que el modo no es Sandbox cuando ya estás en producción.'),
   empty(),

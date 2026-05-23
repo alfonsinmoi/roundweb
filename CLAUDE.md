@@ -9,8 +9,7 @@
 **Round Training Center** es una plataforma de gestión de gimnasios construida
 sobre el SaaS NoofitPro (`pro.wiemspro.com`). Este repo contiene:
 
-- **Frontend** React/Vite servido en `https://round.wiemspro.com` y
-  `https://round.noofit.com` (ambos sirven el mismo bundle).
+- **Frontend** React/Vite servido en `https://noofit.wiemspro.com`.
 - **Backend `round_config_api`** — Flask + Gunicorn en VPS (puerto 8095)
   que orquesta NoofitPro + Odoo + PostgreSQL + Resend + PayComet + Meta.
 - **Módulo Odoo `round_facturacion`** — extiende Odoo 17 Community con
@@ -33,7 +32,7 @@ infografía) y `docs/FLUJO_DUAL_PC.md`.
 | Servicio backend | `systemctl … round_config_api` |
 | Servicio Odoo | `systemctl … odoo17` |
 | Crones systemd | `round_slots_cleanup`, `round_reminders`, `round_cliente_log`, `round_social_publish` |
-| Nginx config | `/etc/nginx/sites-enabled/round.wiemspro.com` |
+| Nginx config | `/etc/nginx/sites-enabled/noofit.wiemspro.com` |
 
 ## Setup en un PC nuevo
 
@@ -148,9 +147,9 @@ ssh round-vps "systemctl stop odoo17 && \
 
 ### Verificación tras cada deploy
 
-- Frontend: `curl -s -o /dev/null -w "%{http_code}\n" https://round.wiemspro.com/`
+- Frontend: `curl -s -o /dev/null -w "%{http_code}\n" https://noofit.wiemspro.com/`
   debe responder `200`.
-- Backend: `curl -s "https://round.wiemspro.com/api/crm/slots-disponibles?centro=malagacentro"`
+- Backend: `curl -s "https://noofit.wiemspro.com/api/crm/slots-disponibles?centro=malagacentro"`
   debe devolver JSON con `ok:true`.
 - Logs: `ssh round-vps "journalctl -u round_config_api -n 30 --no-pager"`.
 
@@ -204,7 +203,7 @@ ssh round-vps "systemctl stop odoo17 && \
   - Trainer ROUND AÑORETA: **17674**
   - id_manager interno (Round Config): **17677** (no es el de NoofitPro)
 
-## Endpoints públicos del backend (round.wiemspro.com)
+## Endpoints públicos del backend (noofit.wiemspro.com)
 
 ```
 # CRM público (formulario web)

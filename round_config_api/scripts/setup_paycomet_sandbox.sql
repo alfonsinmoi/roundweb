@@ -42,9 +42,9 @@ INSERT INTO pasarela_credenciales (
     '17677', '17675', 'paycomet',
     '<PEGAR_AQUI_API_KEY_MALAGA>',                 -- ← API Key del panel
     '86879',                                        -- terminal sandbox
-    'https://round.wiemspro.com/cuotas-clientes',
-    'https://round.wiemspro.com/cuotas-clientes',
-    'https://round.wiemspro.com/api/cuotas/paycomet-callback',
+    'https://noofit.wiemspro.com/cuotas-clientes',
+    'https://noofit.wiemspro.com/cuotas-clientes',
+    'https://noofit.wiemspro.com/api/cuotas/paycomet-callback',
     TRUE,                                           -- sandbox=TRUE
     TRUE,                                           -- active=TRUE
     'Sandbox BANKSTORE TEST — límite 250€/op. Cambiar a sandbox=FALSE en paso a producción.'
@@ -74,9 +74,9 @@ INSERT INTO pasarela_credenciales (
     '17677', '17674', 'paycomet',
     '<PEGAR_AQUI_API_KEY_ANORETA>',                -- ← API Key del panel (puede ser la misma que Málaga en sandbox)
     '86879',                                        -- terminal sandbox compartido
-    'https://round.wiemspro.com/cuotas-clientes',
-    'https://round.wiemspro.com/cuotas-clientes',
-    'https://round.wiemspro.com/api/cuotas/paycomet-callback',
+    'https://noofit.wiemspro.com/cuotas-clientes',
+    'https://noofit.wiemspro.com/cuotas-clientes',
+    'https://noofit.wiemspro.com/api/cuotas/paycomet-callback',
     TRUE,
     TRUE,
     'Sandbox BANKSTORE TEST — comparte terminal con Málaga.'

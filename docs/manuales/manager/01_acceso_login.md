@@ -2,7 +2,7 @@
 
 ## Cómo entrar
 
-1. Abre el navegador en `https://round.wiemspro.com` (o `https://round.noofit.com` — ambas funcionan).
+1. Abre el navegador en `https://noofit.wiemspro.com` (o `https://round.noofit.com` — ambas funcionan).
 2. Verás la pantalla de login con dos campos: **email** y **contraseña**.
 3. Introduce tus credenciales **NoofitPro** (las mismas que usas para entrar en `pro.wiemspro.com`).
 4. Pulsa **Iniciar sesión**.
@@ -42,6 +42,6 @@ Click en el icono de **Logout** abajo del menú lateral.
 
 - La sesión dura aproximadamente 8 horas. Después te pide login otra vez.
 - Si el navegador te marca el certificado como inseguro, comprueba que
-  estás en `https://round.wiemspro.com` (no `http://`).
+  estás en `https://noofit.wiemspro.com` (no `http://`).
 - En móvil la web funciona pero el menú se colapsa — toca el icono ☰
   arriba a la izquierda para abrirlo.

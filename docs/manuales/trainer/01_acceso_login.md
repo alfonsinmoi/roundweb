@@ -2,7 +2,7 @@
 
 ## URL
 
-- `https://round.wiemspro.com`
+- `https://noofit.wiemspro.com`
 - `https://round.noofit.com` (alias, mismo bundle)
 
 ## Cómo entras

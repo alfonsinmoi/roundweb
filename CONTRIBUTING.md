@@ -129,7 +129,7 @@ Edita [`.github/CODEOWNERS`](.github/CODEOWNERS) según se reparta el equipo.
 
 ## 8. Deploy
 
-El deploy a `https://round.wiemspro.com` es **manual** (no automático en merge).
+El deploy a `https://noofit.wiemspro.com` es **manual** (no automático en merge).
 Hazlo solo cuando el lead lo apruebe:
 
 ```bash

@@ -660,7 +660,7 @@ def patch_trainer_contabilidad(id_trainer):
 #
 #   curl -H "X-Round-Token: ..." \
 #        -H "X-Round-Admin-Key: <secret>" \
-#        https://round.wiemspro.com/api/admin/solicitudes-despliegue
+#        https://noofit.wiemspro.com/api/admin/solicitudes-despliegue
 #
 # Si la clave no está configurada en el .env, los endpoints devuelven 503
 # "admin desactivado" — esto es intencional para que el sistema sea seguro

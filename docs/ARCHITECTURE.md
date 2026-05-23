@@ -16,7 +16,7 @@ La web sirve a 3 perfiles de usuario:
 - **Trainer** (entrenador) — login NoofitPro, vista filtrada
 - **Usuario web** (recepcionista, admin, etc.) — login propio con perfil de permisos
 
-URL pública: `https://round.wiemspro.com`
+URL pública: `https://noofit.wiemspro.com`
 
 ---
 
@@ -408,13 +408,13 @@ npm run preview
 
 El proxy de dev está en [`vite.config.js`](../vite.config.js):
 
-- `/api/*` → `https://round.wiemspro.com` (backend Round)
-- `/reserva/*` → `https://round.wiemspro.com`
+- `/api/*` → `https://noofit.wiemspro.com` (backend Round)
+- `/reserva/*` → `https://noofit.wiemspro.com`
 - `/wiemspro/*` → `https://pro.wiemspro.com` (NoofitPro)
 
 ### Producción
 
-`https://round.wiemspro.com` es servido por nginx en el VPS (212.227.40.122).
+`https://noofit.wiemspro.com` es servido por nginx en el VPS (212.227.40.122).
 Deploy manual — ver [`CLAUDE.md`](../CLAUDE.md) sección "Despliegues":
 
 ```bash

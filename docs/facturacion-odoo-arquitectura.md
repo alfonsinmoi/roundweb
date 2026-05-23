@@ -314,7 +314,7 @@ class RoundPasarelaConfig(models.Model):
 ### 4.3 Contrato del webhook (NoofitPro → MCP)
 
 ```
-POST https://mcp.round.wiemspro.com/eventos/{evento}
+POST https://mcp.noofit.wiemspro.com/eventos/{evento}
 Headers:
   Content-Type: application/json
   X-Webhook-Token: <secreto compartido>
@@ -575,7 +575,7 @@ Validar la arquitectura con un cliente test, una cuota, una suscripción SEPA y 
 1. Instalar Odoo Community 17 en VPS Round       (½ día)
    - PostgreSQL local
    - Odoo en puerto 8069
-   - Nginx reverse proxy: odoo.round.wiemspro.com
+   - Nginx reverse proxy: odoo.noofit.wiemspro.com
    - Backup nocturno automatizado
 
 2. Activar swap en VPS                            (15 min)
@@ -680,7 +680,7 @@ Para que esto funcione, el equipo Wiemspro tiene que desarrollar / confirmar:
 
 ### 10.1 Webhooks salientes desde NoofitPro
 
-Una llamada `POST` autenticada con token + HMAC a `https://mcp.round.wiemspro.com/eventos/{evento}` cuando ocurra cualquiera de los **11 eventos** listados en sección 4.1.
+Una llamada `POST` autenticada con token + HMAC a `https://mcp.noofit.wiemspro.com/eventos/{evento}` cuando ocurra cualquiera de los **11 eventos** listados en sección 4.1.
 
 Payload con campos detallados en el contrato (sección 4.3).
 
@@ -753,8 +753,8 @@ Solicitar a Wiemspro un documento con:
 
 Lista de cosas que aún tienen que decidirse antes o durante implementación:
 
-1. **Subdominio del MCP**: `mcp.round.wiemspro.com` o reusar el MCP existente en `217.154.17.133`.
-2. **Subdominio de Odoo**: `odoo.round.wiemspro.com` o `factura.round.wiemspro.com`.
+1. **Subdominio del MCP**: `mcp.noofit.wiemspro.com` o reusar el MCP existente en `217.154.17.133`.
+2. **Subdominio de Odoo**: `odoo.noofit.wiemspro.com` o `factura.noofit.wiemspro.com`.
 3. **Frecuencia exacta del polling Odoo→NoofitPro**: 15 / 30 / 60 minutos.
 4. **Día de emisión mensual**: 1, 25, 28 — depende del flujo del gestor.
 5. **Plantillas push**: revisar contenido propuesto (sección 6) con el gestor.

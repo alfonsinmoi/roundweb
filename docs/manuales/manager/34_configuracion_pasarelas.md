@@ -48,4 +48,4 @@ terminal. Devuelve OK / error con código.
 - Cada centro puede tener **terminal distinto** si quiere conciliar
   cobros por sociedad.
 - La URL de webhook tiene que coincidir con tu dominio
-  (`https://round.wiemspro.com/api/cobros/paycomet-webhook`).
+  (`https://noofit.wiemspro.com/api/cobros/paycomet-webhook`).
