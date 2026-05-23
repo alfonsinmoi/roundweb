@@ -187,6 +187,23 @@ export const PERMISSIONS = {
           borrar:         { label: '✗ Borrar usuario', action: true },
         },
       },
+      suscripciones:       { label: 'Suscripciones Odoo (CRM / Cuotas / Contabilidad)',
+        children: {
+          ver:      { label: 'Ver estado de módulos', action: true },
+          activar:  { label: '✗ Activar módulo Odoo (irreversible)', action: true },
+        },
+      },
+      canales_captacion:   { label: 'Canales de captación (UTMs)',
+        children: {
+          ver:    { label: 'Ver canales', action: true },
+          editar: { label: 'Crear / editar canal', action: true },
+        },
+      },
+      checklist:           { label: 'Checklist post-activación',
+        children: {
+          ver: { label: 'Ver checklist', action: true },
+        },
+      },
     },
   },
 }

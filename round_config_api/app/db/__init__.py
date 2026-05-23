@@ -1618,20 +1618,133 @@ DEFAULT_PERFILES = [
 ]
 
 
+# Matrices de permisos por defecto que se siembran junto al perfil.
+# El árbol completo vive en src/config/permissions.js. Aquí marcamos las
+# acciones a TRUE; el resto queda implícito FALSE (deny by default).
+# La capa de auth (hasPermission) hace una traversal por path 'a.b.c'.
+# Si el path no existe → false.
+#
+# Administrador no necesita matriz: is_admin=TRUE devuelve true a todo.
+DEFAULT_PERMISOS = {
+    'Trainer': {
+        'inicio': {'ver': True},
+        'clientes': {
+            'ver_listado': True, 'ver_perfil': True, 'editar_datos': True,
+            'pausar': True, 'archivar': True, 'asignar_categoria': True,
+            'modificar_datos_erp': True, 'exportar_excel': True,
+        },
+        'clases': {'ver_listado': True, 'ver_detalle': True, 'marcar_asistencia': True},
+        'informe_asistencia': {
+            'faltas': True, 'tendencias': True, 'comparativa': True,
+            'ranking_clases': True, 'ocupacion_sala': True, 'analisis_patrones': True,
+        },
+        'configuracion': {
+            'centros_trainers': {'ver': True},
+            'categorias_cliente': {'ver': True},
+        },
+    },
+    'Recepción': {
+        'inicio': {'ver': True},
+        'clientes': {
+            'ver_listado': True, 'ver_perfil': True, 'editar_datos': True,
+            'crear': True, 'pausar': True, 'asignar_categoria': True,
+            'notificar': True, 'reenviar_factura': True,
+            'generar_link_pago': True, 'ver_datos_erp': True,
+            'exportar_excel': True,
+        },
+        'crm': {
+            'leads': {'ver_kanban': True, 'mover_etapa': True, 'editar_lead': True},
+            'clientes_actuales': {'ver_listado': True, 'notificar_masivo': True},
+            'notas': {
+                'ver_listado': True, 'crear_nota': True,
+                'editar_nota': True, 'cerrar_nota': True,
+            },
+            'agenda_social': {'ver_posts': True},
+        },
+        'clases': {
+            'ver_listado': True, 'ver_detalle': True, 'marcar_asistencia': True,
+        },
+        'economico': {
+            'cuotas_mensuales': {
+                'ver': True, 'reenviar_factura': True,
+                'generar_link_pago': True, 'marcar_pagado_manual': True,
+            },
+        },
+        'informe_asistencia': {
+            'faltas': True, 'ocupacion_sala': True,
+        },
+        'configuracion': {
+            'centros_trainers':   {'ver': True},
+            'categorias_cliente': {'ver': True},
+            'canales_captacion':  {'ver': True},
+            'checklist':          {'ver': True},
+        },
+    },
+    'Solo lectura': {
+        'inicio': {'ver': True},
+        'clientes': {
+            'ver_listado': True, 'ver_perfil': True,
+            'ver_datos_erp': True, 'exportar_excel': True,
+        },
+        'crm': {
+            'leads':              {'ver_kanban': True},
+            'clientes_actuales':  {'ver_listado': True},
+            'agenda_social':      {'ver_posts': True},
+            'notas':              {'ver_listado': True},
+        },
+        'clases': {'ver_listado': True, 'ver_detalle': True},
+        'economico': {
+            'cuotas_mensuales': {'ver': True},
+            'contabilidad': {
+                'documentos':        {'ver': True},
+                'banco':             {'ver': True},
+                'totales':           {'ver': True},
+                'faltantes':         {'ver': True},
+                'cuenta_resultados': {'ver': True},
+            },
+        },
+        'informe_asistencia': {
+            'faltas': True, 'tendencias': True, 'comparativa': True,
+            'ranking_clases': True, 'ocupacion_sala': True, 'analisis_patrones': True,
+        },
+        'configuracion': {
+            'centros_trainers':   {'ver': True},
+            'cuotas_descuentos':  {'ver': True},
+            'email':              {'ver': True},
+            'pasarelas':          {'ver': True},
+            'notificaciones':     {'ver': True},
+            'categorias_cliente': {'ver': True},
+            'catalogos':          {'ver': True},
+            'meta':               {'ver': True},
+            'canales_captacion':  {'ver': True},
+            'suscripciones':      {'ver': True},
+            'checklist':          {'ver': True},
+        },
+    },
+}
+
+
 def seed_perfiles_for_manager(id_manager: str) -> None:
-    """Siembra los perfiles default si el manager no tiene ninguno."""
+    """Siembra los perfiles default si el manager no tiene ninguno.
+
+    Cada perfil arranca con su matriz por defecto (DEFAULT_PERMISOS). El
+    manager puede editarla después desde Configuración → Perfiles.
+    """
     if not id_manager:
         return
+    import json as _json
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT 1 FROM perfil WHERE id_manager=%s LIMIT 1", (str(id_manager),))
         if cur.fetchone():
             return
         for nombre, is_admin, descripcion in DEFAULT_PERFILES:
+            permisos = DEFAULT_PERMISOS.get(nombre, {})
             cur.execute("""
                 INSERT INTO perfil (id_manager, nombre, descripcion, is_admin, permisos)
-                VALUES (%s, %s, %s, %s, '{}'::jsonb)
+                VALUES (%s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (id_manager, nombre) DO NOTHING
-            """, (str(id_manager), nombre, descripcion, is_admin))
+            """, (str(id_manager), nombre, descripcion, is_admin,
+                  _json.dumps(permisos)))
 
 
 def seed_gasto_categorias_for_manager(id_manager: str) -> None:
