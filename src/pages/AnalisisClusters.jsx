@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { Card, Avatar, Btn, Badge, SectionTitle } from '../components/UI'
 import { runUsageClustering, DOW_LABELS, HOUR_BUCKETS, AGE_BUCKETS } from '../utils/clustering'
-import { retosList, getRoundIdentity } from '../utils/configApi'
+import { retosList, getRoundIdentity, estadoFisicoSessions } from '../utils/configApi'
 import { useAuth } from '../contexts/AuthContext'
 
 // Paleta cíclica para los clusters
@@ -340,11 +340,14 @@ export default function AnalisisClusters() {
     setLoading(true)
     setError('')
     let active = true
-    // Cargar retos en paralelo: incluir como señales en el clustering
-    Promise.resolve()
-      .then(() => identity?.managerId ? retosList(identity).catch(() => []) : [])
-      .then(retos => {
-        // Mapa idClient → {nRetos, ranking1to3, valor}
+    // Cargar retos y tests de estado físico en paralelo (señales extra del
+    // clustering). Si fallan se ignoran — el algoritmo funciona igual.
+    Promise.all([
+      identity?.managerId ? retosList(identity).catch(() => []) : [],
+      identity?.managerId ? estadoFisicoSessions(identity).catch(() => []) : [],
+    ])
+      .then(([retos, sessions]) => {
+        // ── retosByClient ─────────────────────────────────────────────────
         const retosByClient = {}
         for (const r of (retos || [])) {
           const rankByCli = {}
@@ -362,12 +365,39 @@ export default function AnalisisClusters() {
             if (rk != null && rk <= 3) retosByClient[id].ranking1to3 += 1
           }
         }
+        // ── estadoFisicoByClient ──────────────────────────────────────────
+        // Sessions están ordenadas DESC por testDate (las devuelve así el
+        // backend), así que el primer test de cada cliente es el más
+        // reciente y el último es el más antiguo.
+        const efByCli = {}
+        for (const s of (sessions || [])) {
+          const id = String(s.userId || s.idUser || '')
+          if (!id) continue
+          if (!efByCli[id]) efByCli[id] = { sessions: [] }
+          efByCli[id].sessions.push(s)
+        }
+        const estadoFisicoByClient = {}
+        for (const [id, info] of Object.entries(efByCli)) {
+          const ss = info.sessions
+          if (!ss.length) continue
+          const primera = ss[ss.length - 1]
+          const ultima  = ss[0]
+          const pUlt = Number(ultima?.puntuacion) || 0
+          const pIni = Number(primera?.puntuacion) || 0
+          estadoFisicoByClient[id] = {
+            n_tests: ss.length,
+            puntuacionUltima: pUlt,
+            puntuacionPrimera: pIni,
+            delta: ss.length >= 2 ? (pUlt - pIni) : 0,
+          }
+        }
         return runUsageClustering({
           dias,
           k: k === 'auto' ? 'auto' : Number(k),
           minSessions,
           soloActivos,
           retosByClient,
+          estadoFisicoByClient,
         })
       })
       .then(res => { if (active) setResultado(res) })

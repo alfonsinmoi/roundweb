@@ -3,14 +3,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Entrada: salas (clases) de los últimos N días + usuarios por sala + clientes
 // Proceso:
-//   1. Por cada cliente, extraer vector de características:
+//   1. Por cada cliente, extraer vector de características (40 dims):
 //        - Distribución por día de semana (7)
 //        - Distribución por franja horaria (6)
 //        - Frecuencia semanal (1)
 //        - Distribución por actividad sobre vocabulario top-12 (12)
 //        - Género one-hot [masculino, femenino] (2)
 //        - Franja de edad one-hot (5)
-//      Total: ~33 dimensiones
+//        - Retos: nº activos, podios, valor acumulado (3)
+//        - Antigüedad (meses desde alta, log-saturado) (1)
+//        - Estado físico: puntuación normalizada, delta, nº tests (3)
 //   2. K-means++ con distancia euclídea y RNG determinista
 //   3. Análisis post-cluster: día/hora dominante, tipos top, nombres heurísticos
 // Salida: { clusters: [{ id, name, members, ... }], outliers, params }
@@ -98,20 +100,51 @@ function encodeAgeBuckets(birthdate) {
   return vec
 }
 
+// ── Antigüedad y estado físico ───────────────────────────────────────────────
+function pickCreationEpoch(c) {
+  if (!c) return null
+  const cand = c.dtCreated ?? c.creationDate ?? c.dateCreate ?? c.creado
+            ?? c.fechaAlta ?? c.created ?? c.createdAt
+  if (cand == null) return null
+  if (typeof cand === 'number' && cand > 1e10) return cand          // epoch ms
+  const t = new Date(cand).getTime()
+  return isNaN(t) ? null : t
+}
+
+function encodeAntiguedad(clientInfo) {
+  // Devuelve un valor 0..1: 0 = recién dado de alta, 1 = veterano (≥ 24 meses).
+  // log-saturado para que la curva sea suave (no escalón).
+  const epoch = pickCreationEpoch(clientInfo)
+  if (epoch == null) return 0
+  const meses = (Date.now() - epoch) / (1000 * 60 * 60 * 24 * 30.44)
+  if (meses <= 0) return 0
+  // log2(1 + meses) / log2(25) — alcanza ~1.0 a los 24 meses.
+  return Math.min(1, Math.log2(1 + meses) / Math.log2(25))
+}
+
+function encodeEstadoFisico(ef) {
+  // Devuelve [puntuacionN, deltaN, nTestsN], todas en [0..1] o [-1..1].
+  // ef = { n_tests, puntuacionUltima, puntuacionPrimera, delta } o null.
+  if (!ef || !ef.n_tests || ef.n_tests <= 0) return [0, 0.5, 0]
+  const punt = Math.max(0, Math.min(10, ef.puntuacionUltima ?? 0))
+  const puntN = punt / 10
+  // delta esperado en [-5..+5]. Lo trasladamos a [0..1] (0.5 = sin cambio).
+  const delta = Math.max(-5, Math.min(5, ef.delta ?? 0))
+  const deltaN = (delta + 5) / 10
+  // Nº tests saturado a 6+
+  const nTestsN = Math.min(1, ef.n_tests / 6)
+  return [puntN, deltaN, nTestsN]
+}
+
 // ── Extracción de features por cliente ───────────────────────────────────────
 /**
  * @param {Array<{date: Date, nameTraining: string}>} sesiones
  * @param {number} dias  ventana total analizada
- * @param {{ vocabulary?: string[], clientInfo?: object, retosInfo?: {nRetos, ranking1to3, valorNorm} }} opts
- *
- * `retosInfo` permite añadir señales de participación en retos a las features:
- *   - nRetos:      nº de retos en los que el cliente participa
- *   - ranking1to3: nº de retos donde el cliente está en top 3
- *   - valorNorm:   nivel medio de actividad acumulada (0..1) relativo al máx del centro
- *
- * Estas 3 dimensiones permiten separar clientes "engaged en retos" del resto.
+ * @param {{ vocabulary?: string[], clientInfo?: object,
+ *           retosInfo?: {nRetos, ranking1to3, valorNorm},
+ *           estadoFisicoInfo?: {n_tests, puntuacionUltima, delta} }} opts
  */
-export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = null, retosInfo = null } = {}) {
+export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = null, retosInfo = null, estadoFisicoInfo = null } = {}) {
   const dow  = new Array(7).fill(0)
   const hour = new Array(HOUR_BUCKETS.length).fill(0)
   const types = new Map()
@@ -148,6 +181,12 @@ export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = 
   const top3N  = Math.min(1, (retosInfo?.ranking1to3 || 0) / 2)   // ≥2 podios → 1.0
   const valN   = Math.max(0, Math.min(1, retosInfo?.valorNorm || 0))
 
+  // Antigüedad (0..1, log-saturado a 24 meses)
+  const antiguedadN = encodeAntiguedad(clientInfo)
+
+  // Estado físico — [puntuacionN, deltaN, nTestsN] todos en [0..1]
+  const [efPuntN, efDeltaN, efNTestsN] = encodeEstadoFisico(estadoFisicoInfo)
+
   const vector = [
     ...dowN.map(v => v * 1.0),
     ...hourN.map(v => v * 1.0),
@@ -159,6 +198,12 @@ export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = 
     retosN * 0.7,
     top3N  * 0.4,
     valN   * 0.4,
+    // ── Antigüedad ─────────────────────────────────────────────────────────
+    antiguedadN * 0.5,
+    // ── Estado físico (peso medio: 0.6 puntuación, 0.5 delta, 0.4 nº tests) ─
+    efPuntN   * 0.6,
+    efDeltaN  * 0.5,
+    efNTestsN * 0.4,
   ]
 
   return {
@@ -170,6 +215,10 @@ export function extractFeatures(sesiones, dias, { vocabulary = [], clientInfo = 
     ageRaw: calcAge(clientInfo?.birthdate),
     retosVec: { nRetos: retosInfo?.nRetos || 0, ranking1to3: retosInfo?.ranking1to3 || 0,
                 valorNorm: valN },
+    antiguedadN,
+    efVec: { n_tests: estadoFisicoInfo?.n_tests || 0,
+             puntuacion: estadoFisicoInfo?.puntuacionUltima ?? null,
+             delta: estadoFisicoInfo?.delta ?? null },
   }
 }
 
@@ -357,8 +406,9 @@ export async function runUsageClustering({
   k = 'auto',
   minSessions = 4,
   soloActivos = true,
-  retosByClient = null,    // {idClient: {nRetos, ranking1to3, valor}}
-  // si null se ignora — no falla
+  retosByClient = null,           // {idClient: {nRetos, ranking1to3, valor}}
+  estadoFisicoByClient = null,    // {idClient: {n_tests, puntuacionUltima, delta}}
+  // si null se ignoran — no fallan
 } = {}) {
   const hasta = new Date()
   const desde = new Date(); desde.setDate(desde.getDate() - dias)
@@ -429,7 +479,10 @@ export async function runUsageClustering({
           valorNorm:   maxValor > 0 ? (retosByClient[String(idClient)].valor || 0) / maxValor : 0,
         }
       : null
-    const features = extractFeatures(sesiones, dias, { vocabulary, clientInfo: info, retosInfo })
+    const estadoFisicoInfo = estadoFisicoByClient?.[String(idClient)] || null
+    const features = extractFeatures(sesiones, dias, {
+      vocabulary, clientInfo: info, retosInfo, estadoFisicoInfo,
+    })
     const punto    = { idClient, nombre, imgUrl: info.imgUrl || '', features }
     if (features.total < minSessions) {
       outliers.push(punto)

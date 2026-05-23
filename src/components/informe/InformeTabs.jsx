@@ -33,6 +33,8 @@ export default function InformeTabs({ active, counts = {} }) {
       info: 'Agrupa clientes con patrones de uso similares (días, horas, actividades, edad, género) usando K-means. Útil para campañas dirigidas y entender perfiles de tu centro.' },
     { id: 'retos',        label: 'Retos',                hint: countLabel('retos',        counts.retos),
       info: 'Retos activos en NoofitPro: ranking, participantes, equipos y % completado. Útil para ver el engagement y planear nuevos retos. Los datos provienen de getRetos del trainer.' },
+    { id: 'estado_fisico', label: 'Estado físico',       hint: countLabel('estado_fisico', counts.estado_fisico),
+      info: 'Dashboard de tests de estado físico (NoofitPro): uso mensual, tasa de repetición, evolución por cliente, ranking de puntuación, distribución demográfica.' },
   ]
 
   return (
@@ -129,6 +131,7 @@ function countLabel(id, n) {
     case 'revisar':      return n != null ? `${n} alertas`          : 'Recomendaciones'
     case 'riesgo':       return n != null ? `${n} en riesgo`        : 'Score de fuga'
     case 'retos':        return n != null ? `${n} retos activos`    : 'NoofitPro'
+    case 'estado_fisico': return n != null ? `${n} tests`           : 'Dashboard'
     default: return ''
   }
 }

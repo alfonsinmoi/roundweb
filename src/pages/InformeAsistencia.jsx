@@ -14,6 +14,7 @@ import { useToast } from '../components/Toast'
 import InformeTabs from '../components/informe/InformeTabs'
 import InformeToolbar from '../components/informe/InformeToolbar'
 import InfoTip from '../components/informe/InfoTip'
+import EstadoFisicoDashboard from '../components/informe/EstadoFisicoDashboard'
 import AnalisisClusters from './AnalisisClusters'
 import {
   getSalasByRange, invalidateSalasCache, getClientes, getActividades,
@@ -84,7 +85,7 @@ function actNombre(a) {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-const VALID_TABS = ['faltas', 'control', 'distribucion', 'revisar', 'riesgo', 'patrones', 'retos']
+const VALID_TABS = ['faltas', 'control', 'distribucion', 'revisar', 'riesgo', 'patrones', 'retos', 'estado_fisico']
 
 export default function InformeAsistencia() {
   const toast    = useToast()
@@ -116,6 +117,9 @@ export default function InformeAsistencia() {
   // para el score de "Clientes en riesgo".
   const [retos, setRetos] = useState([])
   const [retosByClient, setRetosByClient] = useState({})
+  // Tests de estado físico: mapa {idCliente: {n_tests, puntuacion_actual,
+  // delta, dias_ultimo_test}} para el score de "Clientes en riesgo".
+  const [estadoFisicoByClient, setEstadoFisicoByClient] = useState({})
 
   const [confirmState, setConfirmState] = useState({ open: false, usuario: null, salaId: null })
 
@@ -215,6 +219,45 @@ export default function InformeAsistencia() {
       setRetosByClient(byCli)
     }).catch(e => console.warn('retosList:', e?.message))
   }, [tab, identity, retos.length])
+
+  // Cargar tests de estado físico para el algoritmo "En riesgo" (y la pestaña).
+  // Tira de /api/estado-fisico/sessions (con cache backend 10 min).
+  useEffect(() => {
+    if (!identity?.managerId) return
+    if (tab !== 'estado_fisico' && tab !== 'riesgo') return
+    if (Object.keys(estadoFisicoByClient).length > 0) return     // ya cargado
+    import('../utils/configApi').then(mod => mod.estadoFisicoSessions(identity))
+      .then(sessions => {
+        // Agrupar por cliente con datos derivados
+        const ahora = Date.now()
+        const byCli = {}
+        for (const s of (sessions || [])) {
+          const uid = String(s.userId)
+          if (!byCli[uid]) byCli[uid] = { tests: [] }
+          byCli[uid].tests.push(s)
+        }
+        const out = {}
+        for (const uid of Object.keys(byCli)) {
+          const tests = byCli[uid].tests.sort((a, b) => (a.testDate || 0) - (b.testDate || 0))
+          const ultimo = tests[tests.length - 1]
+          const primero = tests[0]
+          const p_actual  = parseFloat(ultimo?.puntuacion || 0)
+          const p_inicial = parseFloat(primero?.puntuacion || 0)
+          const dias_ultimo = ultimo?.testDate
+            ? Math.floor((ahora - ultimo.testDate) / (86400 * 1000))
+            : null
+          out[uid] = {
+            n_tests: tests.length,
+            puntuacion_actual: p_actual,
+            puntuacion_inicial: p_inicial,
+            delta: tests.length >= 2 ? +(p_actual - p_inicial).toFixed(2) : null,
+            dias_ultimo_test: dias_ultimo,
+          }
+        }
+        setEstadoFisicoByClient(out)
+      })
+      .catch(e => console.warn('estadoFisicoSessions:', e?.message))
+  }, [tab, identity, estadoFisicoByClient])
 
   const filteredSalas = useMemo(() => {
     const dDesde = new Date(desde + 'T00:00:00')
@@ -888,7 +931,38 @@ export default function InformeAsistencia() {
         factores.push({ key: 'retos', label: `Participa en 1 reto`, severidad: 'positiva' })
       }
 
-      const total = Math.max(0, Math.min(100, score.reduce((s, n) => s + n, 0) - restaRetos))
+      // 8) Tests de estado físico — combinan señal positiva (hace tests =
+      //    invierte tiempo en seguir su forma) y señal de alerta (puntuación
+      //    bajando o test antiguo > 6 meses).
+      const ef = estadoFisicoByClient[String(e.idClient)]
+      let restaEf = 0
+      if (ef) {
+        // Hace tests (engagement)
+        if (ef.n_tests >= 3) {
+          restaEf += 8
+          factores.push({ key: 'ef_uso', label: `${ef.n_tests} tests de estado físico (alto engagement)`, severidad: 'positiva' })
+        } else if (ef.n_tests >= 1) {
+          restaEf += 4
+          factores.push({ key: 'ef_uso', label: `${ef.n_tests} test de estado físico realizado`, severidad: 'positiva' })
+        }
+        // Mejora de puntuación
+        if (ef.delta != null && ef.delta >= 1) {
+          restaEf += 5
+          factores.push({ key: 'ef_progreso', label: `Estado físico mejorando (+${ef.delta.toFixed(1)} pt)`, severidad: 'positiva' })
+        }
+        // Empeora de puntuación (señal NEGATIVA: añade puntos al riesgo)
+        if (ef.delta != null && ef.delta <= -2) {
+          score.push(8)
+          factores.push({ key: 'ef_retroceso', label: `Estado físico empeorando (${ef.delta.toFixed(1)} pt)`, severidad: 'media' })
+        }
+        // Test obsoleto: último test > 180 días
+        if (ef.dias_ultimo_test != null && ef.dias_ultimo_test > 180) {
+          score.push(3)
+          factores.push({ key: 'ef_obsoleto', label: `Último test hace ${ef.dias_ultimo_test}d (recomendado &lt; 90d)`, severidad: 'media' })
+        }
+      }
+
+      const total = Math.max(0, Math.min(100, score.reduce((s, n) => s + n, 0) - restaRetos - restaEf))
       const pctAsistencia = e.totalReservas > 0 ? Math.round((e.totalAsistencias / e.totalReservas) * 100) : null
       const nivel = total >= 75 ? 'critico' : total >= 50 ? 'riesgo' : total >= 30 ? 'atencion' : 'sano'
 
@@ -913,7 +987,7 @@ export default function InformeAsistencia() {
     }
 
     return { list, totales }
-  }, [allUsers, clientMap, retosByClient])
+  }, [allUsers, clientMap, retosByClient, estadoFisicoByClient])
 
   const pendientes = useMemo(() => {
     const ahora = new Date()
@@ -1591,6 +1665,11 @@ export default function InformeAsistencia() {
       {/* Tab: Retos NoofitPro */}
       {tab === 'retos' && (
         <RetosPanel retos={retos} clientMap={clientMap} />
+      )}
+
+      {/* Tab: Estado físico (dashboard de tests NoofitPro) */}
+      {tab === 'estado_fisico' && (
+        <EstadoFisicoDashboard onVerPerfil={(cid) => navigate(`/clientes/${cid}`)} />
       )}
 
       {/* Modal: clases no asistidas del cliente */}
@@ -2362,26 +2441,54 @@ function ClientesEnRiesgo({ analisis, loadingUsuarios, onVerPerfil, clientMap })
       }}>
         <Activity size={16} style={{ color: 'var(--blue)', flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
         <div style={{ fontSize: 12.5, color: 'var(--text-1)', lineHeight: 1.55 }}>
-          Score basado en señales reales del backend: asistencias verificadas, reservas,
-          frecuencia, patrón horario y fecha de alta.{' '}
+          Score basado en señales reales: asistencias verificadas, reservas, frecuencia,
+          patrón horario, fecha de alta, participación en retos y tests de estado físico.{' '}
           <InfoTip title="Cómo se calcula el score (0-100)">
-            El score combina 5 indicadores, cada uno aporta entre 0 y N puntos:
+            El score suma <strong>penalizaciones</strong> (señales de fuga) y resta
+            <strong> bonus de engagement</strong>. Final acotado entre 0 y 100.
             <br/><br/>
-            <strong>1. Caída de asistencia (0-40 pt)</strong> — diferencia entre asistencias de las últimas 4 semanas y las 4 anteriores. A más caída, más puntos.
+            <u><strong>Penalizaciones (suman puntos al riesgo)</strong></u>
             <br/><br/>
-            <strong>2. Días sin asistir (0-25 pt)</strong> — cuántos días hace de la última asistencia. ≥30 días = máximo.
+            <strong>1. Caída drástica de asistencia (30 / 15 pt)</strong> — asistencias
+            últimos 14 días vs 14 anteriores. Caída ≥50% → 30 pt. ≥30% → 15 pt.
             <br/><br/>
-            <strong>3. Frecuencia baja (0-15 pt)</strong> — clases/semana actual vs hábito histórico.
+            <strong>2. Inactividad reciente (25 / 18 / 10 pt)</strong> — días desde la
+            última asistencia verificada. ≥22d → 25 pt. ≥15d → 18 pt. ≥8d → 10 pt.
+            Si tiene reservas pero ninguna asistencia → 25 pt directos.
             <br/><br/>
-            <strong>4. Antigüedad (0-10 pt)</strong> — clientes recién captados son más volátiles.
+            <strong>3. Sin reservas próximas (15 / 5 pt)</strong> — 0 reservas en los
+            próximos 7 días → 15 pt. 1 sola reserva → 5 pt.
             <br/><br/>
-            <strong>5. Patrón irregular (0-10 pt)</strong> — variabilidad en horas y días.
+            <strong>4. Frecuencia bajando (15 / 7 pt)</strong> — reservas/semana últimas
+            4 semanas vs 4 anteriores. Ratio &lt;0.6 → 15 pt. &lt;0.8 → 7 pt.
             <br/><br/>
-            <strong>Niveles:</strong> &lt;30 sano, 30-49 atención, 50-74 riesgo, ≥75 crítico.
+            <strong>5. Cambio de patrón horario (10 pt)</strong> — divergencia (TVD) entre
+            la distribución de horas reciente y previa. TVD &gt; 0.5 → 10 pt.
+            <br/><br/>
+            <strong>6. Cliente nuevo sin consolidar (5 pt)</strong> — alta &lt; 30 días
+            y &lt; 4 asistencias.
+            <br/><br/>
+            <strong>7. Estado físico empeorando (8 pt)</strong> — caída de puntuación
+            ≥ 2 pt entre primer y último test.
+            <br/><br/>
+            <strong>8. Test físico obsoleto (3 pt)</strong> — último test hace más de
+            180 días.
+            <br/><br/>
+            <u><strong>Bonus de engagement (restan riesgo)</strong></u>
+            <br/><br/>
+            <strong>• Retos activos:</strong> 2+ retos → −10 pt. 1 reto → −5 pt.
+            <br/>
+            <strong>• Tests físicos realizados:</strong> 3+ tests → −8 pt. 1-2 → −4 pt.
+            <br/>
+            <strong>• Mejora del estado físico:</strong> +1 pt o más → −5 pt.
+            <br/><br/>
+            <u><strong>Niveles</strong></u>
+            <br/>
+            ≥75 <span style={{color:'var(--red)'}}>Crítico</span> · 50-74 <span style={{color:'var(--amber)'}}>Riesgo</span> · 30-49 <span style={{color:'#5B9CF6'}}>Atención</span> · &lt;30 <span style={{color:'var(--green)'}}>Sano</span>
+            <br/><br/>
+            La lista se ordena por score descendente; a igualdad, por número de
+            factores activos.
           </InfoTip>
-          <strong style={{ color: 'var(--text-0)' }}>Faltan integraciones</strong>:
-          uso de la app móvil (mynoofit) y retos completados — pendientes de endpoint en wiemspro.
-          Cuando estén, el algoritmo los incorporará automáticamente.
           {loadingUsuarios && <> &nbsp;<Loader2 size={12} className="animate-spin" style={{ display: 'inline', verticalAlign: 'middle' }} /> Aún cargando reservas…</>}
         </div>
       </div>

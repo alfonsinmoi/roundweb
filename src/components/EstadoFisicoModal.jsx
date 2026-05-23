@@ -147,7 +147,10 @@ export default function EstadoFisicoModal({ session, clienteNombre, onClose }) {
   return (
     <Modal open={!!session} onClose={onClose} title={titulo}
            subtitle={clienteNombre} maxWidth={860}>
-      <div style={{ padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{
+        flex: 1, minHeight: 0, overflowY: 'auto',
+        padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 20,
+      }}>
 
         {/* Datos del sujeto + puntuación global */}
         <Card style={{ padding: 24 }}>
