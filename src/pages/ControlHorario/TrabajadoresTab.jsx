@@ -660,19 +660,42 @@ function minutosFranja(f) {
 }
 
 
+// Snapshot serializable de un array de franjas para comparar dirty state.
+function snapshotFranjas(franjas) {
+  if (!franjas) return ''
+  return franjas.map(f => `${f.hora_inicio}|${f.hora_fin}|${f.tipo}|${[...f.dias].sort().join(',')}`).sort().join('||')
+}
+
+
 function HorarioPanel({ trabajadorId, identity }) {
   const toast = useToast()
   const [franjas, setFranjas] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  // Snapshot del estado al cargar — para detectar si hay cambios sin guardar.
+  const [pristine, setPristine] = useState('')
 
   useEffect(() => {
     setLoading(true)
     trabajadorHorario(identity, trabajadorId)
-      .then(h => setFranjas(agruparEnFranjas(h || {})))
+      .then(h => {
+        const fs = agruparEnFranjas(h || {})
+        setFranjas(fs)
+        setPristine(snapshotFranjas(fs))
+      })
       .catch(e => toast.error('Error: ' + (e.message || '?')))
       .finally(() => setLoading(false))
   }, [trabajadorId, identity, toast])
+
+  const dirty = franjas !== null && snapshotFranjas(franjas) !== pristine
+
+  // Aviso al cerrar la pestaña/recargar con cambios sin guardar.
+  useEffect(() => {
+    if (!dirty) return
+    const handler = (e) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
 
   function addFranja() {
     setFranjas(fs => [...(fs || []), {
@@ -709,7 +732,8 @@ function HorarioPanel({ trabajadorId, identity }) {
     try {
       const body = franjasACargaBD(franjas)
       await trabajadorHorarioSave(identity, trabajadorId, body)
-      toast.success('Horario guardado')
+      toast.success('Horario guardado · cambio registrado en historial')
+      setPristine(snapshotFranjas(franjas))
     } catch (e) {
       toast.error('Error: ' + (e.body?.detalle || e.message || '?'))
     } finally { setSaving(false) }
@@ -736,29 +760,29 @@ function HorarioPanel({ trabajadorId, identity }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 20px' }}>
         <div style={{
-          padding: '10px 12px', borderRadius: 10, marginBottom: 12,
+          padding: '8px 10px', borderRadius: 8, marginBottom: 10,
           background: 'rgba(59,130,246,0.06)', color: 'var(--text-2)',
           border: '1px solid rgba(59,130,246,0.16)',
-          fontSize: 12, lineHeight: 1.5,
+          fontSize: 11.5, lineHeight: 1.45,
         }}>
           Cada fila es una franja horaria. Marca los días en los que se
-          aplica. Para nocturna (22:00–06:00) añade dos franjas: una
-          22:00–23:59 lun-vie y otra 00:00–06:00 mar-sáb.
+          aplica. Cada cambio que guardes queda registrado en el tab
+          <strong> Historial</strong> del trabajador.
         </div>
 
-        <div style={{ overflowX: 'auto', borderRadius: 12, border: '1px solid var(--line)' }}>
+        <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--line)' }}>
           <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--bg-2)' }}>
-                <th style={thStyle}>Hora ini</th>
-                <th style={thStyle}>Hora fin</th>
+                <th style={thStyle}>Inicio</th>
+                <th style={thStyle}>Fin</th>
                 <th style={thStyle}>Tipo</th>
                 {DIAS.map(d => (
-                  <th key={d.i} style={{ ...thStyle, textAlign: 'center', width: 36 }}>{d.label}</th>
+                  <th key={d.i} style={{ ...thStyle, textAlign: 'center', width: 32 }}>{d.label}</th>
                 ))}
-                <th style={{ ...thStyle, width: 40 }}></th>
+                <th style={{ ...thStyle, width: 32 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -784,21 +808,21 @@ function HorarioPanel({ trabajadorId, identity }) {
                     </select>
                   </td>
                   {DIAS.map(d => (
-                    <td key={d.i} style={{ ...tdStyle, textAlign: 'center' }}>
+                    <td key={d.i} style={{ ...tdStyle, textAlign: 'center', padding: '4px 6px' }}>
                       <input type="checkbox" checked={f.dias.has(d.i)}
                              onChange={() => toggleDia(idx, d.i)}
-                             style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--green, #10b981)' }} />
+                             style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--green, #10b981)' }} />
                     </td>
                   ))}
-                  <td style={{ ...tdStyle, textAlign: 'center' }}>
+                  <td style={{ ...tdStyle, textAlign: 'center', padding: '4px 6px' }}>
                     <button onClick={() => removeFranja(idx)}
                             type="button" title="Eliminar franja"
                             style={{
-                              padding: 6, borderRadius: 8, border: 'none',
+                              padding: 4, borderRadius: 6, border: 'none',
                               background: 'transparent', color: 'var(--red, #f87171)',
                               cursor: 'pointer',
                             }}>
-                      <Trash2 size={14} />
+                      <Trash2 size={13} />
                     </button>
                   </td>
                 </tr>
@@ -811,23 +835,33 @@ function HorarioPanel({ trabajadorId, identity }) {
             </tbody>
             <tfoot>
               <tr style={{ background: 'var(--bg-2)', borderTop: '2px solid var(--line)' }}>
-                <td colSpan={3} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <td colSpan={3} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '8px 10px' }}>
                   Trabajo / día
                 </td>
                 {totDia.map(t => (
-                  <td key={t.dia.i} style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: t.trabajo > 0 ? 'var(--green, #10b981)' : 'var(--text-3)' }}>
-                    {fmtMin(t.trabajo)}
+                  <td key={t.dia.i} style={{
+                    ...tdStyle, padding: '8px 6px',
+                    textAlign: 'center', fontFamily: 'var(--font-mono)',
+                    fontSize: 14, fontWeight: 700,
+                    color: t.trabajo > 0 ? 'var(--green, #10b981)' : 'var(--text-3)',
+                  }}>
+                    {fmtMinShort(t.trabajo)}
                   </td>
                 ))}
                 <td style={tdStyle}></td>
               </tr>
               <tr style={{ background: 'var(--bg-2)' }}>
-                <td colSpan={3} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <td colSpan={3} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '6px 10px' }}>
                   Pausa / día
                 </td>
                 {totDia.map(t => (
-                  <td key={t.dia.i} style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: t.pausa > 0 ? '#f59e0b' : 'var(--text-3)' }}>
-                    {fmtMin(t.pausa)}
+                  <td key={t.dia.i} style={{
+                    ...tdStyle, padding: '6px 6px',
+                    textAlign: 'center', fontFamily: 'var(--font-mono)',
+                    fontSize: 12, fontWeight: 600,
+                    color: t.pausa > 0 ? '#f59e0b' : 'var(--text-3)',
+                  }}>
+                    {fmtMinShort(t.pausa)}
                   </td>
                 ))}
                 <td style={tdStyle}></td>
@@ -836,41 +870,69 @@ function HorarioPanel({ trabajadorId, identity }) {
           </table>
         </div>
 
-        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{
+          marginTop: 14, padding: '12px 16px', borderRadius: 12,
+          background: 'var(--bg-2)', border: '1px solid var(--line)',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+          flexWrap: 'wrap',
+        }}>
           <Btn variant="ghost" size="sm" onClick={addFranja}>
             <Plus size={13} /> Añadir franja
           </Btn>
-          <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
-            <strong>Total semanal:</strong>{' '}
-            <span style={{ color: 'var(--green, #10b981)', fontWeight: 600 }}>
-              {fmtMin(totSemTrabajo)}
-            </span>
-            <span style={{ color: 'var(--text-3)' }}> trabajo</span>
-            {totSemPausa > 0 && (
-              <>
-                {' · '}
-                <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmtMin(totSemPausa)}</span>
-                <span style={{ color: 'var(--text-3)' }}> pausa</span>
-              </>
-            )}
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ margin: 0, fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+              Total semanal
+            </p>
+            <p style={{ margin: '2px 0 0', fontFamily: 'var(--font-display, Outfit)', fontSize: 22, fontWeight: 700 }}>
+              <span style={{ color: 'var(--green, #10b981)' }}>{fmtMin(totSemTrabajo)}</span>
+              <span style={{ fontSize: 13, color: 'var(--text-3)', fontWeight: 500, marginLeft: 6 }}>trabajo</span>
+              {totSemPausa > 0 && (
+                <>
+                  <span style={{ marginLeft: 12, color: '#f59e0b' }}>{fmtMin(totSemPausa)}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-3)', fontWeight: 500, marginLeft: 6 }}>pausa</span>
+                </>
+              )}
+            </p>
           </div>
         </div>
       </div>
 
       <div style={{
-        padding: '16px 32px', borderTop: '1px solid var(--line)',
+        padding: '14px 28px', borderTop: '1px solid var(--line)',
         background: 'var(--bg-2)', flexShrink: 0,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
       }}>
-        <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)' }}>
-          {franjas.length} franjas · zona horaria Europe/Madrid
-        </p>
-        <Btn type="button" onClick={handleSave} disabled={saving}>
-          <Save size={13} /> {saving ? 'Guardando…' : 'Guardar horario'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)' }}>
+            {franjas.length} franjas · Europe/Madrid
+          </p>
+          {dirty && (
+            <span style={{
+              padding: '3px 10px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+              background: 'rgba(245,158,11,0.15)', color: '#f59e0b',
+              border: '1px solid rgba(245,158,11,0.35)',
+              textTransform: 'uppercase', letterSpacing: '0.04em',
+            }}>
+              ● Sin guardar
+            </span>
+          )}
+        </div>
+        <Btn type="button" onClick={handleSave} disabled={saving || !dirty}>
+          <Save size={13} /> {saving ? 'Guardando…' : (dirty ? 'Guardar cambios' : 'Sin cambios')}
         </Btn>
       </div>
     </div>
   )
+}
+
+
+function fmtMinShort(mins) {
+  if (!mins) return '—'
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}:${String(m).padStart(2, '0')}`
 }
 
 
@@ -885,23 +947,23 @@ function fmtMin(mins) {
 
 
 const timeInput = {
-  padding: '6px 10px', borderRadius: 8,
+  padding: '4px 8px', borderRadius: 6,
   border: '1px solid var(--line)', background: 'var(--bg-1)',
   color: 'var(--text-0)', fontSize: 13, fontFamily: 'var(--font-mono)',
-  width: 100,
+  width: 88,
 }
 const selectInput = {
-  padding: '6px 10px', borderRadius: 8,
+  padding: '4px 8px', borderRadius: 6,
   border: '1px solid var(--line)', background: 'var(--bg-1)',
   color: 'var(--text-0)', fontSize: 13, cursor: 'pointer',
-  minWidth: 110,
+  minWidth: 108,
 }
 const thStyle = {
-  textAlign: 'left', padding: '10px 12px',
-  fontSize: 11, fontWeight: 600, color: 'var(--text-3)',
+  textAlign: 'left', padding: '8px 10px',
+  fontSize: 10.5, fontWeight: 600, color: 'var(--text-3)',
   textTransform: 'uppercase', letterSpacing: '0.05em',
 }
 const tdStyle = {
-  padding: '8px 12px',
+  padding: '5px 10px',
 }
 
