@@ -60,14 +60,17 @@ def decode_jwt_trabajador(token: str) -> dict | None:
 
 
 def login_noofit_cliente(email: str, password: str):
-    """Valida credenciales contra NoofitPro `loginEasy` con email+password.
+    """Valida credenciales de un cliente final contra NoofitPro.
 
-    Devuelve `(True, custom_token)` si OK, `(False, motivo)` si KO.
-    No persiste el token NoofitPro: sólo lo usamos para validar y, después,
-    emitimos nuestro JWT propio.
+    Usa `account/loginMobile` (endpoint de mynoofit cliente), distinto del
+    `loginEasy` del manager/trainer. Devuelve `(True, custom_token)` si OK,
+    `(False, motivo)` si KO.
+
+    No persistimos el token NoofitPro — solo validamos credenciales y
+    emitimos nuestro JWT propio (kind='trabajador' o kind='cliente').
     """
     try:
-        token, _ = nfc._login(email, password)  # noqa: SLF001 — wrapper interno
+        token = nfc.login_cliente_final(email, password)
         return True, token
     except requests.HTTPError as e:
         code = e.response.status_code if e.response is not None else 0
