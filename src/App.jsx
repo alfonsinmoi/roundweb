@@ -38,6 +38,7 @@ const PortalLayout  = lazy(() => import('./pages/PortalCliente/PortalLayout'))
 const PortalHome    = lazy(() => import('./pages/PortalCliente/PortalHome'))
 const FicharTab     = lazy(() => import('./pages/PortalCliente/FicharTab'))
 const MisJornadasTab = lazy(() => import('./pages/PortalCliente/MisJornadasTab'))
+const AusenciasTabPortal = lazy(() => import('./pages/PortalCliente/AusenciasTab'))
 const PerfilTab     = lazy(() => import('./pages/PortalCliente/PerfilTab'))
 const ReservasTab   = lazy(() => import('./pages/PortalCliente/ReservasTab'))
 const RetosTab      = lazy(() => import('./pages/PortalCliente/RetosTab'))
@@ -89,6 +90,7 @@ function AppRoutes() {
           <Route index             element={<PortalHome />} />
           <Route path="fichar"     element={<FicharTab />} />
           <Route path="mis-jornadas"       element={<MisJornadasTab />} />
+          <Route path="ausencias"          element={<AusenciasTabPortal />} />
           <Route path="entrenamientos"     element={<EntrenamientosTab />} />
           <Route path="entrenamientos/:id" element={<EntrenamientoDetalle />} />
           <Route path="perfil"     element={<PerfilTab />} />

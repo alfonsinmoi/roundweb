@@ -112,6 +112,18 @@ export const trabajadorHorario = (identity, id) =>
   _req('GET', `/trabajadores/${id}/horario`, identity).then(d => d.horario)
 export const trabajadorHorarioSave = (identity, id, horario) =>
   _req('PUT', `/trabajadores/${id}/horario`, identity, { horario })
+
+// ── Ausencias (admin) ──────────────────────────────────────────────────────
+export const ausenciasList = (identity, params = {}) => {
+  const qs = new URLSearchParams(params).toString()
+  return _req('GET', `/ausencias${qs ? '?' + qs : ''}`, identity).then(d => d.solicitudes)
+}
+export const ausenciaAprobar = (identity, id, body = {}) =>
+  _req('POST', `/ausencias/${id}/aprobar`, identity, body)
+export const ausenciaRechazar = (identity, id, body = {}) =>
+  _req('POST', `/ausencias/${id}/rechazar`, identity, body)
+export const trabajadorSaldoAusencias = (identity, id, ano) =>
+  _req('GET', `/trabajadores/${id}/saldo-ausencias?ano=${ano}`, identity)
 export const trabajadorVincularTrainer = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/trainers`, identity, body)
 export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>

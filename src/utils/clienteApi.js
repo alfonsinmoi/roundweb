@@ -80,6 +80,14 @@ export const miResumen = (token, ano) =>
 export const miHorario = (token) =>
   _req('GET', '/api/horario/mi-horario', null, token).then(d => d.horario)
 
+// ── Ausencias del trabajador ───────────────────────────────────────────────
+export const misAusencias = (token) =>
+  _req('GET', '/api/horario/mis-ausencias', null, token)
+export const solicitarAusencia = (token, body) =>
+  _req('POST', '/api/horario/solicitud-ausencia', body, token)
+export const cancelarAusencia = (token, id) =>
+  _req('POST', `/api/horario/solicitud-ausencia/${id}/cancelar`, null, token)
+
 export const fichajeCorreccion = (token, body) =>
   _req('POST', '/api/horario/correccion', body, token)
 

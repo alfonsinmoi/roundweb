@@ -1693,6 +1693,50 @@ EXCEPTION WHEN OTHERS THEN NULL;
 END$$;
 
 
+-- ─── SOLICITUDES DE AUSENCIA (Fase 2 C: vacaciones, asuntos propios, …) ──
+-- Flujo: trabajador solicita desde portal/mynoofit -> manager o trainer
+-- autoriza o rechaza. El saldo de dias se calcula on-the-fly mirando esta
+-- tabla + trainer_empresa.vacaciones_dias / asuntos_propios_dias (overrides
+-- por trabajador en trabajador.vacaciones_dias_override).
+--
+-- Jornada completa (default): toda la jornada de cada dia entre [desde, hasta].
+-- Parcial: indica hora_desde/hora_hasta (solo si fecha_desde == fecha_hasta).
+CREATE TABLE IF NOT EXISTS solicitud_ausencia (
+  id                       BIGSERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  trabajador_id            INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE RESTRICT,
+  tipo                     VARCHAR(30) NOT NULL CHECK (tipo IN (
+                            'vacaciones','asuntos_propios','medico','personal',
+                            'baja_medica','permiso_retribuido','otros'
+                          )),
+  fecha_desde              DATE NOT NULL,
+  fecha_hasta              DATE NOT NULL,
+  jornada_completa         BOOLEAN NOT NULL DEFAULT TRUE,
+  hora_desde               TIME,
+  hora_hasta               TIME,
+  motivo_trabajador        TEXT,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente'
+                                       CHECK (estado IN ('pendiente','aprobada','rechazada','cancelada')),
+  ts_resolucion            TIMESTAMPTZ,
+  resuelto_por_usuario_id  INTEGER,
+  motivo_resolucion        TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT solicitud_ausencia_fechas CHECK (fecha_hasta >= fecha_desde),
+  CONSTRAINT solicitud_ausencia_horas CHECK (
+    jornada_completa = TRUE OR (
+      hora_desde IS NOT NULL AND hora_hasta IS NOT NULL
+      AND hora_hasta > hora_desde
+      AND fecha_desde = fecha_hasta
+    )
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_solicitud_ausencia_trab
+  ON solicitud_ausencia(trabajador_id, fecha_desde DESC);
+CREATE INDEX IF NOT EXISTS idx_solicitud_ausencia_manager_estado
+  ON solicitud_ausencia(id_manager, estado, fecha_desde DESC);
+
+
 -- ─── HORARIO TEÓRICO SEMANAL DEL TRABAJADOR (Fase 2 A) ────────────────────
 -- Cada trabajador tiene N bloques horarios por día de la semana (ISO:
 -- 1=Lunes, 7=Domingo). Soporta jornadas partidas con varios bloques en
@@ -1939,6 +1983,7 @@ DROP TRIGGER IF EXISTS trg_trabajador_upd       ON trabajador;
 DROP TRIGGER IF EXISTS trg_pausa_motivo_upd     ON pausa_motivo;
 DROP TRIGGER IF EXISTS trg_correccion_sol_upd   ON correccion_solicitud;
 DROP TRIGGER IF EXISTS trg_horario_trab_upd     ON horario_trabajador;
+DROP TRIGGER IF EXISTS trg_solicitud_ausencia_upd ON solicitud_ausencia;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -2009,6 +2054,8 @@ CREATE TRIGGER trg_pausa_motivo_upd     BEFORE UPDATE ON pausa_motivo
 CREATE TRIGGER trg_correccion_sol_upd   BEFORE UPDATE ON correccion_solicitud
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_horario_trab_upd     BEFORE UPDATE ON horario_trabajador
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_solicitud_ausencia_upd BEFORE UPDATE ON solicitud_ausencia
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 

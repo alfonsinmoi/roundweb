@@ -41,10 +41,11 @@ export default function PortalLayout() {
 
   const esTrabajador = !!cliente?.es_trabajador
 
-  // Tabs (Fichar PRIMERO si trabajador, después Mis jornadas, Entrenamientos…)
+  // Tabs (Fichar PRIMERO si trabajador, después Mis jornadas, Ausencias, …)
   const tabs = [
     esTrabajador && { to: '/portal/fichar',         icon: Clock,     label: 'Fichar' },
     esTrabajador && { to: '/portal/mis-jornadas',   icon: BarChart3, label: 'Mis jornadas' },
+    esTrabajador && { to: '/portal/ausencias',      icon: Calendar,  label: 'Ausencias' },
                     { to: '/portal/entrenamientos', icon: Dumbbell,  label: 'Entrenamientos' },
                     { to: '/portal/reservas',       icon: Calendar,  label: 'Reservas' },
                     { to: '/portal/retos',          icon: Trophy,    label: 'Retos' },

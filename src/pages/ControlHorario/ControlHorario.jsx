@@ -11,11 +11,13 @@ import FichajesTab       from './FichajesTab'
 import ConfiguracionTab  from './ConfiguracionTab'
 import QrCentroTab       from './QrCentroTab'
 import CorreccionesTab   from './CorreccionesTab'
+import AusenciasTab      from './AusenciasTab'
 
 
 const TABS = [
   { id: 'trabajadores', label: 'Trabajadores', comp: TrabajadoresTab },
   { id: 'fichajes',     label: 'Fichajes',     comp: FichajesTab },
+  { id: 'ausencias',    label: 'Ausencias',    comp: AusenciasTab },
   { id: 'qr',           label: 'QR del centro', comp: QrCentroTab },
   { id: 'correcciones', label: 'Correcciones', comp: CorreccionesTab },
   { id: 'config',       label: 'Configuración', comp: ConfiguracionTab },

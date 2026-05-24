@@ -47,6 +47,7 @@ from .routes.trimestre         import bp as bp_trimestre
 from .routes.canales_captacion import bp as bp_canales_captacion
 from .routes.horario           import bp as bp_horario
 from .routes.horario_fichaje   import bp as bp_horario_fichaje
+from .routes.horario_ausencias import bp as bp_horario_ausencias
 from .routes.cliente_portal    import bp as bp_cliente_portal
 
 
@@ -224,6 +225,8 @@ def create_app():
         app.register_blueprint(bp_horario, name=f'hor{prefix}', url_prefix=prefix)
     for prefix in ('/horario', '/api/horario'):
         app.register_blueprint(bp_horario_fichaje, name=f'horf{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_ausencias, name=f'hora{prefix}', url_prefix=prefix)
 
     # ── Portal del cliente NoofitPro (login + me)
     for prefix in ('/cliente', '/api/cliente'):
