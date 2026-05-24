@@ -1,9 +1,11 @@
-import { Calendar, Trophy, Award, Sparkles } from 'lucide-react'
+import { Award, Sparkles } from 'lucide-react'
 
 
-export function ReservasTab() { return <Placeholder icon={Calendar} title="Reservas" /> }
-export function RetosTab()    { return <Placeholder icon={Trophy}   title="Retos" /> }
-export function LogrosTab()   { return <Placeholder icon={Award}    title="Logros" /> }
+// Placeholder para tabs que aún no tienen UI propia. Hoy sólo Logros.
+// Reservas y Retos ya tienen archivos propios con esqueletos:
+//   - ReservasTab.jsx
+//   - RetosTab.jsx
+export function LogrosTab() { return <Placeholder icon={Award} title="Logros" /> }
 
 
 function Placeholder({ icon: Icon, title }) {
@@ -24,7 +26,7 @@ function Placeholder({ icon: Icon, title }) {
           {title}
         </h2>
         <p style={{ margin: '6px 0 0', color: 'var(--text-3)', fontSize: 13, maxWidth: 280 }}>
-          Pronto verás aquí tus {title.toLowerCase()} sincronizadas con NoofitPro.
+          Pronto verás aquí tus {title.toLowerCase()} sincronizados con NoofitPro.
         </p>
       </div>
       <div style={{
