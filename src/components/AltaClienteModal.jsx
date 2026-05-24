@@ -197,8 +197,15 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
     o.value !== 'enlace_pago' || tieneTokenizacion
   )
 
+  // Categoría seleccionada (objeto) y si requiere cuota. Categorías como
+  // Wellhub, Invitado o Trabajador suelen tener tiene_cuota=false → no se
+  // les emite recibo y por tanto no hay que pedir cuota/IBAN/etc.
+  const categoriaSel = (categorias || []).find(c => String(c.id) === String(categoriaId))
+  const requiereCuota = !!categoriaSel?.tiene_cuota
+
   const validar = () => {
     if (!categoriaId) return 'Elige una categoría'
+    if (!requiereCuota) return null    // categoría sin cuota: no exigimos nada más
     if (cuotasSeleccionadas.length === 0) return 'Selecciona al menos una cuota'
     if (!fechaAlta) return 'Pon una fecha de alta'
     if (!periodicidad) return 'Elige una periodicidad'
@@ -229,6 +236,17 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
         await setCategoriaBD(cliente.id, parseInt(categoriaId, 10))
       } catch (e) {
         console.warn('no se pudo guardar categoría:', e?.message)
+      }
+
+      // Si la categoría NO requiere cuota (Wellhub, Invitado, Trabajador…),
+      // basta con haber asignado la categoría. Sin recibo, sin suscripción.
+      if (!requiereCuota) {
+        toast.success(`Categoría asignada: ${categoriaSel?.nombre}. No requiere cuota.`)
+        if (typeof onSaved === 'function') {
+          try { await onSaved() } catch {}
+        }
+        onClose()
+        return
       }
 
       // 2. Llamar alta-cliente por cada cuota seleccionada
@@ -333,6 +351,18 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
               </option>
             ))}
           </select>
+          {categoriaSel && !requiereCuota && (
+            <p style={{
+              marginTop: 10, padding: '10px 12px', borderRadius: 8,
+              background: 'rgba(45,212,168,0.10)',
+              border: '1px solid rgba(45,212,168,0.35)',
+              color: 'var(--text-1)', fontSize: 12.5, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: 'var(--green)' }}>{categoriaSel.nombre}</strong> no
+              requiere cuota. Pulsa <em>Aceptar</em> y el cliente quedará categorizado sin
+              emitir recibo ni suscripción. No tienes que rellenar nada más abajo.
+            </p>
+          )}
         </Section>
 
         {/* 2. Cuotas */}
