@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Check, X, RefreshCcw, Filter, CalendarRange, Sun, Stethoscope, Coffee } from 'lucide-react'
-import { Card, Btn, Badge, Table, EmptyState, Select } from '../../components/UI'
+import { Check, X, RefreshCcw, Filter, CalendarRange, Sun, Stethoscope, Coffee, Plus } from 'lucide-react'
+import { Card, Btn, Badge, Table, EmptyState, Select, Input } from '../../components/UI'
 import { useToast } from '../../components/Toast'
+import Modal from '../../components/Modal'
 import {
   ausenciasList, ausenciaAprobar, ausenciaRechazar,
-  trabajadoresList,
+  ausenciaCrearAdmin, trabajadoresList,
 } from '../../utils/horarioApi'
 
 
@@ -26,6 +27,7 @@ export default function AusenciasTab({ identity }) {
   const [items, setItems] = useState([])
   const [trabajadores, setTrabajadores] = useState([])
   const [loading, setLoading] = useState(true)
+  const [showNueva, setShowNueva] = useState(false)
 
   useEffect(() => {
     trabajadoresList(identity, { incluir_bajas: 1 }).then(setTrabajadores).catch(() => {})
@@ -97,6 +99,9 @@ export default function AusenciasTab({ identity }) {
           <Btn variant="ghost" size="sm" onClick={reload}>
             <RefreshCcw size={14} /> Recargar
           </Btn>
+          <Btn size="sm" onClick={() => setShowNueva(true)}>
+            <Plus size={14} /> Nueva ausencia
+          </Btn>
         </div>
       </Card>
 
@@ -105,6 +110,13 @@ export default function AusenciasTab({ identity }) {
       {!loading && items.length === 0 && (
         <EmptyState icon={Filter} title="Sin solicitudes"
                     description="No hay solicitudes que coincidan con los filtros." />
+      )}
+
+      {showNueva && (
+        <NuevaAusenciaModal identity={identity}
+                            trabajadores={trabajadores}
+                            onClose={() => setShowNueva(false)}
+                            onSaved={() => { setShowNueva(false); reload() }} />
       )}
 
       {!loading && items.length > 0 && (
@@ -189,4 +201,146 @@ const selectStyle = {
   padding: '8px 10px', borderRadius: 8,
   border: '1px solid var(--line)', background: 'var(--bg-1)',
   color: 'var(--text-1)', fontSize: 13, minWidth: 180, cursor: 'pointer',
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ║  NuevaAusenciaModal — admin crea ausencia directamente (aprobada)      ║
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TIPOS_LIST = [
+  { id: 'vacaciones',         label: 'Vacaciones' },
+  { id: 'asuntos_propios',    label: 'Asuntos propios' },
+  { id: 'medico',             label: 'Médico' },
+  { id: 'personal',           label: 'Personal' },
+  { id: 'baja_medica',        label: 'Baja médica' },
+  { id: 'permiso_retribuido', label: 'Permiso retribuido' },
+  { id: 'otros',              label: 'Otros' },
+]
+
+
+function NuevaAusenciaModal({ identity, trabajadores, onClose, onSaved }) {
+  const toast = useToast()
+  const today = new Date().toISOString().slice(0, 10)
+  const [form, setForm] = useState({
+    trabajador_id: '',
+    tipo: 'vacaciones',
+    fecha_desde: today,
+    fecha_hasta: today,
+    jornada_completa: true,
+    hora_desde: '09:00',
+    hora_hasta: '11:00',
+    motivo_trabajador: '',
+    motivo_resolucion: '',
+  })
+  const [saving, setSaving] = useState(false)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  async function handle(e) {
+    e.preventDefault()
+    if (!form.trabajador_id) {
+      toast.error('Selecciona el trabajador')
+      return
+    }
+    setSaving(true)
+    try {
+      await ausenciaCrearAdmin(identity, form)
+      toast.success('Ausencia creada')
+      onSaved()
+    } catch (e) {
+      toast.error('Error: ' + (e.body?.detalle || e.body?.error || e.message))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose}
+           title="Nueva ausencia"
+           subtitle="Se creará como aprobada (sin pasar por solicitud)"
+           maxWidth={560}>
+      <form onSubmit={handle} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 32px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Select label="Trabajador *" value={form.trabajador_id}
+                  onChange={e => set('trabajador_id', e.target.value)} required>
+            <option value="">— Selecciona —</option>
+            {trabajadores.map(t => (
+              <option key={t.id} value={t.id}>
+                {t.nombre_completo || t.email || `#${t.id}`}
+              </option>
+            ))}
+          </Select>
+          <Select label="Tipo" value={form.tipo}
+                  onChange={e => set('tipo', e.target.value)}>
+            {TIPOS_LIST.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </Select>
+
+          <div>
+            <label style={lblStyle}>Duración</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <SegBtn active={form.jornada_completa} onClick={() => set('jornada_completa', true)}>
+                Día(s) completo(s)
+              </SegBtn>
+              <SegBtn active={!form.jornada_completa}
+                      onClick={() => setForm(f => ({ ...f, jornada_completa: false, fecha_hasta: f.fecha_desde }))}>
+                Por horas (mismo día)
+              </SegBtn>
+            </div>
+          </div>
+
+          {form.jornada_completa ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Input label="Desde" type="date" required value={form.fecha_desde}
+                     onChange={e => setForm(f => ({ ...f, fecha_desde: e.target.value, fecha_hasta: f.fecha_hasta || e.target.value }))} />
+              <Input label="Hasta" type="date" required value={form.fecha_hasta}
+                     onChange={e => set('fecha_hasta', e.target.value)} />
+            </div>
+          ) : (
+            <>
+              <Input label="Día" type="date" required value={form.fecha_desde}
+                     onChange={e => setForm(f => ({ ...f, fecha_desde: e.target.value, fecha_hasta: e.target.value }))} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <Input label="Hora desde" type="time" required value={form.hora_desde}
+                       onChange={e => set('hora_desde', e.target.value)} />
+                <Input label="Hora hasta" type="time" required value={form.hora_hasta}
+                       onChange={e => set('hora_hasta', e.target.value)} />
+              </div>
+            </>
+          )}
+
+          <Input label="Comentario interno (motivo, opcional)" value={form.motivo_trabajador}
+                 onChange={e => set('motivo_trabajador', e.target.value)} />
+          <Input label="Nota de resolución (visible para el trabajador, opcional)"
+                 value={form.motivo_resolucion}
+                 onChange={e => set('motivo_resolucion', e.target.value)} />
+        </div>
+
+        <div style={{
+          padding: '14px 32px', borderTop: '1px solid var(--line)',
+          background: 'var(--bg-2)', flexShrink: 0,
+          display: 'flex', justifyContent: 'flex-end', gap: 8,
+        }}>
+          <Btn variant="ghost" type="button" onClick={onClose}>Cancelar</Btn>
+          <Btn type="submit" disabled={saving}>
+            <Plus size={13} /> {saving ? 'Creando…' : 'Crear ausencia'}
+          </Btn>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+
+function SegBtn({ active, children, onClick }) {
+  return (
+    <button type="button" onClick={onClick}
+            style={{
+              flex: 1, padding: '10px 12px', borderRadius: 10,
+              border: active ? '1px solid var(--green, #10b981)' : '1px solid var(--line)',
+              background: active ? 'var(--green-bg, rgba(16,185,129,0.10))' : 'var(--bg-0)',
+              color: active ? 'var(--green, #10b981)' : 'var(--text-2)',
+              fontSize: 13, fontWeight: active ? 700 : 500,
+              cursor: 'pointer',
+            }}>
+      {children}
+    </button>
+  )
 }

@@ -301,6 +301,76 @@ def _autor_admin_id():
     return u['id'] if u else None
 
 
+@bp.route('/ausencias', methods=['POST'])
+@auth_required
+@require_feature('control_horario')
+def crear_ausencia_admin():
+    """Crea una ausencia directamente desde admin (sin pasar por flujo de
+    solicitud del trabajador). Queda con estado='aprobada' inmediato.
+
+    Body: { trabajador_id, tipo, fecha_desde, fecha_hasta, jornada_completa,
+            hora_desde, hora_hasta, motivo_trabajador, motivo_resolucion }
+    """
+    d = request.get_json() or {}
+    try:
+        trab_id = int(d.get('trabajador_id'))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'trabajador_id_requerido'}), 400
+    tipo = (d.get('tipo') or '').strip().lower()
+    if tipo not in TIPOS:
+        return jsonify({'ok': False, 'error': 'tipo_invalido',
+                        'permitidos': list(TIPOS)}), 400
+    try:
+        fd = dt.date.fromisoformat((d.get('fecha_desde') or '').strip())
+        fh = dt.date.fromisoformat((d.get('fecha_hasta') or '').strip())
+    except ValueError:
+        return jsonify({'ok': False, 'error': 'fechas_invalidas'}), 400
+    if fh < fd:
+        return jsonify({'ok': False, 'error': 'rango_fechas_invalido'}), 400
+
+    jornada_completa = d.get('jornada_completa')
+    jornada_completa = True if jornada_completa is None else bool(jornada_completa)
+    hora_desde = hora_hasta = None
+    if not jornada_completa:
+        if fd != fh:
+            return jsonify({'ok': False, 'error': 'parcial_requiere_misma_fecha'}), 400
+        try:
+            hora_desde = dt.time.fromisoformat((d.get('hora_desde') or '').strip())
+            hora_hasta = dt.time.fromisoformat((d.get('hora_hasta') or '').strip())
+        except ValueError:
+            return jsonify({'ok': False, 'error': 'horas_invalidas'}), 400
+        if hora_hasta <= hora_desde:
+            return jsonify({'ok': False, 'error': 'rango_horas_invalido'}), 400
+
+    motivo_trab = _opt_str(d.get('motivo_trabajador'))
+    motivo_res  = _opt_str(d.get('motivo_resolucion')) or 'Creada por admin'
+
+    with get_conn() as conn, conn.cursor() as cur:
+        # Verificar que el trabajador pertenece al manager
+        cur.execute("SELECT 1 FROM trabajador WHERE id=%s AND id_manager=%s",
+                    (trab_id, str(g.id_manager)))
+        if not cur.fetchone():
+            return jsonify({'ok': False, 'error': 'trabajador_not_found'}), 404
+
+        cur.execute("""
+            INSERT INTO solicitud_ausencia
+              (id_manager, trabajador_id, tipo, fecha_desde, fecha_hasta,
+               jornada_completa, hora_desde, hora_hasta, motivo_trabajador,
+               estado, ts_resolucion, resuelto_por_usuario_id, motivo_resolucion)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'aprobada',NOW(),%s,%s)
+            RETURNING id, trabajador_id, tipo, fecha_desde, fecha_hasta,
+                      jornada_completa, hora_desde, hora_hasta, motivo_trabajador,
+                      estado, motivo_resolucion, ts_resolucion, created_at
+        """, (str(g.id_manager), trab_id, tipo, fd, fh,
+              jornada_completa, hora_desde, hora_hasta, motivo_trab,
+              _autor_admin_id(), motivo_res))
+        row = cur.fetchone()
+    log_action(actor_from_request(), entidad='solicitud_ausencia',
+               entidad_id=row['id'], accion='crear_admin',
+               resumen=f'trab={trab_id} tipo={tipo} {fd}..{fh}')
+    return jsonify({'ok': True, 'solicitud': _row_to_dict(row)})
+
+
 @bp.route('/ausencias/<int:sol_id>/aprobar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')

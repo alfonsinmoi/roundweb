@@ -124,6 +124,8 @@ export const ausenciaRechazar = (identity, id, body = {}) =>
   _req('POST', `/ausencias/${id}/rechazar`, identity, body)
 export const trabajadorSaldoAusencias = (identity, id, ano) =>
   _req('GET', `/trabajadores/${id}/saldo-ausencias?ano=${ano}`, identity)
+export const ausenciaCrearAdmin = (identity, body) =>
+  _req('POST', '/ausencias', identity, body).then(d => d.solicitud)
 export const trabajadorVincularTrainer = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/trainers`, identity, body)
 export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>

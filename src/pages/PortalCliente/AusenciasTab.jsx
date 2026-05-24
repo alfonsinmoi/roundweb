@@ -282,33 +282,56 @@ function SolicitarModal({ token, saldo, onClose, onSent }) {
               {TIPOS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
           </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <Field label="Desde">
-              <input type="date" required value={form.fecha_desde}
-                     onChange={e => setDesde(e.target.value)} style={input} />
-            </Field>
-            <Field label="Hasta">
-              <input type="date" required value={form.fecha_hasta}
-                     onChange={e => set('fecha_hasta', e.target.value)}
-                     style={input} disabled={!form.jornada_completa} />
-            </Field>
-          </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-1)' }}>
-            <input type="checkbox" checked={form.jornada_completa}
-                   onChange={e => set('jornada_completa', e.target.checked)} />
-            Jornada completa
-          </label>
-          {!form.jornada_completa && (
+
+          <Field label="Duración">
+            <div style={{ display: 'flex', gap: 6 }}>
+              <SegBtn active={form.jornada_completa}
+                      onClick={() => set('jornada_completa', true)}>
+                Día(s) completo(s)
+              </SegBtn>
+              <SegBtn active={!form.jornada_completa}
+                      onClick={() => {
+                        // Al pasar a "por horas" forzamos un solo día
+                        setForm(f => ({
+                          ...f, jornada_completa: false,
+                          fecha_hasta: f.fecha_desde || f.fecha_hasta,
+                        }))
+                      }}>
+                Por horas (mismo día)
+              </SegBtn>
+            </div>
+          </Field>
+
+          {form.jornada_completa ? (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <Field label="Hora desde">
-                <input type="time" value={form.hora_desde}
-                       onChange={e => set('hora_desde', e.target.value)} style={input} />
+              <Field label="Desde">
+                <input type="date" required value={form.fecha_desde}
+                       onChange={e => setDesde(e.target.value)} style={input} />
               </Field>
-              <Field label="Hora hasta">
-                <input type="time" value={form.hora_hasta}
-                       onChange={e => set('hora_hasta', e.target.value)} style={input} />
+              <Field label="Hasta">
+                <input type="date" required value={form.fecha_hasta}
+                       onChange={e => set('fecha_hasta', e.target.value)}
+                       style={input} />
               </Field>
             </div>
+          ) : (
+            <>
+              <Field label="Día">
+                <input type="date" required value={form.fecha_desde}
+                       onChange={e => setForm(f => ({ ...f, fecha_desde: e.target.value, fecha_hasta: e.target.value }))}
+                       style={input} />
+              </Field>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <Field label="Hora desde">
+                  <input type="time" required value={form.hora_desde}
+                         onChange={e => set('hora_desde', e.target.value)} style={input} />
+                </Field>
+                <Field label="Hora hasta">
+                  <input type="time" required value={form.hora_hasta}
+                         onChange={e => set('hora_hasta', e.target.value)} style={input} />
+                </Field>
+              </div>
+            </>
           )}
           <Field label="Comentario para tu manager (opcional)">
             <textarea rows={2} value={form.motivo_trabajador}
@@ -367,6 +390,22 @@ function Field({ label, children }) {
       {label}
       {children}
     </label>
+  )
+}
+
+function SegBtn({ active, children, onClick }) {
+  return (
+    <button type="button" onClick={onClick}
+            style={{
+              flex: 1, padding: '10px 12px', borderRadius: 10,
+              border: active ? '1px solid var(--green, #10b981)' : '1px solid var(--line)',
+              background: active ? 'var(--green-bg, rgba(16,185,129,0.10))' : 'var(--bg-0)',
+              color: active ? 'var(--green, #10b981)' : 'var(--text-2)',
+              fontSize: 13, fontWeight: active ? 700 : 500,
+              cursor: 'pointer',
+            }}>
+      {children}
+    </button>
   )
 }
 
