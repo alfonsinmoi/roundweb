@@ -57,6 +57,12 @@ export async function meCliente(token) {
   return _req('GET', '/api/cliente/me', null, token)
 }
 
+export const miTrabajador = (token) =>
+  _req('GET', '/api/cliente/mi-trabajador', null, token)
+
+export const solicitarAltaTrabajador = (token, body) =>
+  _req('POST', '/api/cliente/solicitar-alta-trabajador', body, token)
+
 
 // ── Fichaje (reusa endpoints /api/horario/* — pasan con JWT cliente) ───────
 export const fichajeEstado = (token) =>

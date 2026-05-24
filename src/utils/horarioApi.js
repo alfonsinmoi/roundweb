@@ -101,6 +101,10 @@ export const trabajadorBaja = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/baja`, identity, body)
 export const trabajadorReactivar = (identity, id) =>
   _req('POST', `/trabajadores/${id}/reactivar`, identity)
+export const trabajadorAutorizar = (identity, id, body) =>
+  _req('POST', `/trabajadores/${id}/autorizar`, identity, body)
+export const trabajadorRechazar = (identity, id, body) =>
+  _req('POST', `/trabajadores/${id}/rechazar`, identity, body)
 export const trabajadorVincularTrainer = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/trainers`, identity, body)
 export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>

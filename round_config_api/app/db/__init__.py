@@ -1645,8 +1645,23 @@ CREATE TABLE IF NOT EXISTS trabajador (
   -- Overrides opcionales sobre los heredados del trainer_empresa.
   vacaciones_dias_override      INTEGER,
   asuntos_propios_dias_override INTEGER,
-  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente_alta'
-                                       CHECK (estado IN ('pendiente_alta','activo','baja')),
+  -- Estados:
+  --   pendiente_autorizacion = el trabajador la solicito desde mynoofit/portal,
+  --                            esperando autorizacion del manager/trainer.
+  --   activo                 = autorizado, puede fichar.
+  --   rechazada              = la solicitud fue rechazada. Puede volver a solicitar.
+  --   baja                   = activo previo, dado de baja. Histórico conservado.
+  --   pendiente_alta         = LEGACY (modelo admin-iniciado), se mantiene por
+  --                            compat retro mientras no migremos datos viejos.
+  estado                   VARCHAR(24) NOT NULL DEFAULT 'pendiente_autorizacion'
+                                       CHECK (estado IN (
+                                         'pendiente_autorizacion','activo','rechazada','baja',
+                                         'pendiente_alta'
+                                       )),
+  solicitud_motivo         TEXT,                -- comentario libre del trabajador al solicitar
+  rechazo_motivo           TEXT,                -- comentario del admin al rechazar
+  autorizado_por_usuario_id INTEGER,            -- usuario_web.id del admin que autorizo
+  resuelto_at              TIMESTAMPTZ,         -- timestamp de autorizar/rechazar
   notas                    TEXT,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1655,6 +1670,27 @@ CREATE TABLE IF NOT EXISTS trabajador (
 CREATE INDEX IF NOT EXISTS idx_trabajador_manager   ON trabajador(id_manager);
 CREATE INDEX IF NOT EXISTS idx_trabajador_empleador ON trabajador(id_manager, id_trainer_empleador);
 CREATE INDEX IF NOT EXISTS idx_trabajador_estado    ON trabajador(id_manager, estado);
+
+-- Migracion idempotente para tablas ya existentes (sin las columnas nuevas).
+ALTER TABLE trabajador
+  ADD COLUMN IF NOT EXISTS solicitud_motivo        TEXT,
+  ADD COLUMN IF NOT EXISTS rechazo_motivo          TEXT,
+  ADD COLUMN IF NOT EXISTS autorizado_por_usuario_id INTEGER,
+  ADD COLUMN IF NOT EXISTS resuelto_at             TIMESTAMPTZ;
+
+-- Ampliar el CHECK de estado (Postgres no soporta IF NOT EXISTS en constraints).
+DO $$
+BEGIN
+  ALTER TABLE trabajador DROP CONSTRAINT IF EXISTS trabajador_estado_check;
+  ALTER TABLE trabajador ADD CONSTRAINT trabajador_estado_check
+    CHECK (estado IN ('pendiente_autorizacion','activo','rechazada','baja','pendiente_alta'));
+  -- Ampliar tamaño VARCHAR si la columna se creo con 20.
+  BEGIN
+    ALTER TABLE trabajador ALTER COLUMN estado TYPE VARCHAR(24);
+  EXCEPTION WHEN OTHERS THEN NULL;
+  END;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
 
 
 -- ─── TRABAJADOR ↔ TRAINER (pivote N:M) ─────────────────────────────────────

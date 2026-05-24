@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info } from 'lucide-react'
+import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info, Check, X, Clock } from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import Modal from '../../components/Modal'
 import {
   trabajadoresList, trabajadoresPendientes, trabajadorAlta,
   trabajadorBaja, trabajadorReactivar,
+  trabajadorAutorizar, trabajadorRechazar,
 } from '../../utils/horarioApi'
 import { getEntrenadores } from '../../utils/api'
 
@@ -18,20 +19,24 @@ export default function TrabajadoresTab({ identity }) {
   const [loading, setLoading] = useState(true)
   const [trainers, setTrainers] = useState([])
   const [showAlta, setShowAlta] = useState(null)  // pendiente seleccionado o objeto vacío
-  const [view, setView] = useState('activos')     // activos | pendientes | bajas
+  const [view, setView] = useState('activos')     // activos | pendientes | rechazadas | bajas
+  const [rechazadas, setRechazadas] = useState([])
+  const [showAutorizar, setShowAutorizar] = useState(null)
   const initialViewSet = useRef(false)
 
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const [act, pen, baj, trs] = await Promise.all([
+      const [act, pen, rec, baj, trs] = await Promise.all([
         trabajadoresList(identity, { estado: 'activo' }),
         trabajadoresPendientes(identity),
+        trabajadoresList(identity, { estado: 'rechazada' }).catch(() => []),
         trabajadoresList(identity, { estado: 'baja' }),
         getEntrenadores().catch(() => []),
       ])
       setActivos(act || [])
       setPendientes(pen || [])
+      setRechazadas(rec || [])
       setBajas(baj || [])
       setTrainers(trs || [])
       // UX: la primera carga decide la vista inicial. Si no hay activos
@@ -67,9 +72,30 @@ export default function TrabajadoresTab({ identity }) {
     } catch (e) { toast.error('Error: ' + e.message) }
   }
 
+  async function handleAutorizar(p, ajustes = {}) {
+    try {
+      await trabajadorAutorizar(identity, p.trabajador_id, ajustes)
+      toast.success('Solicitud autorizada — el trabajador ya puede fichar')
+      setShowAutorizar(null)
+      reload()
+    } catch (e) {
+      toast.error('No se pudo autorizar: ' + (e.body?.detalle || e.message))
+    }
+  }
+
+  async function handleRechazar(p) {
+    const motivo = prompt(`Motivo del rechazo (opcional, lo verá ${p.nombre_completo}):`, '')
+    if (motivo === null) return
+    try {
+      await trabajadorRechazar(identity, p.trabajador_id, { motivo })
+      toast.success('Solicitud rechazada')
+      reload()
+    } catch (e) { toast.error('Error: ' + (e.body?.detalle || e.message)) }
+  }
+
   return (
     <div>
-      {/* Banner explicativo — sólo si hay pendientes y vista pendientes activa */}
+      {/* Banner explicativo */}
       {view === 'pendientes' && pendientes.length > 0 && (
         <div style={{
           display: 'flex', alignItems: 'flex-start', gap: 10,
@@ -79,12 +105,13 @@ export default function TrabajadoresTab({ identity }) {
         }}>
           <Info size={16} style={{ color: '#3b82f6', flexShrink: 0, marginTop: 1 }} />
           <div>
-            <strong>¿Qué es "pendientes de alta"?</strong>{' '}
-            Son clientes NoofitPro con categoría <em>Trabajador</em> que aún
-            no tienen su alta laboral confirmada en Round. Para que puedan
-            fichar, pulsa <strong>"Alta laboral"</strong> y rellena los datos
-            obligatorios (NIF, jornada y trainer empleador). Hasta entonces
-            no podrán fichar.
+            <strong>Solicitudes pendientes de autorización.</strong>{' '}
+            Aquí ves a los clientes con categoría <em>Trabajador</em> en
+            NoofitPro. Los que aparecen con <Badge color="amber">Solicitud</Badge>{' '}
+            han enviado sus datos desde mynoofit/portal y esperan tu
+            autorización. Los que aparecen con <Badge color="gray">Sin solicitud</Badge>{' '}
+            aún no han iniciado el proceso — sólo se mostrarán cuando ellos
+            soliciten desde la app, o puedes darlos de alta manualmente si tienes prisa.
           </div>
         </div>
       )}
@@ -95,7 +122,13 @@ export default function TrabajadoresTab({ identity }) {
           Activos ({activos.length})
         </button>
         <button onClick={() => setView('pendientes')}   style={subTabStyle(view === 'pendientes')}>
-          Pendientes alta ({pendientes.length})
+          Solicitudes ({pendientes.filter(p => p.tipo === 'solicitud').length}
+          {pendientes.filter(p => p.tipo === 'sin_solicitud').length
+            ? ` + ${pendientes.filter(p => p.tipo === 'sin_solicitud').length} sin solicitar`
+            : ''})
+        </button>
+        <button onClick={() => setView('rechazadas')}   style={subTabStyle(view === 'rechazadas')}>
+          Rechazadas ({rechazadas.length})
         </button>
         <button onClick={() => setView('bajas')}        style={subTabStyle(view === 'bajas')}>
           Bajas ({bajas.length})
@@ -109,11 +142,18 @@ export default function TrabajadoresTab({ identity }) {
       {loading && <p style={{ color: 'var(--text-3)' }}>Cargando…</p>}
 
       {!loading && view === 'pendientes' && (
-        <PendientesView pendientes={pendientes} trainers={trainers}
-                        onAlta={(p) => setShowAlta(p)} />
+        <PendientesView
+          pendientes={pendientes}
+          trainers={trainers}
+          onAutorizar={(p) => setShowAutorizar(p)}
+          onRechazar={handleRechazar}
+          onAltaManual={(p) => setShowAlta(p)} />
       )}
       {!loading && view === 'activos' && (
         <ListView trabajadores={activos} onBaja={handleBaja} />
+      )}
+      {!loading && view === 'rechazadas' && (
+        <RechazadasView trabajadores={rechazadas} onReintentar={p => setShowAutorizar(_pendienteFromRechazada(p))} />
       )}
       {!loading && view === 'bajas' && (
         <ListView trabajadores={bajas} onReactivar={handleReactivar} />
@@ -125,8 +165,32 @@ export default function TrabajadoresTab({ identity }) {
                    onSaved={() => { setShowAlta(null); reload() }}
                    identity={identity} />
       )}
+      {showAutorizar && (
+        <AutorizarModal solicitud={showAutorizar} trainers={trainers}
+                        onClose={() => setShowAutorizar(null)}
+                        onConfirm={(ajustes) => handleAutorizar(showAutorizar, ajustes)} />
+      )}
     </div>
   )
+}
+
+
+// Convierte una fila "trabajador" (de la lista de rechazadas) en el shape de
+// `pendientes` que espera AutorizarModal — para poder reintentar la
+// autorización desde la vista de Rechazadas.
+function _pendienteFromRechazada(t) {
+  return {
+    trabajador_id: t.id,
+    cliente_idnoofit: t.cliente_idnoofit,
+    nombre_completo: t.nombre_completo,
+    email: t.email,
+    nif: t.nif,
+    jornada_h_semana: t.jornada_h_semana,
+    id_trainer_empleador: t.id_trainer_empleador,
+    fecha_alta_laboral: t.fecha_alta_laboral,
+    solicitud_motivo: '',
+    tipo: 'solicitud',
+  }
 }
 
 
@@ -141,22 +205,54 @@ function subTabStyle(active) {
 }
 
 
-function PendientesView({ pendientes, onAlta }) {
+function PendientesView({ pendientes, onAutorizar, onRechazar, onAltaManual }) {
   if (pendientes.length === 0) {
-    return <EmptyState icon={UserPlus} title="Sin pendientes"
-             description="Todos los clientes NoofitPro con categoría 'Trabajador' ya tienen su alta laboral completa." />
+    return <EmptyState icon={UserPlus} title="Sin solicitudes pendientes"
+             description="No hay solicitudes de alta esperando autorización." />
   }
   return (
     <Card style={{ padding: 0 }}>
       <Table
-        ariaLabel="Trabajadores pendientes de alta laboral"
+        ariaLabel="Solicitudes pendientes"
         columns={[
-          { key: 'nombre',    label: 'Nombre',    render: (_, r) => r.nombre_completo },
-          { key: 'email',     label: 'Email',     render: (_, r) => r.email || '—' },
-          { key: 'cat',       label: 'Categoría', render: (_, r) => <Badge color="cyan">{r.categoria_nombre}</Badge> },
-          { key: 'acciones',  label: '',          render: (_, r) => (
-            <Btn size="sm" onClick={() => onAlta(r)}>
-              <UserCheck size={13} /> Alta laboral
+          { key: 'nombre', label: 'Nombre / NIF', render: (_, r) => (
+            <div>
+              <div>{r.nombre_completo}</div>
+              {r.nif && <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{r.nif}</div>}
+            </div>
+          )},
+          { key: 'estado', label: 'Estado', render: (_, r) => (
+            r.tipo === 'solicitud'
+              ? <Badge color="amber"><Clock size={11} style={{ marginRight: 4 }} />Solicitud</Badge>
+              : <Badge color="gray">Sin solicitud</Badge>
+          )},
+          { key: 'datos', label: 'Datos solicitud', render: (_, r) => r.tipo === 'solicitud' ? (
+            <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+              <div>{r.jornada_h_semana ?? '—'} h/sem · trainer {r.id_trainer_empleador || '—'}</div>
+              {r.fecha_alta_laboral && <div style={{ color: 'var(--text-3)' }}>alta esperada: {r.fecha_alta_laboral}</div>}
+              {r.solicitud_motivo && (
+                <div style={{ color: 'var(--text-3)', fontStyle: 'italic', maxWidth: 240, whiteSpace: 'normal' }}>
+                  "{r.solicitud_motivo}"
+                </div>
+              )}
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+              No ha solicitado desde mynoofit todavía
+            </span>
+          )},
+          { key: 'acciones', label: '', render: (_, r) => r.tipo === 'solicitud' ? (
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <Btn size="sm" variant="ghost" onClick={() => onRechazar(r)}>
+                <X size={13} /> Rechazar
+              </Btn>
+              <Btn size="sm" onClick={() => onAutorizar(r)}>
+                <Check size={13} /> Autorizar
+              </Btn>
+            </div>
+          ) : (
+            <Btn size="sm" variant="ghost" onClick={() => onAltaManual(r)} title="Crear alta laboral sin esperar a la solicitud">
+              <UserCheck size={13} /> Alta manual
             </Btn>
           )},
         ]}
@@ -201,6 +297,112 @@ function ListView({ trabajadores, onBaja, onReactivar }) {
         data={trabajadores}
       />
     </Card>
+  )
+}
+
+
+function RechazadasView({ trabajadores, onReintentar }) {
+  if (trabajadores.length === 0) {
+    return <EmptyState icon={X} title="Sin rechazadas"
+             description="No has rechazado ninguna solicitud." />
+  }
+  return (
+    <Card style={{ padding: 0 }}>
+      <Table
+        ariaLabel="Solicitudes rechazadas"
+        columns={[
+          { key: 'nombre',   label: 'Nombre', render: (_, r) => r.nombre_completo },
+          { key: 'nif',      label: 'NIF',    render: (_, r) => (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{r.nif || '—'}</span>
+          )},
+          { key: 'motivo',   label: 'Motivo rechazo', render: (_, r) => (
+            <span style={{ color: 'var(--text-3)', fontStyle: 'italic', maxWidth: 320, whiteSpace: 'normal', display: 'block' }}>
+              {r.rechazo_motivo || '—'}
+            </span>
+          )},
+          { key: 'acciones', label: '', render: (_, r) => (
+            <Btn size="sm" onClick={() => onReintentar(r)} title="Volver a revisar y autorizar">
+              <Check size={13} /> Reconsiderar
+            </Btn>
+          )},
+        ]}
+        data={trabajadores}
+      />
+    </Card>
+  )
+}
+
+
+function AutorizarModal({ solicitud, trainers, onClose, onConfirm }) {
+  const [form, setForm] = useState({
+    nif:                   solicitud.nif || '',
+    jornada_h_semana:      solicitud.jornada_h_semana || '40',
+    id_trainer_empleador:  solicitud.id_trainer_empleador || '',
+    categoria_profesional: '',
+    tipo_contrato:         'indefinido',
+    fecha_alta_laboral:    solicitud.fecha_alta_laboral || new Date().toISOString().slice(0, 10),
+    notas:                 '',
+  })
+  const [saving, setSaving] = useState(false)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  async function handleSave(e) {
+    e.preventDefault()
+    if (!form.nif.trim() || !form.jornada_h_semana || !form.id_trainer_empleador) {
+      return
+    }
+    setSaving(true)
+    try { await onConfirm(form) } finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Autorizar solicitud de ${solicitud.nombre_completo}`}>
+      <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 0 }}>
+        Datos enviados por el trabajador. Puedes ajustarlos antes de autorizar.
+      </p>
+      <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Input label="NIF *" value={form.nif}
+                 onChange={e => set('nif', e.target.value.toUpperCase())} required />
+          <Input label="Jornada (h/semana) *" type="number" step="0.5"
+                 value={form.jornada_h_semana}
+                 onChange={e => set('jornada_h_semana', e.target.value)} required />
+        </div>
+        <Select label="Trainer empleador *"
+                value={form.id_trainer_empleador}
+                onChange={e => set('id_trainer_empleador', e.target.value)} required>
+          <option value="">— Selecciona trainer —</option>
+          {trainers.map(t => (
+            <option key={t.id} value={t.id}>
+              {`${t.nombre || t.name || ''} ${t.apellidos || t.surname || ''}`.trim() || t.email}
+            </option>
+          ))}
+        </Select>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Select label="Tipo de contrato"
+                  value={form.tipo_contrato}
+                  onChange={e => set('tipo_contrato', e.target.value)}>
+            <option value="indefinido">Indefinido</option>
+            <option value="temporal">Temporal</option>
+            <option value="formacion">Formación / aprendizaje</option>
+            <option value="practicas">Prácticas</option>
+          </Select>
+          <Input label="Fecha alta laboral" type="date"
+                 value={form.fecha_alta_laboral}
+                 onChange={e => set('fecha_alta_laboral', e.target.value)} />
+        </div>
+        <Input label="Categoría profesional (opcional)" value={form.categoria_profesional}
+               onChange={e => set('categoria_profesional', e.target.value)} />
+        <Input label="Notas" value={form.notas}
+               onChange={e => set('notas', e.target.value)} />
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+          <Btn variant="ghost" type="button" onClick={onClose}>Cancelar</Btn>
+          <Btn type="submit" disabled={saving}>
+            <Check size={13} /> {saving ? 'Autorizando…' : 'Autorizar y activar'}
+          </Btn>
+        </div>
+      </form>
+    </Modal>
   )
 }
 

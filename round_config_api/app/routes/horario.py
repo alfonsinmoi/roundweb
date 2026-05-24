@@ -532,9 +532,15 @@ def listar_trabajadores():
 @auth_required
 @require_feature('control_horario')
 def trabajadores_pendientes():
-    """Devuelve los clientes NoofitPro del manager con categoría
-    'Trabajador' que aún no tienen alta laboral completada (es decir,
-    no existen en `trabajador` o están en estado 'pendiente_alta')."""
+    """Solicitudes de alta pendientes de autorización + (compat) clientes
+    NoofitPro con categoría Trabajador que aún no han solicitado.
+
+    Devuelve la unión:
+      - trabajador.estado IN ('pendiente_autorizacion','pendiente_alta')
+        → tienen solicitud y/o datos previos
+      - clientes con categoría Trabajador en NF sin fila trabajador
+        → todavía no solicitaron desde mynoofit/portal (informativo)
+    """
     placeholders = ','.join(['%s'] * len(TRABAJADOR_CATEGORIAS))
     sql = f"""
         SELECT cc.cliente_idnoofit,
@@ -544,7 +550,9 @@ def trabajadores_pendientes():
                cli.id_trainer  AS id_trainer_actual,
                cat.nombre      AS categoria_nombre,
                t.id            AS trabajador_id,
-               t.estado        AS trabajador_estado
+               t.estado        AS trabajador_estado,
+               t.nif, t.jornada_h_semana, t.id_trainer_empleador,
+               t.fecha_alta_laboral, t.solicitud_motivo, t.created_at AS solicitud_at
           FROM cliente_categoria cc
           JOIN categoria cat
             ON cat.id = cc.categoria_id AND cat.id_manager = cc.id_manager
@@ -556,8 +564,10 @@ def trabajadores_pendientes():
            AND t.cliente_idnoofit = cc.cliente_idnoofit
          WHERE cc.id_manager = %s
            AND cat.nombre IN ({placeholders})
-           AND (t.id IS NULL OR t.estado = 'pendiente_alta')
-         ORDER BY cli.surname, cli.name
+           AND (t.id IS NULL
+                OR t.estado IN ('pendiente_autorizacion','pendiente_alta'))
+         ORDER BY (t.id IS NOT NULL) DESC, t.created_at DESC NULLS LAST,
+                  cli.surname, cli.name
     """
     params = [str(g.id_manager), *TRABAJADOR_CATEGORIAS]
     with get_conn() as conn, conn.cursor() as cur:
@@ -578,6 +588,14 @@ def trabajadores_pendientes():
             'categoria_nombre': r['categoria_nombre'],
             'trabajador_id': r['trabajador_id'],
             'trabajador_estado': r['trabajador_estado'],
+            # Datos enviados por el trabajador en su solicitud (cuando aplica):
+            'nif': r['nif'] or '',
+            'jornada_h_semana': float(r['jornada_h_semana']) if r['jornada_h_semana'] is not None else None,
+            'id_trainer_empleador': r['id_trainer_empleador'],
+            'fecha_alta_laboral': r['fecha_alta_laboral'].isoformat() if r['fecha_alta_laboral'] else None,
+            'solicitud_motivo': r['solicitud_motivo'] or '',
+            'solicitud_at': r['solicitud_at'].isoformat() if r['solicitud_at'] else None,
+            'tipo': 'solicitud' if r['trabajador_id'] else 'sin_solicitud',
         })
     return jsonify({'ok': True, 'pendientes': out})
 
@@ -748,6 +766,97 @@ def actualizar_trabajador(trab_id):
                entidad_id=trab_id, accion='editar',
                resumen=f'cli={row["cliente_idnoofit"]}')
     return jsonify({'ok': True, 'trabajador': _trabajador_to_dict(row)})
+
+
+@bp.route('/trabajadores/<int:trab_id>/autorizar', methods=['POST'])
+@auth_required
+@require_feature('control_horario')
+def autorizar_trabajador(trab_id):
+    """Autoriza una solicitud pendiente del trabajador. Acepta sobrescritura
+    de datos (NIF, jornada, trainer) por si el admin quiere ajustar lo
+    que envió el trabajador.
+
+    Body opcional: { nif, jornada_h_semana, id_trainer_empleador,
+                     fecha_alta_laboral, categoria_profesional, tipo_contrato,
+                     notas }
+    """
+    d = request.get_json() or {}
+    sets = ["estado = 'activo'",
+            'resuelto_at = NOW()',
+            'rechazo_motivo = NULL',
+            'fecha_baja_laboral = NULL',
+            f'autorizado_por_usuario_id = %s']
+    params = [_autor_admin_id_horario()]
+    for col, key, conv in (
+        ('nif',                  'nif',                  _opt_str),
+        ('jornada_h_semana',     'jornada_h_semana',     _opt_num),
+        ('id_trainer_empleador', 'id_trainer_empleador', _opt_str),
+        ('fecha_alta_laboral',   'fecha_alta_laboral',   _opt_str),
+        ('categoria_profesional','categoria_profesional',_opt_str),
+        ('tipo_contrato',        'tipo_contrato',        _opt_str),
+        ('notas',                'notas',                _opt_str),
+    ):
+        if key in d:
+            sets.append(f'{col} = %s'); params.append(conv(d[key]))
+    # Si no hay fecha_alta_laboral en BD ni en el body, ponemos hoy
+    sets.append("fecha_alta_laboral = COALESCE(fecha_alta_laboral, CURRENT_DATE)")
+    params.extend([trab_id, str(g.id_manager)])
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            UPDATE trabajador SET {', '.join(sets)}, updated_at = NOW()
+             WHERE id = %s AND id_manager = %s
+               AND estado IN ('pendiente_autorizacion','pendiente_alta','rechazada')
+            RETURNING id, estado
+        """, params)
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'ok': False, 'error': 'not_found_o_no_pendiente'}), 404
+        # Asegurar vinculo trabajador_trainer al empleador
+        cur.execute("""
+            SELECT id_trainer_empleador FROM trabajador WHERE id = %s
+        """, (trab_id,))
+        tr = cur.fetchone()
+        if tr and tr['id_trainer_empleador']:
+            cur.execute("""
+                INSERT INTO trabajador_trainer
+                  (trabajador_id, id_manager, id_trainer, fecha_inicio)
+                VALUES (%s, %s, %s, CURRENT_DATE)
+                ON CONFLICT (trabajador_id, id_trainer, fecha_inicio) DO NOTHING
+            """, (trab_id, str(g.id_manager), tr['id_trainer_empleador']))
+    log_action(actor_from_request(), entidad='trabajador',
+               entidad_id=trab_id, accion='autorizar', resumen='')
+    return jsonify({'ok': True})
+
+
+@bp.route('/trabajadores/<int:trab_id>/rechazar', methods=['POST'])
+@auth_required
+@require_feature('control_horario')
+def rechazar_trabajador(trab_id):
+    """Rechaza una solicitud pendiente. El trabajador puede volver a solicitar."""
+    d = request.get_json() or {}
+    motivo = (d.get('motivo') or '').strip() or None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE trabajador
+               SET estado = 'rechazada',
+                   rechazo_motivo = %s,
+                   resuelto_at = NOW(),
+                   autorizado_por_usuario_id = %s,
+                   updated_at = NOW()
+             WHERE id = %s AND id_manager = %s
+               AND estado IN ('pendiente_autorizacion','pendiente_alta')
+            RETURNING id
+        """, (motivo, _autor_admin_id_horario(), trab_id, str(g.id_manager)))
+        if not cur.fetchone():
+            return jsonify({'ok': False, 'error': 'not_found_o_no_pendiente'}), 404
+    log_action(actor_from_request(), entidad='trabajador',
+               entidad_id=trab_id, accion='rechazar', resumen=motivo or '')
+    return jsonify({'ok': True})
+
+
+def _autor_admin_id_horario():
+    u = getattr(g, 'usuario_web', None)
+    return u['id'] if u else None
 
 
 @bp.route('/trabajadores/<int:trab_id>/baja', methods=['POST'])
