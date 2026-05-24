@@ -1846,11 +1846,16 @@ CREATE TABLE IF NOT EXISTS turno_plantilla_bloque (
   hora_fin             TIME NOT NULL,
   tipo                 VARCHAR(20) NOT NULL DEFAULT 'trabajo'
                                        CHECK (tipo IN ('trabajo','comida','descanso','otros')),
+  puesto_id            INTEGER REFERENCES puesto_trabajo(id) ON DELETE SET NULL,
   orden                SMALLINT NOT NULL DEFAULT 1,
   CONSTRAINT turno_plantilla_bloque_rango CHECK (hora_fin > hora_inicio)
 );
+ALTER TABLE turno_plantilla_bloque
+  ADD COLUMN IF NOT EXISTS puesto_id INTEGER REFERENCES puesto_trabajo(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_turno_plantilla_bloque_pl
   ON turno_plantilla_bloque(turno_plantilla_id, orden);
+CREATE INDEX IF NOT EXISTS idx_turno_plantilla_bloque_puesto
+  ON turno_plantilla_bloque(puesto_id);
 
 
 CREATE TABLE IF NOT EXISTS turno_asignacion (
