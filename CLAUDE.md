@@ -185,6 +185,21 @@ ssh round-vps "systemctl stop odoo17 && \
   `odoo_cuotas_enabled`, `odoo_contabilidad_enabled` (booleanos
   granulares), `sistemas_cobro` (JSONB lista). Sustituyen al monolítico
   `odoo_enabled` (que se conserva para compat retro).
+- `manager_config` (cols Fase 7) — `control_horario_enabled`,
+  `control_horario_activated_at`, `control_horario_qr_secret` (HS256
+  para firmar QR rotativos del módulo de control horario).
+- `convenio` — catálogo de convenios (globales sembrados + per-manager).
+- `trainer_empresa` — datos jurídicos por trainer (CIF, razón social,
+  convenio, overrides de horas/vacaciones/asuntos propios). El trainer es
+  la entidad empleadora a efectos del registro horario.
+- `trabajador` — espejo local de clientes NoofitPro categoría Trabajador
+  con datos laborales (NIF, jornada, trainer empleador, fecha alta/baja).
+- `trabajador_trainer` — pivote N:M para trabajadores que rotan entre
+  trainers del mismo manager.
+- `pausa_motivo` — catálogo motivos pausa (globales + override per-manager).
+- `fichaje_evento` — **append-only**, hash-chain SHA-256, retención 4 años
+  por normativa. Cada evento lleva `prev_hash` + `hash` del payload.
+- `correccion_solicitud` — solicitudes del trabajador resueltas por admin.
 
 ## Credenciales y secretos (NO subir a git)
 
@@ -232,6 +247,30 @@ POST   /api/manager/provision/<modulo>  → activar módulo (crm|cuotas|contabil
 POST   /api/manager/solicitud-despliegue → legacy: activar los 3 a la vez
 GET    /api/manager/trainers-contabilidad
 PATCH  /api/manager/trainers-contabilidad/<id_trainer>
+
+# Control horario laboral (Fase 7)
+# Trabajador (JWT propio kind='trabajador')
+POST   /api/horario/auth/login          → loginEasy NF + emite JWT propio (7 días)
+GET    /api/horario/me
+POST   /api/horario/fichaje             → ENTRADA/SALIDA/PAUSA_INI/PAUSA_FIN (+qr_token opcional)
+GET    /api/horario/estado              → fuera|dentro|en_pausa
+GET    /api/horario/mi-jornada/hoy
+POST   /api/horario/correccion          → solicitud → admin aprueba/rechaza
+# Admin (X-Round-Token + @require_feature('control_horario'))
+POST   /api/horario/activar | /desactivar
+GET    /api/horario/convenios
+GET/PUT /api/horario/trainer-empresa[/<trainer>]
+GET/POST/PATCH/DELETE /api/horario/pausa-motivos[/<id>]
+GET    /api/horario/trabajadores[/pendientes|/<id>]
+POST   /api/horario/trabajadores        → alta laboral
+PATCH  /api/horario/trabajadores/<id>
+POST   /api/horario/trabajadores/<id>/{baja,reactivar,trainers}
+GET    /api/horario/qr-actual/<trainer> → token JWT del QR (exp 10 min)
+GET    /api/horario/eventos             → listado con filtros
+GET    /api/horario/correcciones
+POST   /api/horario/correcciones/<id>/{aprobar,rechazar}
+POST   /api/horario/eventos/correccion  → corrección directa admin
+GET    /api/horario/verify-chain/<trabajador_id>
 ```
 
 ## Activación granular Odoo (Fase 6, mayo 2026)
@@ -260,6 +299,47 @@ A partir de Fase 6 cada módulo Odoo se activa por separado desde
   (siempre puede reactivar/reconfigurar). Sus 3 flags se backfillearon en
   la migración A1.
 - Detalle completo en `docs/DESPLIEGUE_ODOO.md` (sección "Fase 6").
+
+## Control horario laboral (Fase 7, mayo 2026)
+
+Módulo de fichaje de trabajadores. Cumple `art. 34.9 ET` (RD-Ley 8/2019) y
+está preparado para la reforma del RD digital en trámite.
+
+- **Activación por manager** (suscripción): `manager_config.control_horario_enabled`.
+  Endpoint `POST /api/horario/activar` flipea el flag y genera el
+  `control_horario_qr_secret` lazy.
+- **Decorador**: `@require_feature('control_horario')` (en
+  `odoo_guard.py`, reutilizado a pesar del nombre).
+- **Empleador = siempre el trainer**. Cuando manager y trainer coinciden
+  legalmente, simplemente son la misma persona/empresa.
+- **Trabajador** = cliente NoofitPro con categoría `Trabajador` + alta
+  laboral confirmada (NIF, jornada, trainer empleador obligatorios para
+  estado `activo`). Híbrido: NoofitPro propone, admin confirma.
+- **Pivote `trabajador_trainer`**: un trabajador puede fichar en varios
+  trainers del mismo manager. La entidad empleadora sigue siendo única.
+- **`fichaje_evento` append-only + hash-chain SHA-256** (cada fila guarda
+  `prev_hash` + `hash` del payload canónico). Inserciones serializadas con
+  `SELECT … FOR UPDATE`. Verificación: `GET /api/horario/verify-chain/<id>`.
+- **QR rotativo HS256** firmado con `control_horario_qr_secret`, exp 10 min.
+  Cuando hay clase activa NoofitPro sirve también el QR de la clase
+  (validación contra NoofitPro pendiente Fase 1.5).
+- **Auth del trabajador**: `POST /api/horario/auth/login` con email+password
+  NoofitPro → backend hace loginEasy → emite JWT propio (`kind='trabajador'`,
+  exp 7 días). El JWT propio es lo que mynoofit/web reenvían en
+  `Authorization: Bearer …`.
+- **Correcciones**: trabajador solicita (`/correccion`, queda pendiente) o
+  admin inserta directa (`/eventos/correccion`). Al aprobar se crea evento
+  `CORRECCION_INSERT` o `CORRECCION_ANULAR` con `corrige_evento_id` apuntando
+  al original (que NUNCA se borra/edita).
+- **Frontend**: `src/pages/ControlHorario/` con 5 tabs (Trabajadores,
+  Fichajes, QR, Correcciones, Configuración). Helpers API en
+  `src/utils/horarioApi.js`. Entrada lateral oculta si feature=false; si
+  el manager navega a mano a `/control-horario`, ve onboarding con botón
+  "Activar módulo".
+- **nginx**: necesita `location ^~ /api/horario/` proxy al backend (sin él
+  POST → 405). Añadido el 2026-05-24.
+- Spec mynoofit: `docs/SPEC_API_MYNOOFIT_FICHAJE.md` (para equipo MAUI).
+- Detalle completo: `docs/CONTROL_HORARIO.md`.
 
 ## Cosas que NO hay que hacer
 
@@ -326,5 +406,10 @@ Tras la prueba, el trainer da de alta al cliente:
   desde Configuración → Contabilidad. 100% automático en ~15-30s vía
   provisioner: crea res.company, aplica plan PYMES, journals, IBAN,
   secuencias, analytic per-trainer. Manager actual (17675) exento.
+- **Control horario laboral** (Fase 7, mayo 2026):
+  `docs/CONTROL_HORARIO.md` + `docs/SPEC_API_MYNOOFIT_FICHAJE.md`.
+  Fichaje de trabajadores conforme al art. 34.9 ET con hash-chain SHA-256,
+  QR rotativo HS256 cada 10 min, correcciones con flujo de aprobación,
+  retención 4 años. Activación por manager vía `POST /api/horario/activar`.
 - Mantener este CLAUDE.md actualizado cuando cambien tablas, servicios o
   flujos críticos.

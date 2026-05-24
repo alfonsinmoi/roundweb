@@ -47,7 +47,8 @@ def _row_manager(id_manager: str):
                    odoo_analytic_plan_id, odoo_analytic_default_id,
                    odoo_crm_enabled, odoo_cuotas_enabled, odoo_contabilidad_enabled,
                    sistemas_cobro,
-                   wcommerce_cliente_id, tipo_pago_wc
+                   wcommerce_cliente_id, tipo_pago_wc,
+                   control_horario_enabled, control_horario_activated_at
               FROM manager_config
              WHERE id_manager = %s
         """, (str(id_manager),))
@@ -56,14 +57,16 @@ def _row_manager(id_manager: str):
 
 def _features_from_row(row: dict) -> dict:
     """Devuelve qué módulos están habilitados a partir de la fila
-    manager_config con las 3 columnas granulares (Fase 6).
+    manager_config con las columnas granulares (Fase 6 + Fase 7).
     """
     if not row:
-        return {'crm': False, 'cuotas': False, 'contabilidad': False}
+        return {'crm': False, 'cuotas': False, 'contabilidad': False,
+                'control_horario': False}
     return {
-        'crm':           bool(row.get('odoo_crm_enabled')),
-        'cuotas':        bool(row.get('odoo_cuotas_enabled')),
-        'contabilidad':  bool(row.get('odoo_contabilidad_enabled')),
+        'crm':              bool(row.get('odoo_crm_enabled')),
+        'cuotas':           bool(row.get('odoo_cuotas_enabled')),
+        'contabilidad':     bool(row.get('odoo_contabilidad_enabled')),
+        'control_horario':  bool(row.get('control_horario_enabled')),
     }
 
 
@@ -90,6 +93,8 @@ def odoo_status():
             'odoo_crm_enabled': False,
             'odoo_cuotas_enabled': False,
             'odoo_contabilidad_enabled': False,
+            'control_horario_enabled': False,
+            'control_horario_activated_at': None,
             'sistemas_cobro': [],
             'odoo_company_id': None,
             'odoo_activated_at': None,
@@ -115,6 +120,9 @@ def odoo_status():
         'odoo_crm_enabled':          bool(row.get('odoo_crm_enabled')),
         'odoo_cuotas_enabled':       bool(row.get('odoo_cuotas_enabled')),
         'odoo_contabilidad_enabled': bool(row.get('odoo_contabilidad_enabled')),
+        'control_horario_enabled':   bool(row.get('control_horario_enabled')),
+        'control_horario_activated_at': (row['control_horario_activated_at'].isoformat()
+                                          if row.get('control_horario_activated_at') else None),
         'sistemas_cobro': sistemas,
         'odoo_company_id': row.get('odoo_company_id'),
         'odoo_activated_at': (row['odoo_activated_at'].isoformat()

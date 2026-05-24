@@ -108,8 +108,8 @@ export function useOdooStatus() {
   //     para no romper Round actual.
   const features = data?.features || (
     errored
-      ? { crm: false, cuotas: false, contabilidad: false }
-      : { crm: true, cuotas: true, contabilidad: true }
+      ? { crm: false, cuotas: false, contabilidad: false, control_horario: false }
+      : { crm: true,  cuotas: true,  contabilidad: true,  control_horario: false }
   )
 
   return {

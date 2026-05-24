@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Users, ClipboardCheck, Layers, Database, CalendarDays, Settings, Receipt, UserPlus,
-  Instagram, Bell, Calculator, Euro,
+  Instagram, Bell, Calculator, Euro, Clock,
 } from 'lucide-react'
 
 // Cada item lleva `perm`: clave del catálogo de permisos para gating.
@@ -29,6 +29,8 @@ export const navItems = [
     ],
   },
   { to: '/informe-asistencia', icon: ClipboardCheck,  label: 'Informe Asistencia', perm: 'informe_asistencia' },
+  { to: '/control-horario',    icon: Clock,           label: 'Control horario',
+    featureFlag: 'control_horario' },
   { to: '/configuracion',      icon: Settings,        label: 'Configuración',      perm: 'configuracion' },
 ]
 
@@ -36,7 +38,8 @@ export const navItems = [
 // `featureFlag: 'contabilidad'` oculta "Config. ERP" si el manager NO tiene
 // Odoo desplegado (no tiene ERP que configurar todavía).
 export const managerItems = [
-  { to: '/erp-configuracion', icon: Database, label: 'Config. ERP', featureFlag: 'contabilidad' },
+  { to: '/erp-configuracion', icon: Database, label: 'Config. ERP',
+    featureFlag: 'contabilidad', perm: 'erp_configuracion' },
 ]
 
 export const configItems = []

@@ -46,6 +46,11 @@ from .routes.facturacion_trimestre import bp as bp_fact_trim
 from .routes.trimestre         import bp as bp_trimestre
 from .routes.canales_captacion import bp as bp_canales_captacion
 from .routes.baja_programada   import bp as bp_baja_programada
+from .routes.horario           import bp as bp_horario
+from .routes.horario_fichaje   import bp as bp_horario_fichaje
+from .routes.horario_ausencias import bp as bp_horario_ausencias
+from .routes.horario_planificacion import bp as bp_horario_planif
+from .routes.cliente_portal    import bp as bp_cliente_portal
 
 
 def create_app():
@@ -222,5 +227,19 @@ def create_app():
     for prefix in ('/clientes', '/api/clientes'):
         app.register_blueprint(bp_baja_programada,
                                 name=f'bp{prefix}', url_prefix=prefix)
+
+    # ── Control horario laboral (módulo Fase 1: endpoints admin)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario, name=f'hor{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_fichaje, name=f'horf{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_ausencias, name=f'hora{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_planif, name=f'horp{prefix}', url_prefix=prefix)
+
+    # ── Portal del cliente NoofitPro (login + me)
+    for prefix in ('/cliente', '/api/cliente'):
+        app.register_blueprint(bp_cliente_portal, name=f'cli{prefix}', url_prefix=prefix)
 
     return app

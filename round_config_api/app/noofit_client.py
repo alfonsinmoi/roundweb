@@ -38,7 +38,12 @@ def _md5_upper(s):
 
 
 def _login(email, password):
-    """Autentica contra NoofitPro y devuelve (token, manager_id_o_true)."""
+    """Autentica contra NoofitPro y devuelve (token, manager_id_o_true).
+
+    Usa `account/loginEasy` — endpoint del manager/trainer (admin web Round,
+    mynoofit Beauty, etc.). Para clientes finales (mynoofit cliente) usa
+    `login_cliente_final` que tira de `account/loginMobile`.
+    """
     r = requests.post(f'{BASE}/account/loginEasy',
         json={'email': email, 'appVersion': APP_VERSION,
               'password': _md5_upper(password)},
@@ -49,6 +54,32 @@ def _login(email, password):
     manager = r.headers.get('X-TRAINER_MANAGER', '')
     if not token: raise RuntimeError('no_token_in_response')
     return token, manager
+
+
+def login_cliente_final(email, password):
+    """Autentica un cliente NoofitPro (usuario final de mynoofit).
+
+    Endpoint: `POST account/loginMobile` (descubierto vía
+    docs/SERVICIOS_BACKEND.md — método C# `GetToken` en mynoofit MAUI).
+    Distinto de `loginEasy` (manager/trainer/Beauty), que rechazaría a un
+    cliente final con 401.
+
+    Devuelve el `X-CustomToken` (JWT NoofitPro del cliente). No persiste
+    nada — la sesión efectiva del cliente la lleva nuestro JWT propio
+    `kind='cliente'`. Esto sólo valida las credenciales.
+
+    Raises requests.HTTPError si NoofitPro rechaza.
+    """
+    r = requests.post(f'{BASE}/account/loginMobile',
+        json={'email': email, 'appVersion': APP_VERSION,
+              'password': _md5_upper(password)},
+        headers={'Content-Type': 'application/json'},
+        timeout=15, verify=False)
+    r.raise_for_status()
+    token = r.headers.get('X-CustomToken')
+    if not token:
+        raise RuntimeError('no_token_in_response')
+    return token
 
 
 def _resolver_manager_id(token, manager_hdr):

@@ -146,6 +146,19 @@ BEGIN
        AND odoo_crm_enabled = FALSE
        AND odoo_cuotas_enabled = FALSE
        AND odoo_contabilidad_enabled = FALSE;
+
+    -- ─── Control horario laboral (módulo de fichaje de trabajadores) ──
+    -- Activación por manager (sus trainers heredan). El secret se usa
+    -- para firmar los JWT del QR rotativo (HS256, exp 10 min). Se
+    -- genera al activar el módulo y se rota si hay sospecha de fuga.
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='manager_config'
+                      AND column_name='control_horario_enabled') THEN
+      ALTER TABLE manager_config
+        ADD COLUMN control_horario_enabled      BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN control_horario_activated_at TIMESTAMPTZ,
+        ADD COLUMN control_horario_qr_secret    TEXT;
+    END IF;
   END IF;
 
   -- email_proveedor: añadir id_trainer y eliminar unique antiguo (sólo manager)
@@ -1546,6 +1559,623 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_fpcli_activa
   WHERE estado = 'activa';
 
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ║  CONTROL HORARIO LABORAL — Fase 1                                       ║
+-- ║                                                                          ║
+-- ║  Cumple art. 34.9 ET + RD-Ley 8/2019: registro diario individualizado    ║
+-- ║  con hora exacta de inicio/fin, accesible a trabajador/representantes/   ║
+-- ║  ITSS, conservado 4 años. Hash-chain SHA-256 prepara el módulo para la   ║
+-- ║  exigencia de "log de auditoría inmutable" del RD en trámite (oct-2025). ║
+-- ║                                                                          ║
+-- ║  Empleador = trainer (siempre). El manager ve a todos sus trainers.     ║
+-- ║  Un trabajador puede prestar servicios en varios trainers del mismo     ║
+-- ║  manager (pivote `trabajador_trainer`) pero la entidad jurídica         ║
+-- ║  empleadora es única (`trabajador.id_trainer_empleador`).               ║
+-- ║                                                                          ║
+-- ║  Detalle en docs/CONTROL_HORARIO.md.                                    ║
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ─── CONVENIOS (catálogo) ──────────────────────────────────────────────────
+-- id_manager NULL = convenio global del sistema (siembra inicial).
+-- id_manager NOT NULL = convenio creado por un manager para sus trainers.
+-- Los valores aquí (horas, vacaciones, asuntos propios) son los defaults
+-- que `trainer_empresa` hereda; cada trainer puede sobreescribirlos.
+CREATE TABLE IF NOT EXISTS convenio (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64),
+  nombre                   VARCHAR(160) NOT NULL,
+  horas_anuales            INTEGER NOT NULL DEFAULT 1772,
+  horas_semana             NUMERIC(5,2) NOT NULL DEFAULT 40,
+  vacaciones_dias          INTEGER NOT NULL DEFAULT 30,
+  vacaciones_tipo          VARCHAR(12) NOT NULL DEFAULT 'naturales'
+                                       CHECK (vacaciones_tipo IN ('naturales','laborales')),
+  asuntos_propios_dias     INTEGER NOT NULL DEFAULT 0,
+  descanso_min_jornada_h   NUMERIC(4,2) NOT NULL DEFAULT 12,
+  notas                    TEXT,
+  activo                   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT convenio_unique UNIQUE (id_manager, nombre)
+);
+CREATE INDEX IF NOT EXISTS idx_convenio_manager ON convenio(id_manager);
+
+-- Migracion idempotente: si la tabla ya existia sin vacaciones_tipo, la añadimos.
+ALTER TABLE convenio
+  ADD COLUMN IF NOT EXISTS vacaciones_tipo VARCHAR(12) NOT NULL DEFAULT 'naturales';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='convenio_vacaciones_tipo_check'
+  ) THEN
+    ALTER TABLE convenio ADD CONSTRAINT convenio_vacaciones_tipo_check
+      CHECK (vacaciones_tipo IN ('naturales','laborales'));
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
+
+-- Siembra global (sólo si no hay convenios globales aún).
+INSERT INTO convenio (id_manager, nombre, horas_anuales, horas_semana, vacaciones_dias, asuntos_propios_dias, notas)
+  SELECT NULL::VARCHAR(64), v.nombre, v.horas_anuales, v.horas_semana, v.vacaciones, v.asuntos, v.notas
+    FROM (VALUES
+      ('Estatuto de los Trabajadores (general)' , 1826, 40.0, 30, 0,
+       'Jornada legal 40h/sem promedio anual (art. 34.1 ET). Vacaciones 30 días naturales (art. 38 ET).'),
+      ('Oficinas y Despachos (Málaga)'          , 1772, 40.0, 30, 6,
+       'Convenio provincial Oficinas y Despachos Málaga. Horas anuales ≈1772, AP 6 días.'),
+      ('Instalaciones Deportivas y Gimnasios'    , 1800, 40.0, 30, 4,
+       'Convenio estatal Instalaciones Deportivas y Gimnasios. Horas anuales ≈1800, AP 4 días.')
+    ) AS v(nombre, horas_anuales, horas_semana, vacaciones, asuntos, notas)
+   WHERE NOT EXISTS (SELECT 1 FROM convenio WHERE id_manager IS NULL);
+
+
+-- ─── DATOS DE EMPRESA POR TRAINER ──────────────────────────────────────────
+-- El trainer es la entidad jurídica empleadora a efectos del registro
+-- horario. Una fila por trainer. Los datos hereda los trabajadores
+-- (salvo override en su fila).
+CREATE TABLE IF NOT EXISTS trainer_empresa (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64) NOT NULL,
+  razon_social             VARCHAR(160),
+  cif                      VARCHAR(40),
+  direccion_fiscal         TEXT,
+  convenio_id              INTEGER REFERENCES convenio(id) ON DELETE SET NULL,
+  -- Overrides opcionales. NULL = hereda del convenio.
+  horas_anuales_override        INTEGER,
+  horas_semana_override         NUMERIC(5,2),
+  vacaciones_dias_override      INTEGER,
+  vacaciones_tipo_override      VARCHAR(12)
+                                       CHECK (vacaciones_tipo_override IS NULL
+                                              OR vacaciones_tipo_override IN ('naturales','laborales')),
+  asuntos_propios_dias_override INTEGER,
+  representante_legal              VARCHAR(160),
+  fecha_acuerdo_representantes     DATE,
+  notas                    TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT trainer_empresa_unique UNIQUE (id_manager, id_trainer)
+);
+CREATE INDEX IF NOT EXISTS idx_trainer_empresa_manager ON trainer_empresa(id_manager);
+
+-- Migracion idempotente para tablas ya existentes
+ALTER TABLE trainer_empresa
+  ADD COLUMN IF NOT EXISTS vacaciones_tipo_override VARCHAR(12);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='trainer_empresa_vac_tipo_check'
+  ) THEN
+    ALTER TABLE trainer_empresa ADD CONSTRAINT trainer_empresa_vac_tipo_check
+      CHECK (vacaciones_tipo_override IS NULL
+             OR vacaciones_tipo_override IN ('naturales','laborales'));
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
+
+
+-- ─── TRABAJADORES ──────────────────────────────────────────────────────────
+-- Espejo local de los clientes NoofitPro con categoría "Trabajadores".
+-- Modelo híbrido: NoofitPro propone (la categoría), admin confirma con
+-- los datos laborales obligatorios (NIF, jornada, trainer empleador).
+--   pendiente_alta = aparece como candidato sin datos completos.
+--   activo         = puede fichar.
+--   baja           = fichaje deshabilitado, histórico conservado (4 años).
+CREATE TABLE IF NOT EXISTS trabajador (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  id_trainer_empleador     VARCHAR(64),
+  nif                      VARCHAR(40),
+  nombre_completo          VARCHAR(240),
+  email                    VARCHAR(160),
+  jornada_h_semana         NUMERIC(5,2),
+  categoria_profesional    VARCHAR(120),
+  tipo_contrato            VARCHAR(40),
+  fecha_alta_laboral       DATE,
+  fecha_baja_laboral       DATE,
+  -- Overrides opcionales sobre los heredados del trainer_empresa.
+  vacaciones_dias_override      INTEGER,
+  asuntos_propios_dias_override INTEGER,
+  -- Estados:
+  --   pendiente_autorizacion = el trabajador la solicito desde mynoofit/portal,
+  --                            esperando autorizacion del manager/trainer.
+  --   activo                 = autorizado, puede fichar.
+  --   rechazada              = la solicitud fue rechazada. Puede volver a solicitar.
+  --   baja                   = activo previo, dado de baja. Histórico conservado.
+  --   pendiente_alta         = LEGACY (modelo admin-iniciado), se mantiene por
+  --                            compat retro mientras no migremos datos viejos.
+  estado                   VARCHAR(24) NOT NULL DEFAULT 'pendiente_autorizacion'
+                                       CHECK (estado IN (
+                                         'pendiente_autorizacion','activo','rechazada','baja',
+                                         'pendiente_alta'
+                                       )),
+  solicitud_motivo         TEXT,                -- comentario libre del trabajador al solicitar
+  rechazo_motivo           TEXT,                -- comentario del admin al rechazar
+  autorizado_por_usuario_id INTEGER,            -- usuario_web.id del admin que autorizo
+  resuelto_at              TIMESTAMPTZ,         -- timestamp de autorizar/rechazar
+  notas                    TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT trabajador_unique UNIQUE (id_manager, cliente_idnoofit)
+);
+CREATE INDEX IF NOT EXISTS idx_trabajador_manager   ON trabajador(id_manager);
+CREATE INDEX IF NOT EXISTS idx_trabajador_empleador ON trabajador(id_manager, id_trainer_empleador);
+CREATE INDEX IF NOT EXISTS idx_trabajador_estado    ON trabajador(id_manager, estado);
+
+-- Migracion idempotente para tablas ya existentes (sin las columnas nuevas).
+ALTER TABLE trabajador
+  ADD COLUMN IF NOT EXISTS solicitud_motivo        TEXT,
+  ADD COLUMN IF NOT EXISTS rechazo_motivo          TEXT,
+  ADD COLUMN IF NOT EXISTS autorizado_por_usuario_id INTEGER,
+  ADD COLUMN IF NOT EXISTS resuelto_at             TIMESTAMPTZ;
+
+-- Ampliar el CHECK de estado (Postgres no soporta IF NOT EXISTS en constraints).
+DO $$
+BEGIN
+  ALTER TABLE trabajador DROP CONSTRAINT IF EXISTS trabajador_estado_check;
+  ALTER TABLE trabajador ADD CONSTRAINT trabajador_estado_check
+    CHECK (estado IN ('pendiente_autorizacion','activo','rechazada','baja','pendiente_alta'));
+  -- Ampliar tamaño VARCHAR si la columna se creo con 20.
+  BEGIN
+    ALTER TABLE trabajador ALTER COLUMN estado TYPE VARCHAR(24);
+  EXCEPTION WHEN OTHERS THEN NULL;
+  END;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
+
+
+-- ─── PLANIFICACIÓN — TEMPORADAS Y HORARIOS DE APERTURA (Fase 2 B.1) ──────
+-- Una temporada es un rango de fechas con un horario de apertura propio.
+-- Ej. "Horario invierno" (15-sep a 14-jun), "Verano" (15-jun a 14-sep),
+-- "Navidad" (24-dic a 6-ene). Si dos solapan, la más reciente gana.
+-- Una temporada activa con fechas NULL/NULL = la "permanente" (default).
+CREATE TABLE IF NOT EXISTS temporada (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  nombre          VARCHAR(80) NOT NULL,
+  fecha_desde     DATE,
+  fecha_hasta     DATE,
+  activa          BOOLEAN NOT NULL DEFAULT TRUE,
+  notas           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT temporada_unique UNIQUE (id_manager, nombre),
+  CONSTRAINT temporada_fechas CHECK (fecha_hasta IS NULL OR fecha_desde IS NULL OR fecha_hasta >= fecha_desde)
+);
+CREATE INDEX IF NOT EXISTS idx_temporada_manager ON temporada(id_manager);
+
+
+-- Horario de apertura del centro por temporada. Si no hay fila para un día,
+-- ese día el centro está cerrado. Permite varios bloques por día (mañana
+-- + tarde) con la columna `orden`.
+CREATE TABLE IF NOT EXISTS horario_apertura (
+  id              SERIAL PRIMARY KEY,
+  temporada_id    INTEGER NOT NULL REFERENCES temporada(id) ON DELETE CASCADE,
+  dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
+  hora_inicio     TIME NOT NULL,
+  hora_fin        TIME NOT NULL,
+  orden           SMALLINT NOT NULL DEFAULT 1,
+  CONSTRAINT horario_apertura_rango CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_horario_apertura_temp
+  ON horario_apertura(temporada_id, dia_semana, orden);
+
+
+-- ─── PLANIFICACIÓN — CATÁLOGO DE PUESTOS (Fase 2 B.1) ────────────────────
+-- Recepción, Monitor sala, Monitor entrenamiento personal, Limpieza,
+-- Mantenimiento, etc. Cada puesto tiene su demanda (cuántos trabajadores
+-- en qué franja) y sus compatibilidades.
+CREATE TABLE IF NOT EXISTS puesto_trabajo (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  codigo          VARCHAR(40) NOT NULL,
+  nombre          VARCHAR(80) NOT NULL,
+  color           VARCHAR(20) NOT NULL DEFAULT 'cyan',
+  descripcion     TEXT,
+  activo          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT puesto_unique UNIQUE (id_manager, codigo)
+);
+CREATE INDEX IF NOT EXISTS idx_puesto_manager ON puesto_trabajo(id_manager);
+
+
+-- Compatibilidad entre puestos: si un trabajador puede simultanear dos
+-- puestos (ej. recepción + bar). Pivote simétrico — guardamos sólo
+-- (a, b) con a < b para evitar duplicados.
+CREATE TABLE IF NOT EXISTS puesto_compatible (
+  puesto_a_id     INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  puesto_b_id     INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (puesto_a_id, puesto_b_id),
+  CONSTRAINT puesto_compatible_orden CHECK (puesto_a_id < puesto_b_id)
+);
+
+
+-- Demanda por puesto: cuántos trabajadores hacen falta en cada franja
+-- horaria. La franja se asocia opcionalmente a una temporada. Por día
+-- de la semana (ISO 1..7). N franjas por (puesto, temporada, día).
+CREATE TABLE IF NOT EXISTS puesto_demanda (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  puesto_id       INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  temporada_id    INTEGER REFERENCES temporada(id) ON DELETE SET NULL,
+  dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
+  hora_inicio     TIME NOT NULL,
+  hora_fin        TIME NOT NULL,
+  n_trabajadores  SMALLINT NOT NULL DEFAULT 1 CHECK (n_trabajadores >= 1),
+  notas           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT puesto_demanda_rango CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_puesto_demanda_puesto
+  ON puesto_demanda(puesto_id, dia_semana);
+CREATE INDEX IF NOT EXISTS idx_puesto_demanda_temp
+  ON puesto_demanda(temporada_id);
+
+
+-- ─── PLANIFICACIÓN — TRABAJADOR (capacidades + preferencias) ──────────────
+-- Capacidad: qué puestos puede desempeñar este trabajador. Nivel opcional
+-- (junior/senior/etc.) lo dejamos como texto libre para no over-modelar.
+CREATE TABLE IF NOT EXISTS trabajador_puesto (
+  trabajador_id   INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  puesto_id       INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  nivel           VARCHAR(20),         -- 'junior'|'senior'|'experto'|... libre
+  preferente      BOOLEAN NOT NULL DEFAULT FALSE,  -- es su puesto preferido
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (trabajador_id, puesto_id)
+);
+CREATE INDEX IF NOT EXISTS idx_trabajador_puesto_puesto
+  ON trabajador_puesto(puesto_id);
+
+
+-- Preferencias generales del trabajador para la planificación automática.
+-- Una fila por trabajador (UNIQUE). Si no existe, default razonable.
+CREATE TABLE IF NOT EXISTS trabajador_preferencias (
+  trabajador_id          INTEGER PRIMARY KEY REFERENCES trabajador(id) ON DELETE CASCADE,
+  max_horas_semana       NUMERIC(5,2),       -- hard cap (NULL = lo del contrato)
+  max_turnos_semana      SMALLINT,           -- N de turnos máx (NULL = sin limite)
+  prefiere_franja        VARCHAR(20),        -- 'manana'|'tarde'|'noche'|'cualquiera'
+  dias_libres_preferidos JSONB DEFAULT '[]'::jsonb,  -- array de int 1..7 (ISO)
+  acepta_partido         BOOLEAN NOT NULL DEFAULT TRUE,
+  acepta_nocturno        BOOLEAN NOT NULL DEFAULT TRUE,
+  acepta_findesemana     BOOLEAN NOT NULL DEFAULT TRUE,
+  notas                  TEXT,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- ─── PLANIFICACIÓN — TURNOS PLANIFICADOS ──────────────────────────────────
+-- Plantillas reutilizables (Mañana / Tarde / Noche / Sábado / …) que el
+-- manager asigna a los trabajadores día por día. Una asignación SOBRESCRIBE
+-- el horario teórico semanal (horario_trabajador) para ese día concreto.
+--
+-- Si una fecha tiene asignacion con turno_plantilla_id NULL = día libre
+-- explícito (sobrescribe el teórico con "no se trabaja hoy").
+--
+-- Si NO hay asignacion → se usa el horario_trabajador del día de la semana.
+CREATE TABLE IF NOT EXISTS turno_plantilla (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64),                     -- NULL = plantilla global
+  nombre          VARCHAR(80) NOT NULL,
+  color           VARCHAR(20) NOT NULL DEFAULT 'cyan',
+  notas           TEXT,
+  activo          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT turno_plantilla_unique UNIQUE (id_manager, nombre)
+);
+CREATE INDEX IF NOT EXISTS idx_turno_plantilla_manager ON turno_plantilla(id_manager);
+
+
+CREATE TABLE IF NOT EXISTS turno_plantilla_bloque (
+  id                   SERIAL PRIMARY KEY,
+  turno_plantilla_id   INTEGER NOT NULL REFERENCES turno_plantilla(id) ON DELETE CASCADE,
+  hora_inicio          TIME NOT NULL,
+  hora_fin             TIME NOT NULL,
+  tipo                 VARCHAR(20) NOT NULL DEFAULT 'trabajo'
+                                       CHECK (tipo IN ('trabajo','comida','descanso','otros')),
+  puesto_id            INTEGER REFERENCES puesto_trabajo(id) ON DELETE SET NULL,
+  orden                SMALLINT NOT NULL DEFAULT 1,
+  CONSTRAINT turno_plantilla_bloque_rango CHECK (hora_fin > hora_inicio)
+);
+ALTER TABLE turno_plantilla_bloque
+  ADD COLUMN IF NOT EXISTS puesto_id INTEGER REFERENCES puesto_trabajo(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_turno_plantilla_bloque_pl
+  ON turno_plantilla_bloque(turno_plantilla_id, orden);
+CREATE INDEX IF NOT EXISTS idx_turno_plantilla_bloque_puesto
+  ON turno_plantilla_bloque(puesto_id);
+
+
+CREATE TABLE IF NOT EXISTS turno_asignacion (
+  id                   BIGSERIAL PRIMARY KEY,
+  id_manager           VARCHAR(64) NOT NULL,
+  trabajador_id        INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  fecha                DATE NOT NULL,
+  turno_plantilla_id   INTEGER REFERENCES turno_plantilla(id) ON DELETE RESTRICT,
+  -- NULL = libre explícito; > 0 = aplica esta plantilla.
+  notas                TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT turno_asignacion_unique UNIQUE (trabajador_id, fecha)
+);
+CREATE INDEX IF NOT EXISTS idx_turno_asignacion_trab_fecha
+  ON turno_asignacion(trabajador_id, fecha);
+CREATE INDEX IF NOT EXISTS idx_turno_asignacion_manager_fecha
+  ON turno_asignacion(id_manager, fecha);
+
+
+-- ─── SOLICITUDES DE AUSENCIA (Fase 2 C: vacaciones, asuntos propios, …) ──
+-- Flujo: trabajador solicita desde portal/mynoofit -> manager o trainer
+-- autoriza o rechaza. El saldo de dias se calcula on-the-fly mirando esta
+-- tabla + trainer_empresa.vacaciones_dias / asuntos_propios_dias (overrides
+-- por trabajador en trabajador.vacaciones_dias_override).
+--
+-- Jornada completa (default): toda la jornada de cada dia entre [desde, hasta].
+-- Parcial: indica hora_desde/hora_hasta (solo si fecha_desde == fecha_hasta).
+CREATE TABLE IF NOT EXISTS solicitud_ausencia (
+  id                       BIGSERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  trabajador_id            INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE RESTRICT,
+  tipo                     VARCHAR(30) NOT NULL CHECK (tipo IN (
+                            'vacaciones','asuntos_propios','medico','personal',
+                            'baja_medica','permiso_retribuido','otros'
+                          )),
+  fecha_desde              DATE NOT NULL,
+  fecha_hasta              DATE NOT NULL,
+  jornada_completa         BOOLEAN NOT NULL DEFAULT TRUE,
+  hora_desde               TIME,
+  hora_hasta               TIME,
+  motivo_trabajador        TEXT,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente'
+                                       CHECK (estado IN ('pendiente','aprobada','rechazada','cancelada')),
+  ts_resolucion            TIMESTAMPTZ,
+  resuelto_por_usuario_id  INTEGER,
+  motivo_resolucion        TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT solicitud_ausencia_fechas CHECK (fecha_hasta >= fecha_desde),
+  CONSTRAINT solicitud_ausencia_horas CHECK (
+    jornada_completa = TRUE OR (
+      hora_desde IS NOT NULL AND hora_hasta IS NOT NULL
+      AND hora_hasta > hora_desde
+      AND fecha_desde = fecha_hasta
+    )
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_solicitud_ausencia_trab
+  ON solicitud_ausencia(trabajador_id, fecha_desde DESC);
+CREATE INDEX IF NOT EXISTS idx_solicitud_ausencia_manager_estado
+  ON solicitud_ausencia(id_manager, estado, fecha_desde DESC);
+
+
+-- ─── HORARIO TEÓRICO SEMANAL DEL TRABAJADOR (Fase 2 A) ────────────────────
+-- Cada trabajador tiene N bloques horarios por día de la semana (ISO:
+-- 1=Lunes, 7=Domingo). Soporta jornadas partidas con varios bloques en
+-- un mismo día (Lun 09:00-14:00 + 16:00-19:00). Jornadas nocturnas
+-- (22:00-06:00) se modelan como dos bloques en días consecutivos.
+--
+-- Sin versionado histórico — una sola versión activa por trabajador.
+-- Cuando se edita, se reemplaza el horario entero en una transacción.
+-- La auditoría de "qué cambió" vive en `accion_log` con resumen del diff.
+CREATE TABLE IF NOT EXISTS horario_trabajador (
+  id              SERIAL PRIMARY KEY,
+  trabajador_id   INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
+  hora_inicio     TIME NOT NULL,
+  hora_fin        TIME NOT NULL,
+  tipo            VARCHAR(20) NOT NULL DEFAULT 'trabajo'
+                              CHECK (tipo IN ('trabajo','comida','descanso','otros')),
+  orden           SMALLINT NOT NULL DEFAULT 1,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT horario_bloque_valido CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_horario_trabajador
+  ON horario_trabajador(trabajador_id, dia_semana, orden);
+
+-- Migracion idempotente para tablas ya creadas sin la columna tipo
+ALTER TABLE horario_trabajador
+  ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) NOT NULL DEFAULT 'trabajo';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='horario_trabajador_tipo_check'
+  ) THEN
+    ALTER TABLE horario_trabajador ADD CONSTRAINT horario_trabajador_tipo_check
+      CHECK (tipo IN ('trabajo','comida','descanso','otros'));
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
+
+
+-- ─── TRABAJADOR ↔ TRAINER (pivote N:M) ─────────────────────────────────────
+-- Un trabajador puede prestar servicios en varios trainers del mismo
+-- manager (cubrir turnos en otro centro). La entidad empleadora sigue
+-- siendo única (`trabajador.id_trainer_empleador`).
+CREATE TABLE IF NOT EXISTS trabajador_trainer (
+  id                       SERIAL PRIMARY KEY,
+  trabajador_id            INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64) NOT NULL,
+  fecha_inicio             DATE NOT NULL DEFAULT CURRENT_DATE,
+  fecha_fin                DATE,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT trabajador_trainer_unique UNIQUE (trabajador_id, id_trainer, fecha_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_trab_trainer_trab    ON trabajador_trainer(trabajador_id);
+CREATE INDEX IF NOT EXISTS idx_trab_trainer_trainer ON trabajador_trainer(id_manager, id_trainer);
+
+
+-- ─── MOTIVOS DE PAUSA (catálogo global + override por manager) ─────────────
+-- id_manager NULL = motivo global (siembra). id_manager NOT NULL = motivo
+-- propio del manager. Para "desactivar" un motivo global, el manager
+-- inserta una fila con el mismo `codigo` y `activo=FALSE`.
+--   `computa_jornada=TRUE`  → la pausa cuenta como tiempo trabajado.
+--   `requiere_justificante` → la UI obliga a indicarlo (médico, etc.).
+CREATE TABLE IF NOT EXISTS pausa_motivo (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64),
+  codigo                   VARCHAR(40) NOT NULL,
+  etiqueta                 VARCHAR(120) NOT NULL,
+  computa_jornada          BOOLEAN NOT NULL DEFAULT FALSE,
+  requiere_justificante    BOOLEAN NOT NULL DEFAULT FALSE,
+  orden                    INTEGER NOT NULL DEFAULT 0,
+  activo                   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT pausa_motivo_unique UNIQUE (id_manager, codigo)
+);
+CREATE INDEX IF NOT EXISTS idx_pausa_motivo_manager ON pausa_motivo(id_manager);
+
+-- Siembra global.
+INSERT INTO pausa_motivo (id_manager, codigo, etiqueta, computa_jornada, requiere_justificante, orden)
+  SELECT NULL::VARCHAR(64), v.codigo, v.etiqueta, v.computa, v.justif, v.orden
+    FROM (VALUES
+      ('comida'           , 'Comida'                                    , FALSE, FALSE, 10),
+      ('descanso_corto'   , 'Descanso corto / café'                     , TRUE , FALSE, 20),
+      ('descanso_obligat' , 'Descanso obligatorio (art. 34.4 ET)'       , TRUE , FALSE, 30),
+      ('medico'           , 'Asuntos médicos'                           , FALSE, TRUE , 40),
+      ('personal'         , 'Asuntos personales'                        , FALSE, FALSE, 50),
+      ('otros'            , 'Otros'                                     , FALSE, FALSE, 99)
+    ) AS v(codigo, etiqueta, computa, justif, orden)
+   WHERE NOT EXISTS (SELECT 1 FROM pausa_motivo WHERE id_manager IS NULL);
+
+
+-- ─── FICHAJES (append-only, hash-chain SHA-256) ───────────────────────────
+-- Una fila por evento atómico: ENTRADA, SALIDA, PAUSA_INI, PAUSA_FIN, o
+-- corrección (CORRECCION_INSERT / CORRECCION_ANULAR). NUNCA UPDATE/DELETE.
+-- Las correcciones son eventos nuevos con `corrige_evento_id` apuntando al
+-- evento original.
+--
+-- Integridad por hash-chain: cada evento guarda `hash` (SHA-256 del
+-- payload + prev_hash) y `prev_hash` (del último evento del mismo
+-- trabajador, ordenado por id). Una edición manual rompe la cadena y la
+-- función verify_chain lo detecta. Cumple con la exigencia de inmutabilidad
+-- del RD en trámite (sin esperar a su aprobación).
+--
+-- Verificación de ubicación (`verificacion_ubicacion`):
+--   NO  → fichaje sin token QR válido (clic remoto). El admin lo ve marcado.
+--   QR  → token QR válido (firmado por nosotros o validado en NoofitPro).
+--   GPS → reservado, no usado en Fase 1.
+-- `qr_origen` = 'menu' (QR rotativo HS256 propio) o 'clase' (QR de clase
+-- activa de NoofitPro validado contra NoofitPro).
+CREATE TABLE IF NOT EXISTS fichaje_evento (
+  id                       BIGSERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  trabajador_id            INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE RESTRICT,
+  id_trainer               VARCHAR(64) NOT NULL,
+  tipo                     VARCHAR(24) NOT NULL CHECK (tipo IN (
+    'ENTRADA','SALIDA','PAUSA_INI','PAUSA_FIN',
+    'CORRECCION_INSERT','CORRECCION_ANULAR'
+  )),
+  ts_evento                TIMESTAMPTZ NOT NULL,
+  pausa_motivo_id          INTEGER REFERENCES pausa_motivo(id) ON DELETE SET NULL,
+  -- Origen
+  origen                   VARCHAR(20) NOT NULL CHECK (origen IN ('web','mynoofit','admin')),
+  origen_version           VARCHAR(40),
+  origen_ip                INET,
+  origen_user_agent        TEXT,
+  -- Verificación
+  verificacion_ubicacion   VARCHAR(20) NOT NULL DEFAULT 'NO'
+                                       CHECK (verificacion_ubicacion IN ('NO','QR','GPS')),
+  qr_origen                VARCHAR(20)
+                                       CHECK (qr_origen IS NULL OR qr_origen IN ('menu','clase')),
+  qr_token_jti             VARCHAR(80),
+  qr_clase_id              INTEGER,
+  lat                      NUMERIC(10,7),
+  lng                      NUMERIC(10,7),
+  geo_accuracy_m           INTEGER,
+  -- Correcciones (sólo si tipo IN ('CORRECCION_INSERT','CORRECCION_ANULAR'))
+  corrige_evento_id        BIGINT REFERENCES fichaje_evento(id) ON DELETE RESTRICT,
+  correccion_solicitud_id  BIGINT,
+  correccion_motivo        TEXT,
+  -- Autoría
+  autor_rol                VARCHAR(20) NOT NULL CHECK (autor_rol IN ('trabajador','admin','sistema')),
+  autor_usuario_id         INTEGER,
+  autor_cliente_idnoofit   VARCHAR(64),
+  -- Integridad
+  prev_hash                CHAR(64),
+  hash                     CHAR(64) NOT NULL,
+  creado_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fichaje_evento_trab_ts
+  ON fichaje_evento (trabajador_id, ts_evento DESC);
+CREATE INDEX IF NOT EXISTS idx_fichaje_evento_manager_ts
+  ON fichaje_evento (id_manager, ts_evento DESC);
+CREATE INDEX IF NOT EXISTS idx_fichaje_evento_trainer_ts
+  ON fichaje_evento (id_manager, id_trainer, ts_evento DESC);
+
+
+-- ─── SOLICITUDES DE CORRECCIÓN (flujo trabajador → admin) ──────────────────
+-- El trabajador propone una corrección desde mynoofit/web; queda
+-- 'pendiente' hasta que un admin la aprueba o rechaza. Al aprobar, se
+-- inserta el evento CORRECCION en `fichaje_evento` y se enlaza con
+-- `evento_resultante_id`. El admin puede saltarse este flujo e insertar
+-- la corrección directamente.
+CREATE TABLE IF NOT EXISTS correccion_solicitud (
+  id                       BIGSERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  trabajador_id            INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  tipo_propuesto           VARCHAR(24) NOT NULL CHECK (tipo_propuesto IN (
+    'ENTRADA','SALIDA','PAUSA_INI','PAUSA_FIN','ANULAR'
+  )),
+  ts_propuesto             TIMESTAMPTZ NOT NULL,
+  pausa_motivo_id          INTEGER REFERENCES pausa_motivo(id) ON DELETE SET NULL,
+  corrige_evento_id        BIGINT REFERENCES fichaje_evento(id) ON DELETE SET NULL,
+  motivo                   TEXT NOT NULL,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'pendiente'
+                                       CHECK (estado IN ('pendiente','aprobada','rechazada')),
+  ts_resolucion            TIMESTAMPTZ,
+  comentario_resolucion    TEXT,
+  resuelto_por_usuario_id  INTEGER,
+  evento_resultante_id     BIGINT REFERENCES fichaje_evento(id) ON DELETE SET NULL,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_correccion_trab
+  ON correccion_solicitud(trabajador_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_correccion_manager_estado
+  ON correccion_solicitud(id_manager, estado, created_at DESC);
+
+-- FK diferida: fichaje_evento.correccion_solicitud_id → correccion_solicitud.id
+-- (las dos tablas se referencian mutuamente; primero creamos sin la FK y luego la añadimos aquí).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+     WHERE table_name='fichaje_evento'
+       AND constraint_name='fichaje_evento_correccion_solicitud_fk'
+  ) THEN
+    ALTER TABLE fichaje_evento
+      ADD CONSTRAINT fichaje_evento_correccion_solicitud_fk
+      FOREIGN KEY (correccion_solicitud_id)
+      REFERENCES correccion_solicitud(id) ON DELETE SET NULL;
+  END IF;
+END$$;
+
+
 -- ─── TRIGGER updated_at ──────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION trg_set_updated_at() RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
@@ -1580,6 +2210,19 @@ DROP TRIGGER IF EXISTS trg_recibo_upd          ON recibo;
 DROP TRIGGER IF EXISTS trg_recibo_lote_upd     ON recibo_lote_facturacion;
 DROP TRIGGER IF EXISTS trg_fpcli_upd            ON forma_pago_cliente;
 DROP TRIGGER IF EXISTS trg_trainer_odoo_upd     ON trainer_odoo_config;
+DROP TRIGGER IF EXISTS trg_convenio_upd         ON convenio;
+DROP TRIGGER IF EXISTS trg_trainer_empresa_upd  ON trainer_empresa;
+DROP TRIGGER IF EXISTS trg_trabajador_upd       ON trabajador;
+DROP TRIGGER IF EXISTS trg_pausa_motivo_upd     ON pausa_motivo;
+DROP TRIGGER IF EXISTS trg_correccion_sol_upd   ON correccion_solicitud;
+DROP TRIGGER IF EXISTS trg_horario_trab_upd     ON horario_trabajador;
+DROP TRIGGER IF EXISTS trg_solicitud_ausencia_upd ON solicitud_ausencia;
+DROP TRIGGER IF EXISTS trg_turno_plantilla_upd   ON turno_plantilla;
+DROP TRIGGER IF EXISTS trg_turno_asignacion_upd  ON turno_asignacion;
+DROP TRIGGER IF EXISTS trg_temporada_upd          ON temporada;
+DROP TRIGGER IF EXISTS trg_puesto_trabajo_upd     ON puesto_trabajo;
+DROP TRIGGER IF EXISTS trg_puesto_demanda_upd     ON puesto_demanda;
+DROP TRIGGER IF EXISTS trg_trabajador_pref_upd    ON trabajador_preferencias;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -1638,6 +2281,32 @@ CREATE TRIGGER trg_recibo_lote_upd     BEFORE UPDATE ON recibo_lote_facturacion
 CREATE TRIGGER trg_fpcli_upd           BEFORE UPDATE ON forma_pago_cliente
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_trainer_odoo_upd    BEFORE UPDATE ON trainer_odoo_config
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_convenio_upd         BEFORE UPDATE ON convenio
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trainer_empresa_upd  BEFORE UPDATE ON trainer_empresa
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trabajador_upd       BEFORE UPDATE ON trabajador
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_pausa_motivo_upd     BEFORE UPDATE ON pausa_motivo
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_correccion_sol_upd   BEFORE UPDATE ON correccion_solicitud
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_horario_trab_upd     BEFORE UPDATE ON horario_trabajador
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_solicitud_ausencia_upd BEFORE UPDATE ON solicitud_ausencia
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_turno_plantilla_upd   BEFORE UPDATE ON turno_plantilla
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_turno_asignacion_upd  BEFORE UPDATE ON turno_asignacion
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_temporada_upd          BEFORE UPDATE ON temporada
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_puesto_trabajo_upd     BEFORE UPDATE ON puesto_trabajo
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_puesto_demanda_upd     BEFORE UPDATE ON puesto_demanda
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trabajador_pref_upd    BEFORE UPDATE ON trabajador_preferencias
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 
