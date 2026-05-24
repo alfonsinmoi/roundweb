@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
+import { useAuth } from '../../contexts/AuthContext'
+import { hasPermission } from '../../config/permissions'
 
 /**
  * Tabs compartidos de Informe de Asistencia.
@@ -14,11 +16,12 @@ import { Info } from 'lucide-react'
  */
 export default function InformeTabs({ active, counts = {} }) {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [infoOpen, setInfoOpen] = useState(null)  // id del tab cuya info está abierta
 
   // Orden: Para revisar → Control asistencia → Faltas → Distribución espacios
   //         → En riesgo → Cluster
-  const tabs = [
+  const allTabs = [
     { id: 'revisar',      label: 'Para revisar',         hint: countLabel('revisar',      counts.revisar),
       info: 'Recomendaciones automáticas: clases con asistencia anómala, monitores con baja ocupación, actividades sin demanda. El sistema te sugiere qué optimizar.' },
     { id: 'control',      label: 'Control asistencia',   hint: countLabel('control',      counts.control),
@@ -36,6 +39,13 @@ export default function InformeTabs({ active, counts = {} }) {
     { id: 'estado_fisico', label: 'Estado físico',       hint: countLabel('estado_fisico', counts.estado_fisico),
       info: 'Dashboard de tests de estado físico (NoofitPro): uso mensual, tasa de repetición, evolución por cliente, ranking de puntuación, distribución demográfica.' },
   ]
+
+  // Filtra tabs por permiso del perfil del usuario_web. Manager NoofitPro
+  // (sin perfil, user.kind != 'usuario_web') ve todos.
+  const isUsuarioWeb = user?.kind === 'usuario_web'
+  const tabs = isUsuarioWeb
+    ? allTabs.filter(t => hasPermission(user.perfil, `informe_asistencia.${t.id}`))
+    : allTabs
 
   return (
     <div role="tablist" aria-label="Sub-vistas del informe" style={{
