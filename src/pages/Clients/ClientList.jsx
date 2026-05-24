@@ -8,7 +8,7 @@ import { getClientes, peekCache, peekPersistedCache, getERPConfiguraciones, inva
 import { useAuth } from '../../contexts/AuthContext'
 import { useGympassMap } from '../../hooks/useGympassMap'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
-import { getRoundIdentity, fechaBajaPorCliente } from '../../utils/configApi'
+import { getRoundIdentity, fechaBajaPorCliente, bajaProgramadaList } from '../../utils/configApi'
 import NotasPopover from '../../components/notas/NotasPopover'
 import { useCan } from '../../hooks/useCan'
 
@@ -57,6 +57,8 @@ export default function ClientList() {
   const [page, setPage] = useState(1)
   const [fotoPreview, setFotoPreview] = useState(null) // { imgUrl, nombre, x, y }
   const [fechasBaja, setFechasBaja] = useState({})    // { clienteId: fechaIso }
+  // Bajas programadas pendientes: { clienteIdnoofit: {fecha_baja, motivo} }
+  const [bajasProgramadas, setBajasProgramadas] = useState({})
   const [fotoFailed,  setFotoFailed]  = useState(false)
   // Reset del fallo al cambiar de foto
   useEffect(() => { setFotoFailed(false) }, [fotoPreview?.imgUrl])
@@ -95,6 +97,20 @@ export default function ClientList() {
       .catch(() => {})
   }, [identity.managerId])
 
+  // Cargar bajas programadas pendientes (futuras o pasadas no ejecutadas)
+  // del manager → map por cliente_idnoofit. Sirve para el badge "Baja prog."
+  // y para el filtro "Con baja programada".
+  useEffect(() => {
+    if (!identity?.managerId) return
+    bajaProgramadaList(identity, false)
+      .then(rows => {
+        const m = {}
+        for (const r of (rows || [])) m[String(r.cliente_idnoofit)] = r
+        setBajasProgramadas(m)
+      })
+      .catch(() => setBajasProgramadas({}))
+  }, [identity.managerId])
+
   // ERP activo si existe alguna configuración con al menos un campo definido
   const [tieneERP, setTieneERP] = useState(false)
   const [erpConfig, setErpConfig] = useState(null)
@@ -130,10 +146,12 @@ export default function ClientList() {
       if (filtroCategoria === 'sin') { if (cat) return false }
       else if (!cat || String(cat.id) !== String(filtroCategoria)) return false
     }
-    if (filtro === 'activos')   return c.enabled !== false
+    const bajaProg = bajasProgramadas[String(c.id)]
+    if (filtro === 'activos')   return c.enabled !== false && !bajaProg
     if (filtro === 'inactivos') return c.enabled === false
+    if (filtro === 'baja_prog') return !!bajaProg && c.enabled !== false
     return true
-  }), [clientes, deferredSearch, filtro, filtroCategoria, getCategoria])
+  }), [clientes, deferredSearch, filtro, filtroCategoria, getCategoria, bajasProgramadas])
 
   // Paginación: calcular total y ajustar la página actual si el filtro la deja
   // fuera de rango (p.ej. estábamos en pág. 5 y el nuevo filtro sólo tiene 3).
@@ -199,7 +217,7 @@ export default function ClientList() {
           </div>
 
           <div role="group" aria-label="Filtrar clientes" style={{ display: 'flex', borderRadius: 10, overflow: 'hidden', border: '1px solid var(--line)' }}>
-            {[['activos','Activos'],['inactivos','Inactivos'],['todos','Todos']].map(([v, l]) => (
+            {[['activos','Activos'],['baja_prog','Con baja prog.'],['inactivos','Inactivos'],['todos','Todos']].map(([v, l]) => (
               <button key={v} onClick={() => { setFiltro(v); setPage(1) }}
                       aria-pressed={filtro === v}
                       style={{
@@ -403,7 +421,6 @@ export default function ClientList() {
                         { day: 'numeric', month: 'short', year: 'numeric' })
                     } catch {}
                   }
-                  // Tooltip con todo el contexto, badge en una sola línea
                   const tooltipParts = []
                   if (fbStr) tooltipParts.push(`Inactivo desde ${fbStr}`)
                   if (motivo) tooltipParts.push(`Motivo: ${motivo}`)
@@ -412,9 +429,28 @@ export default function ClientList() {
                       <Archive size={10} aria-hidden="true" /> Inactivo
                     </Badge>
                   )
-                })() : (
-                  <Badge color="green">Activo</Badge>
-                )}
+                })() : (() => {
+                  // Si hay baja programada pendiente, mostrar fecha en amarillo.
+                  // Si NO la hay, badge verde "Activo" estándar.
+                  const bp = bajasProgramadas[String(c.id)]
+                  if (bp) {
+                    let fbStr = ''
+                    try {
+                      const d = new Date(bp.fecha_baja)
+                      fbStr = d.toLocaleDateString('es-ES',
+                        { day: '2-digit', month: '2-digit', year: '2-digit' })
+                    } catch {}
+                    const tooltip = bp.motivo
+                      ? `Desactivación programada para el ${fbStr}. Motivo: ${bp.motivo}`
+                      : `Desactivación programada para el ${fbStr}`
+                    return (
+                      <Badge color="amber" title={tooltip}>
+                        Desactivación en {fbStr}
+                      </Badge>
+                    )
+                  }
+                  return <Badge color="green">Activo</Badge>
+                })()}
               </div>
 
               {/* Teléfono */}
