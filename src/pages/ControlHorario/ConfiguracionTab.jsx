@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Building2, ListChecks, Save, Trash2, Plus } from 'lucide-react'
+import { Building2, ListChecks, Save, Trash2, Plus, Info } from 'lucide-react'
 import { Card, Btn, Badge, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import {
@@ -81,6 +81,7 @@ function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
     horas_anuales_override: empresa?.horas_anuales_override || '',
     horas_semana_override: empresa?.horas_semana_override || '',
     vacaciones_dias_override: empresa?.vacaciones_dias_override || '',
+    vacaciones_tipo_override: empresa?.vacaciones_tipo_override || '',
     asuntos_propios_dias_override: empresa?.asuntos_propios_dias_override || '',
     representante_legal: empresa?.representante_legal || '',
     fecha_acuerdo_representantes: empresa?.fecha_acuerdo_representantes || '',
@@ -98,7 +99,8 @@ function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
       const body = { ...form }
       // strings vacíos -> null para campos numéricos
       ;['convenio_id','horas_anuales_override','horas_semana_override',
-        'vacaciones_dias_override','asuntos_propios_dias_override',
+        'vacaciones_dias_override','vacaciones_tipo_override',
+        'asuntos_propios_dias_override',
         'fecha_acuerdo_representantes'].forEach(k => {
         if (body[k] === '') body[k] = null
       })
@@ -124,14 +126,14 @@ function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
         <option value="">— Sin convenio asignado —</option>
         {convenios.map(c => (
           <option key={c.id} value={c.id}>
-            {c.nombre}{c.es_global ? ' (global)' : ''} — {c.horas_anuales}h/año, {c.vacaciones_dias}d vac.
+            {c.nombre}{c.es_global ? ' (global)' : ''} — {c.horas_anuales}h/año, {c.vacaciones_dias}d {c.vacaciones_tipo === 'laborales' ? 'lab.' : 'nat.'}
           </option>
         ))}
       </Select>
       {conv && (
         <div style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 8, fontSize: 12, color: 'var(--text-3)' }}>
           <Badge color="cyan">Heredado del convenio</Badge>{' '}
-          {conv.horas_anuales}h/año · {conv.horas_semana}h/sem · {conv.vacaciones_dias}d vacaciones · {conv.asuntos_propios_dias}d asuntos propios
+          {conv.horas_anuales}h/año · {conv.horas_semana}h/sem · {conv.vacaciones_dias}d vacaciones ({conv.vacaciones_tipo || 'naturales'}) · {conv.asuntos_propios_dias}d asuntos propios
         </div>
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
@@ -148,6 +150,15 @@ function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
                value={form.asuntos_propios_dias_override}
                onChange={e => set('asuntos_propios_dias_override', e.target.value)} />
       </div>
+      <Select label="Vacaciones contadas en (override)"
+              value={form.vacaciones_tipo_override || ''}
+              onChange={e => set('vacaciones_tipo_override', e.target.value)}>
+        <option value="">
+          — Hereda del convenio ({conv?.vacaciones_tipo || 'naturales'}) —
+        </option>
+        <option value="naturales">Días naturales (incluye fines de semana y festivos)</option>
+        <option value="laborales">Días laborales (sólo lunes a viernes)</option>
+      </Select>
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
         <Input label="Representante legal" value={form.representante_legal}
                onChange={e => set('representante_legal', e.target.value)} />
@@ -227,6 +238,26 @@ function MotivosSection({ identity }) {
     <Card style={{ padding: 18 }}>
       <SectionHeader icon={ListChecks} title="Motivos de pausa"
         subtitle="Los motivos globales del sistema vienen marcados. Tu manager puede añadir motivos propios o desactivar globales creando un motivo con el mismo código y activo=false." />
+
+      <div style={{
+        display: 'flex', alignItems: 'flex-start', gap: 10,
+        padding: '10px 12px', borderRadius: 10, marginBottom: 14,
+        background: 'rgba(59,130,246,0.06)',
+        border: '1px solid rgba(59,130,246,0.16)',
+        fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5,
+      }}>
+        <Info size={14} style={{ color: '#3b82f6', flexShrink: 0, marginTop: 2 }} />
+        <div>
+          <strong>Computa</strong> = la pausa cuenta como tiempo trabajado.
+          Ej. los 15 min de descanso obligatorio del art. 34.4 ET sí computan
+          (el trabajador cobra esa media hora). El descanso para comer
+          normalmente NO computa.
+          {' · '}
+          <strong>Justificante</strong> = el sistema exige al trabajador
+          adjuntar un motivo o justificante al iniciar la pausa (típico en
+          médico).
+        </div>
+      </div>
 
       {loading && <p style={{ color: 'var(--text-3)' }}>Cargando…</p>}
 

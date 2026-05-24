@@ -1537,6 +1537,8 @@ CREATE TABLE IF NOT EXISTS convenio (
   horas_anuales            INTEGER NOT NULL DEFAULT 1772,
   horas_semana             NUMERIC(5,2) NOT NULL DEFAULT 40,
   vacaciones_dias          INTEGER NOT NULL DEFAULT 30,
+  vacaciones_tipo          VARCHAR(12) NOT NULL DEFAULT 'naturales'
+                                       CHECK (vacaciones_tipo IN ('naturales','laborales')),
   asuntos_propios_dias     INTEGER NOT NULL DEFAULT 0,
   descanso_min_jornada_h   NUMERIC(4,2) NOT NULL DEFAULT 12,
   notas                    TEXT,
@@ -1546,6 +1548,20 @@ CREATE TABLE IF NOT EXISTS convenio (
   CONSTRAINT convenio_unique UNIQUE (id_manager, nombre)
 );
 CREATE INDEX IF NOT EXISTS idx_convenio_manager ON convenio(id_manager);
+
+-- Migracion idempotente: si la tabla ya existia sin vacaciones_tipo, la añadimos.
+ALTER TABLE convenio
+  ADD COLUMN IF NOT EXISTS vacaciones_tipo VARCHAR(12) NOT NULL DEFAULT 'naturales';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='convenio_vacaciones_tipo_check'
+  ) THEN
+    ALTER TABLE convenio ADD CONSTRAINT convenio_vacaciones_tipo_check
+      CHECK (vacaciones_tipo IN ('naturales','laborales'));
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
 
 -- Siembra global (sólo si no hay convenios globales aún).
 INSERT INTO convenio (id_manager, nombre, horas_anuales, horas_semana, vacaciones_dias, asuntos_propios_dias, notas)
@@ -1577,6 +1593,9 @@ CREATE TABLE IF NOT EXISTS trainer_empresa (
   horas_anuales_override        INTEGER,
   horas_semana_override         NUMERIC(5,2),
   vacaciones_dias_override      INTEGER,
+  vacaciones_tipo_override      VARCHAR(12)
+                                       CHECK (vacaciones_tipo_override IS NULL
+                                              OR vacaciones_tipo_override IN ('naturales','laborales')),
   asuntos_propios_dias_override INTEGER,
   representante_legal              VARCHAR(160),
   fecha_acuerdo_representantes     DATE,
@@ -1586,6 +1605,21 @@ CREATE TABLE IF NOT EXISTS trainer_empresa (
   CONSTRAINT trainer_empresa_unique UNIQUE (id_manager, id_trainer)
 );
 CREATE INDEX IF NOT EXISTS idx_trainer_empresa_manager ON trainer_empresa(id_manager);
+
+-- Migracion idempotente para tablas ya existentes
+ALTER TABLE trainer_empresa
+  ADD COLUMN IF NOT EXISTS vacaciones_tipo_override VARCHAR(12);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='trainer_empresa_vac_tipo_check'
+  ) THEN
+    ALTER TABLE trainer_empresa ADD CONSTRAINT trainer_empresa_vac_tipo_check
+      CHECK (vacaciones_tipo_override IS NULL
+             OR vacaciones_tipo_override IN ('naturales','laborales'));
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
 
 
 -- ─── TRABAJADORES ──────────────────────────────────────────────────────────

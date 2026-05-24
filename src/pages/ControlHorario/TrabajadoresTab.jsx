@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { UserPlus, RefreshCcw, UserMinus, UserCheck } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info } from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import Modal from '../../components/Modal'
@@ -19,6 +19,7 @@ export default function TrabajadoresTab({ identity }) {
   const [trainers, setTrainers] = useState([])
   const [showAlta, setShowAlta] = useState(null)  // pendiente seleccionado o objeto vacío
   const [view, setView] = useState('activos')     // activos | pendientes | bajas
+  const initialViewSet = useRef(false)
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -33,6 +34,15 @@ export default function TrabajadoresTab({ identity }) {
       setPendientes(pen || [])
       setBajas(baj || [])
       setTrainers(trs || [])
+      // UX: la primera carga decide la vista inicial. Si no hay activos
+      // pero sí pendientes, abre en "Pendientes" (es lo más útil para
+      // alguien que entra por primera vez al módulo).
+      if (!initialViewSet.current) {
+        initialViewSet.current = true
+        if ((act || []).length === 0 && (pen || []).length > 0) {
+          setView('pendientes')
+        }
+      }
     } catch (e) {
       toast.error('Error: ' + (e.message || 'desconocido'))
     } finally { setLoading(false) }
@@ -59,6 +69,26 @@ export default function TrabajadoresTab({ identity }) {
 
   return (
     <div>
+      {/* Banner explicativo — sólo si hay pendientes y vista pendientes activa */}
+      {view === 'pendientes' && pendientes.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 10,
+          padding: '12px 14px', borderRadius: 12, marginBottom: 12,
+          background: 'rgba(59,130,246,0.08)', color: 'var(--text-1)',
+          border: '1px solid rgba(59,130,246,0.20)', fontSize: 13, lineHeight: 1.5,
+        }}>
+          <Info size={16} style={{ color: '#3b82f6', flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <strong>¿Qué es "pendientes de alta"?</strong>{' '}
+            Son clientes NoofitPro con categoría <em>Trabajador</em> que aún
+            no tienen su alta laboral confirmada en Round. Para que puedan
+            fichar, pulsa <strong>"Alta laboral"</strong> y rellena los datos
+            obligatorios (NIF, jornada y trainer empleador). Hasta entonces
+            no podrán fichar.
+          </div>
+        </div>
+      )}
+
       {/* Barra de acciones */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <button onClick={() => setView('activos')}      style={subTabStyle(view === 'activos')}>

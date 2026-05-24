@@ -119,6 +119,7 @@ def _convenio_to_dict(r):
         'horas_anuales': r['horas_anuales'],
         'horas_semana': float(r['horas_semana']) if r['horas_semana'] is not None else None,
         'vacaciones_dias': r['vacaciones_dias'],
+        'vacaciones_tipo': r.get('vacaciones_tipo') or 'naturales',
         'asuntos_propios_dias': r['asuntos_propios_dias'],
         'descanso_min_jornada_h': float(r['descanso_min_jornada_h']) if r['descanso_min_jornada_h'] is not None else None,
         'notas': r['notas'] or '',
@@ -134,7 +135,7 @@ def listar_convenios():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, id_manager, nombre, horas_anuales, horas_semana,
-                   vacaciones_dias, asuntos_propios_dias,
+                   vacaciones_dias, vacaciones_tipo, asuntos_propios_dias,
                    descanso_min_jornada_h, notas, activo
               FROM convenio
              WHERE (id_manager IS NULL OR id_manager = %s)
@@ -162,6 +163,7 @@ def _empresa_to_dict(r):
         'horas_anuales_override': r['horas_anuales_override'],
         'horas_semana_override': float(r['horas_semana_override']) if r['horas_semana_override'] is not None else None,
         'vacaciones_dias_override': r['vacaciones_dias_override'],
+        'vacaciones_tipo_override': r.get('vacaciones_tipo_override'),
         'asuntos_propios_dias_override': r['asuntos_propios_dias_override'],
         'representante_legal': r['representante_legal'] or '',
         'fecha_acuerdo_representantes': r['fecha_acuerdo_representantes'].isoformat() if r['fecha_acuerdo_representantes'] else None,
@@ -180,7 +182,8 @@ def listar_trainer_empresa():
                    te.razon_social, te.cif, te.direccion_fiscal,
                    te.convenio_id, c.nombre AS convenio_nombre,
                    te.horas_anuales_override, te.horas_semana_override,
-                   te.vacaciones_dias_override, te.asuntos_propios_dias_override,
+                   te.vacaciones_dias_override, te.vacaciones_tipo_override,
+                   te.asuntos_propios_dias_override,
                    te.representante_legal, te.fecha_acuerdo_representantes, te.notas
               FROM trainer_empresa te
               LEFT JOIN convenio c ON c.id = te.convenio_id
@@ -201,7 +204,8 @@ def get_trainer_empresa(id_trainer):
                    te.razon_social, te.cif, te.direccion_fiscal,
                    te.convenio_id, c.nombre AS convenio_nombre,
                    te.horas_anuales_override, te.horas_semana_override,
-                   te.vacaciones_dias_override, te.asuntos_propios_dias_override,
+                   te.vacaciones_dias_override, te.vacaciones_tipo_override,
+                   te.asuntos_propios_dias_override,
                    te.representante_legal, te.fecha_acuerdo_representantes, te.notas
               FROM trainer_empresa te
               LEFT JOIN convenio c ON c.id = te.convenio_id
@@ -250,6 +254,9 @@ def upsert_trainer_empresa(id_trainer):
     horas_anuales_ov = _opt_int(d.get('horas_anuales_override'))
     horas_semana_ov = _opt_num(d.get('horas_semana_override'))
     vacaciones_ov = _opt_int(d.get('vacaciones_dias_override'))
+    vac_tipo_ov = _opt_str(d.get('vacaciones_tipo_override'))
+    if vac_tipo_ov and vac_tipo_ov not in ('naturales', 'laborales'):
+        return jsonify({'ok': False, 'error': 'vacaciones_tipo_override_invalido'}), 400
     asuntos_ov = _opt_int(d.get('asuntos_propios_dias_override'))
     repr_legal = _opt_str(d.get('representante_legal'))
     fecha_acuerdo = _opt_str(d.get('fecha_acuerdo_representantes'))
@@ -270,9 +277,10 @@ def upsert_trainer_empresa(id_trainer):
             INSERT INTO trainer_empresa
               (id_manager, id_trainer, razon_social, cif, direccion_fiscal,
                convenio_id, horas_anuales_override, horas_semana_override,
-               vacaciones_dias_override, asuntos_propios_dias_override,
+               vacaciones_dias_override, vacaciones_tipo_override,
+               asuntos_propios_dias_override,
                representante_legal, fecha_acuerdo_representantes, notas)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
               razon_social                  = EXCLUDED.razon_social,
               cif                           = EXCLUDED.cif,
@@ -281,19 +289,16 @@ def upsert_trainer_empresa(id_trainer):
               horas_anuales_override        = EXCLUDED.horas_anuales_override,
               horas_semana_override         = EXCLUDED.horas_semana_override,
               vacaciones_dias_override      = EXCLUDED.vacaciones_dias_override,
+              vacaciones_tipo_override      = EXCLUDED.vacaciones_tipo_override,
               asuntos_propios_dias_override = EXCLUDED.asuntos_propios_dias_override,
               representante_legal           = EXCLUDED.representante_legal,
               fecha_acuerdo_representantes  = EXCLUDED.fecha_acuerdo_representantes,
               notas                         = EXCLUDED.notas,
               updated_at                    = NOW()
-            RETURNING id, id_manager, id_trainer, razon_social, cif,
-                      direccion_fiscal, convenio_id, horas_anuales_override,
-                      horas_semana_override, vacaciones_dias_override,
-                      asuntos_propios_dias_override, representante_legal,
-                      fecha_acuerdo_representantes, notas
+            RETURNING id
         """, (str(g.id_manager), str(id_trainer), razon_social, cif, direccion,
-              convenio_id, horas_anuales_ov, horas_semana_ov, vacaciones_ov, asuntos_ov,
-              repr_legal, fecha_acuerdo, notas))
+              convenio_id, horas_anuales_ov, horas_semana_ov, vacaciones_ov, vac_tipo_ov,
+              asuntos_ov, repr_legal, fecha_acuerdo, notas))
         row = cur.fetchone()
         # Re-leer con join al convenio para devolver el nombre.
         cur.execute("""
@@ -301,7 +306,8 @@ def upsert_trainer_empresa(id_trainer):
                    te.razon_social, te.cif, te.direccion_fiscal,
                    te.convenio_id, c.nombre AS convenio_nombre,
                    te.horas_anuales_override, te.horas_semana_override,
-                   te.vacaciones_dias_override, te.asuntos_propios_dias_override,
+                   te.vacaciones_dias_override, te.vacaciones_tipo_override,
+                   te.asuntos_propios_dias_override,
                    te.representante_legal, te.fecha_acuerdo_representantes, te.notas
               FROM trainer_empresa te
               LEFT JOIN convenio c ON c.id = te.convenio_id
