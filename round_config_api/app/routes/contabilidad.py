@@ -27,7 +27,7 @@ from pathlib import Path
 from datetime import datetime, date
 from flask import Blueprint, request, jsonify, g, send_file, abort
 from werkzeug.utils import secure_filename
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..odoo_guard import require_feature
 from ..db import get_conn, seed_gasto_categorias_for_manager
 
@@ -816,6 +816,7 @@ def escanear_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/validar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.validar')
 def validar_documento(doc_id):
     """Marca como validado. Fase 2: crea account.move en Odoo.
 
@@ -2269,6 +2270,7 @@ def banco_matching():
 @bp.route('/documentos/<int:doc_id>', methods=['DELETE'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.borrar')
 def delete_documento(doc_id):
     err = _manager_only()
     if err: return err

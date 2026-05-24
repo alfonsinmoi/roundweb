@@ -8,7 +8,7 @@ y sincronización NoofitPro → Odoo de datos del cliente.
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from .. import noofit_client as nc
 from ..odoo_alta import get_alta
@@ -192,6 +192,7 @@ def fechas_cliente(cliente_id):
 
 @bp.route('/<int:id_noofit>/sync-odoo', methods=['POST'])
 @auth_required
+@require_permission('clientes.modificar_datos_erp')
 def sync_odoo(id_noofit):
     """Lee los datos actuales del cliente desde NoofitPro y actualiza el
     partner correspondiente en Odoo (upsert por id_noofit/DNI/email).

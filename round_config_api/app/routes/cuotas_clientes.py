@@ -6,7 +6,7 @@ import base64
 import logging
 import os
 from flask import Blueprint, request, jsonify, g, Response
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..odoo_guard import require_feature
 from ..odoo_cuotas import get_cuotas
 from ..odoo_alta import get_alta
@@ -200,6 +200,7 @@ def emitir_remesa(mes):
 @bp.route('/recibo/<int:invoice_id>/enviar', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('economico.cuotas_mensuales.reenviar_factura')
 def enviar_factura(invoice_id):
     """Envía la factura por email al cliente con PDF adjunto.
     Body opcional: { dest_email?: '...', mensaje?: '...' }

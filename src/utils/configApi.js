@@ -2,12 +2,23 @@
 // Backend Flask en /api/config/* que mantiene cuotas, descuentos y
 // modificaciones por trainer. Token compartido en variable Vite.
 
-import { handleAuthExpired, consumeNewToken, isAuthExpiredResponse } from './authState'
+import { handleAuthExpired, consumeNewToken, isAuthExpiredResponse, getStoredJwt } from './authState'
 
 const BASE = '/api/config'
 
 // Token compartido. Se inyecta en build vía Vite (.env: VITE_CONFIG_API_TOKEN)
 const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+
+
+// Añade `Authorization: Bearer <jwt>` cuando hay sesión usuario_web.
+// El backend usa este header para resolver el perfil y aplicar
+// `@require_permission(...)`. Si no hay JWT (sesión manager NoofitPro
+// clásica), no añade nada y el backend sigue funcionando como antes.
+function _withBearer(h) {
+  const jwt = getStoredJwt()
+  if (jwt) h.Authorization = `Bearer ${jwt}`
+  return h
+}
 
 // Listas cerradas (espejo del backend)
 export const FORMAS_PAGO = [
@@ -95,7 +106,7 @@ function headers(identity) {
   // Prioridad: trainerId explícito de identity (impersonación clásica) > selector admin
   const tid = identity.trainerId || _trainerOverride()
   if (tid) h['X-Round-Trainer-Id'] = tid
-  return h
+  return _withBearer(h)
 }
 
 async function _request(method, path, identity, body = null) {
@@ -314,11 +325,11 @@ export const trainerCredsTest = (identity, idTrainer) =>
 // la URL absoluta sin pasar por _request (que usa /api/config como prefix).
 async function _crmRequest(method, path, identity, body = null) {
   const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
-  const init = { method, headers: {
+  const init = { method, headers: _withBearer({
     'Content-Type': 'application/json',
     'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity?.managerId || '',
-  }}
+  })}
   if (identity?.trainerId) init.headers['X-Round-Trainer-Id'] = identity.trainerId
   if (body) init.body = JSON.stringify(body)
   const res = await fetch(`/api/crm${path}`, init)
@@ -341,11 +352,11 @@ export const crmFunnel = (identity) =>
 // ── Cambios de estado de clientes (log activo↔archivado) ──────────────────
 async function _clientesRequest(method, path, identity) {
   const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
-  const res = await fetch(`/api/clientes${path}`, { method, headers: {
+  const res = await fetch(`/api/clientes${path}`, { method, headers: _withBearer({
     'Content-Type': 'application/json', 'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity?.managerId || '',
     ...(identity?.trainerId ? { 'X-Round-Trainer-Id': identity.trainerId } : {}),
-  }})
+  })})
   const data = await res.json().catch(() => ({}))
   if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`)
   return data
@@ -371,11 +382,11 @@ export const clienteFechas = (identity, idNoofit) =>
 // ── Notificaciones (OneSignal + BD local) ──────────────────────────────────
 async function _notifRequest(method, path, identity, body = null) {
   const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
-  const init = { method, headers: {
+  const init = { method, headers: _withBearer({
     'Content-Type': 'application/json',
     'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity?.managerId || '',
-  }}
+  })}
   if (identity?.trainerId) init.headers['X-Round-Trainer-Id'] = identity.trainerId
   if (body) init.body = JSON.stringify(body)
   const res = await fetch(`/api/notif${path}`, init)
@@ -421,10 +432,10 @@ export const notifConfigPut = (identity, data) =>
 // ── Contabilidad (gastos / nóminas / extractos / impuestos) ─────────────────
 async function _contabRequest(method, path, identity, body = null, isForm = false) {
   const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
-  const init = { method, headers: {
+  const init = { method, headers: _withBearer({
     'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity?.managerId || '',
-  }}
+  })}
   if (identity?.trainerId) init.headers['X-Round-Trainer-Id'] = identity.trainerId
   if (body && !isForm) {
     init.headers['Content-Type'] = 'application/json'
@@ -547,11 +558,11 @@ export const contabDocFileUrl = (id, identity) => {
 // ── Redes sociales (cuentas Meta + agenda de posts) ───────────────────────
 async function _socialRequest(method, path, identity, body = null) {
   const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
-  const init = { method, headers: {
+  const init = { method, headers: _withBearer({
     'Content-Type': 'application/json', 'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity?.managerId || '',
     ...(identity?.trainerId ? { 'X-Round-Trainer-Id': identity.trainerId } : {}),
-  }}
+  })}
   if (body) init.body = JSON.stringify(body)
   const res = await fetch(`/api/social${path}`, init)
   const data = await res.json().catch(() => ({}))

@@ -15,6 +15,20 @@ const STORAGE_KEY = 'round_session'
 
 let _expiring = false   // evita bucles de redirect
 
+
+// Lee el JWT actual de sessionStorage (si la sesión es de un usuario_web).
+// Para sesiones de manager NoofitPro clásico (login directo en NoofitPro) NO
+// hay JWT — devuelve '' y los endpoints siguen autenticando con el token
+// compartido X-Round-Token + headers.
+export function getStoredJwt() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    if (!raw) return ''
+    const s = JSON.parse(raw)
+    return (s && typeof s === 'object' && typeof s.jwt === 'string') ? s.jwt : ''
+  } catch { return '' }
+}
+
 export function handleAuthExpired() {
   if (_expiring) return
   _expiring = true

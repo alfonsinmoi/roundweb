@@ -28,7 +28,7 @@ import logging
 
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from .. import wcommerce_check
 
@@ -280,6 +280,7 @@ def _validar_elegibilidad(row, modulo_flag_col=None):
 
 @bp.route('/provision/<modulo>', methods=['POST'])
 @auth_required
+@require_permission('configuracion.suscripciones.activar')
 def provision_modulo(modulo):
     """Activa un módulo concreto (crm / cuotas / contabilidad) idempotente.
 
