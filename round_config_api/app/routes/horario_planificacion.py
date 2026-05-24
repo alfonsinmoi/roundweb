@@ -930,8 +930,8 @@ def listar_asignaciones():
         # Trabajadores activos del manager
         cur.execute("""
             SELECT t.id, t.cliente_idnoofit, t.nif, t.estado,
-                   t.trainer_id_principal,
-                   COALESCE(t.nombre_override, '') AS nombre_override
+                   t.id_trainer_empleador,
+                   COALESCE(t.nombre_completo, '') AS nombre_completo
               FROM trabajador t
              WHERE t.id_manager = %s AND t.estado = 'activo'
              ORDER BY t.id
@@ -940,8 +940,8 @@ def listar_asignaciones():
             'id': r['id'],
             'cliente_idnoofit': r['cliente_idnoofit'],
             'nif': r['nif'],
-            'nombre': r['nombre_override'] or '',
-            'trainer_id_principal': r['trainer_id_principal'],
+            'nombre': r['nombre_completo'] or '',
+            'id_trainer_empleador': r['id_trainer_empleador'],
         } for r in cur.fetchall()]
         # Asignaciones del rango
         cur.execute("""
@@ -1114,7 +1114,7 @@ def cobertura():
         cur.execute("""
             SELECT a.trabajador_id, a.fecha, a.turno_plantilla_id,
                    b.hora_inicio, b.hora_fin, b.tipo, b.puesto_id,
-                   COALESCE(t.nombre_override, '') AS nombre,
+                   COALESCE(t.nombre_completo, '') AS nombre,
                    t.nif
               FROM turno_asignacion a
               JOIN trabajador t ON t.id = a.trabajador_id
