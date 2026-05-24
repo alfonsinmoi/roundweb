@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { LogIn, Eye, EyeOff } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
@@ -7,6 +7,11 @@ import { usePortalAuth } from '../../contexts/PortalAuthContext'
 export default function PortalLogin() {
   const { isAuthed, login, loading } = usePortalAuth()
   const navigate = useNavigate()
+  useEffect(() => {
+    const prev = document.title
+    document.title = 'Mi portal · Round'
+    return () => { document.title = prev }
+  }, [])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)

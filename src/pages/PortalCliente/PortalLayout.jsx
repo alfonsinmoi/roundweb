@@ -30,6 +30,13 @@ export default function PortalLayout() {
   // Cerrar drawer al cambiar de ruta
   useEffect(() => { setDrawerOpen(false) }, [pathname])
 
+  // Título de la pestaña distinto del admin (Round — Gestión Fitness)
+  useEffect(() => {
+    const prev = document.title
+    document.title = 'Mi portal · Round'
+    return () => { document.title = prev }
+  }, [])
+
   if (!isAuthed) return <Navigate to="/portal/login" replace />
 
   const esTrabajador = !!cliente?.es_trabajador
