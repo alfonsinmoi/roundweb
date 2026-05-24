@@ -100,7 +100,7 @@ export default function EntrenamientosTab() {
           <SkeletonCard /><SkeletonCard /><SkeletonCard />
         </CardsList>
       ) : (
-        <EmptyList sub={sub} />
+        <EmptyList sub={sub} q={q} />
       )}
     </div>
   )
@@ -232,32 +232,56 @@ function SkeletonCard() {
 }
 
 
-function EmptyList({ sub }) {
+// Datos demo (basados en las capturas que pasaste de mynoofit).
+// Hasta cablear getTrainingsUserMobile / getTrainingsUser.
+const DEMOS_INDIVIDUAL = [
+  { id: 'demo-i-1', titulo: 'Ciclo Etapa 10 minutos',              duracion: '01m 14s', distancia: '0 m',    mediaFc: '77 ppm', calorias: '0 Kcal',  fecha: '25 mar 2026' },
+  { id: 'demo-i-2', titulo: 'Montaña Intervalica Discontinua Video', duracion: '29s',     distancia: '0 m',    mediaFc: '73 ppm', calorias: '0 Kcal',  fecha: '24 mar 2026' },
+  { id: 'demo-i-3', titulo: 'Ciclo Etapa HIIT 12 minutos',          duracion: '36s',     distancia: '0 m',    mediaFc: '69 ppm', calorias: '0 Kcal',  fecha: '23 mar 2026' },
+  { id: 'demo-i-4', titulo: 'Fuerza tren superior',                 duracion: '14m 02s', distancia: '0 m',    mediaFc: '92 ppm', calorias: '4 Kcal',  fecha: '20 mar 2026' },
+  { id: 'demo-i-5', titulo: 'Resistencia liviana',                  duracion: '22m 18s', distancia: '0 m',    mediaFc: '105 ppm', calorias: '12 Kcal', fecha: '18 mar 2026' },
+  { id: 'demo-i-6', titulo: 'Circuito adelgazamiento PAPE',         duracion: '08m 41s', distancia: '0 m',    mediaFc: '88 ppm', calorias: '6 Kcal',  fecha: '15 mar 2026' },
+]
+const DEMOS_GRUPO = [
+  { id: 'demo-g-1', titulo: 'Ciclo NooFit Etapa 4',  duracion: '11m 31s', distancia: '1118 m', mediaFc: '131 ppm', calorias: '76 Kcal', fecha: '15 abr 2026' },
+  { id: 'demo-g-2', titulo: 'Ciclo NooFit Etapa 2',  duracion: '05m 03s', distancia: '924 m',  mediaFc: '88 ppm',  calorias: '0 Kcal',  fecha: '25 mar 2026' },
+  { id: 'demo-g-3', titulo: 'Ciclo NooFit Etapa 1',  duracion: '02m 52s', distancia: '342 m',  mediaFc: '78 ppm',  calorias: '0 Kcal',  fecha: '20 mar 2026' },
+  { id: 'demo-g-4', titulo: 'HIIT Grupo Avanzado',   duracion: '32m 14s', distancia: '2487 m', mediaFc: '152 ppm', calorias: '184 Kcal', fecha: '12 mar 2026' },
+  { id: 'demo-g-5', titulo: 'Spinning Tempo',        duracion: '45m 00s', distancia: '12450 m', mediaFc: '141 ppm', calorias: '320 Kcal', fecha: '08 mar 2026' },
+]
+
+
+function EmptyList({ sub, q }) {
   const navigate = useNavigate()
-  const msg = sub === 'grupo'
-    ? 'Aún no tienes entrenamientos en grupo registrados. Las clases reservadas aparecerán aquí.'
-    : 'Aún no tienes entrenamientos individuales registrados.'
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Demo card para que el user pueda navegar al detalle aunque
-          el endpoint no esté cableado todavía. */}
-      <EntrenamientoCard
-        id="demo-1"
-        titulo={sub === 'grupo' ? 'Ciclo NooFit Etapa 4' : 'Ciclo Etapa 10 minutos'}
-        duracion={sub === 'grupo' ? '11m 31s' : '01m 14s'}
-        distancia={sub === 'grupo' ? '1118 m' : '0 m'}
-        mediaFc={sub === 'grupo' ? '131 ppm' : '77 ppm'}
-        calorias={sub === 'grupo' ? '76 Kcal' : '0 Kcal'}
-        fecha={sub === 'grupo' ? '15 abr 2026' : '25 mar 2026'}
-        esGrupo={sub === 'grupo'}
-        onClick={() => navigate(`/portal/entrenamientos/demo-${sub}`)}
-      />
+  const list = sub === 'grupo' ? DEMOS_GRUPO : DEMOS_INDIVIDUAL
+  const needle = q.trim().toLowerCase()
+  const filtered = needle
+    ? list.filter(d => d.titulo.toLowerCase().includes(needle))
+    : list
+
+  if (filtered.length === 0) {
+    return (
       <div style={{
         padding: '20px 16px', borderRadius: 14,
         background: 'var(--bg-1)', border: '1px dashed var(--line)',
-        textAlign: 'center', color: 'var(--text-3)', fontSize: 12,
+        textAlign: 'center', color: 'var(--text-3)', fontSize: 13,
       }}>
-        {msg}
+        Sin resultados para “{q}”.
+      </div>
+    )
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {filtered.map(d => (
+        <EntrenamientoCard key={d.id} {...d} esGrupo={sub === 'grupo'}
+          onClick={() => navigate(`/portal/entrenamientos/${d.id}`)} />
+      ))}
+      <div style={{
+        padding: '12px 16px', borderRadius: 12,
+        background: 'var(--bg-1)', border: '1px dashed var(--line)',
+        textAlign: 'center', color: 'var(--text-3)', fontSize: 11,
+      }}>
+        Datos demo · cableado real (NoofitPro) pendiente
       </div>
     </div>
   )
