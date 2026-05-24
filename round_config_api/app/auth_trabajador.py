@@ -1,0 +1,124 @@
+"""Auth del trabajador (módulo Control horario laboral).
+
+Diferente de:
+- `auth.auth_required`: token compartido del manager/trainer admin.
+- `auth_usuario.usuario_web_required`: usuario web con perfil y permisos.
+
+El trabajador es un cliente NoofitPro con categoría 'Trabajador'. Se loguea
+con sus credenciales NoofitPro (loginEasy) y nuestro backend le emite un
+JWT propio que mynoofit/web reenvían en `Authorization: Bearer …` para los
+endpoints de fichaje.
+
+Claims del JWT trabajador:
+  sub  → trabajador.id  (PK interno, no clienteId NoofitPro)
+  kind → 'trabajador'
+  mgr  → id_manager
+  cli  → cliente_idnoofit
+  iat, exp
+"""
+import os
+import logging
+import datetime as dt
+from functools import wraps
+
+import jwt
+import requests
+from flask import request, jsonify, g
+
+from .db import get_conn
+from . import noofit_client as nfc
+
+log = logging.getLogger(__name__)
+
+JWT_SECRET = os.getenv('JWT_SECRET', '')
+JWT_ALGO = 'HS256'
+JWT_TTL_HOURS = 168  # 7 días — coherente con usuario_web
+
+
+def issue_jwt_trabajador(trabajador_id: int, id_manager: str,
+                         cliente_idnoofit: str) -> str:
+    if not JWT_SECRET:
+        raise RuntimeError('JWT_SECRET no configurado')
+    payload = {
+        'sub': str(trabajador_id),
+        'kind': 'trabajador',
+        'mgr': str(id_manager),
+        'cli': str(cliente_idnoofit),
+        'iat': dt.datetime.utcnow(),
+        'exp': dt.datetime.utcnow() + dt.timedelta(hours=JWT_TTL_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def decode_jwt_trabajador(token: str) -> dict | None:
+    if not JWT_SECRET or not token:
+        return None
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except jwt.PyJWTError:
+        return None
+
+
+def login_noofit_cliente(email: str, password: str):
+    """Valida credenciales contra NoofitPro `loginEasy` con email+password.
+
+    Devuelve `(True, custom_token)` si OK, `(False, motivo)` si KO.
+    No persiste el token NoofitPro: sólo lo usamos para validar y, después,
+    emitimos nuestro JWT propio.
+    """
+    try:
+        token, _ = nfc._login(email, password)  # noqa: SLF001 — wrapper interno
+        return True, token
+    except requests.HTTPError as e:
+        code = e.response.status_code if e.response is not None else 0
+        if code in (400, 401, 403):
+            return False, 'credenciales_invalidas'
+        return False, f'noofit_http_{code}'
+    except Exception as e:
+        log.warning(f'login_noofit_cliente: {e}')
+        return False, 'noofit_unreachable'
+
+
+def trabajador_required(fn):
+    """Decorador: exige JWT de trabajador + trabajador activo + módulo activo.
+
+    Carga `g.trabajador` (dict de la fila) y `g.id_manager`.
+    """
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return jsonify({'ok': False, 'error': 'missing_token'}), 401
+        token = auth[len('Bearer '):].strip()
+        claims = decode_jwt_trabajador(token)
+        if not claims or claims.get('kind') != 'trabajador':
+            return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+        try:
+            trab_id = int(claims['sub'])
+        except (KeyError, ValueError, TypeError):
+            return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT t.id, t.id_manager, t.cliente_idnoofit,
+                       t.id_trainer_empleador, t.nombre_completo, t.estado,
+                       mc.control_horario_enabled
+                  FROM trabajador t
+                  LEFT JOIN manager_config mc ON mc.id_manager = t.id_manager
+                 WHERE t.id = %s
+            """, (trab_id,))
+            row = cur.fetchone()
+        if not row:
+            return jsonify({'ok': False, 'error': 'trabajador_no_encontrado'}), 401
+        if row['estado'] != 'activo':
+            return jsonify({'ok': False, 'error': f'trabajador_{row["estado"]}'}), 403
+        if not row.get('control_horario_enabled'):
+            return jsonify({
+                'ok': False, 'error': 'feature_not_enabled',
+                'feature': 'control_horario',
+            }), 403
+
+        g.trabajador = row
+        g.id_manager = row['id_manager']
+        return fn(*args, **kwargs)
+    return wrapper

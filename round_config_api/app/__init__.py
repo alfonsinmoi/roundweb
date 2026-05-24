@@ -46,6 +46,7 @@ from .routes.facturacion_trimestre import bp as bp_fact_trim
 from .routes.trimestre         import bp as bp_trimestre
 from .routes.canales_captacion import bp as bp_canales_captacion
 from .routes.horario           import bp as bp_horario
+from .routes.horario_fichaje   import bp as bp_horario_fichaje
 
 
 def create_app():
@@ -220,5 +221,7 @@ def create_app():
     # ── Control horario laboral (módulo Fase 1: endpoints admin)
     for prefix in ('/horario', '/api/horario'):
         app.register_blueprint(bp_horario, name=f'hor{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_fichaje, name=f'horf{prefix}', url_prefix=prefix)
 
     return app
