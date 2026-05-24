@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { PortalAuthProvider } from './contexts/PortalAuthContext'
 import { TrainerFilterProvider } from './contexts/TrainerFilterContext'
 import { ToastProvider } from './components/Toast'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -30,6 +31,16 @@ const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
 const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
 const CuotasClientes = lazy(() => import('./pages/CuotasClientes/CuotasClientes'))
 const ControlHorario = lazy(() => import('./pages/ControlHorario/ControlHorario'))
+
+// ── Portal del cliente NoofitPro ───────────────────────────────────────────
+const PortalLogin   = lazy(() => import('./pages/PortalCliente/PortalLogin'))
+const PortalLayout  = lazy(() => import('./pages/PortalCliente/PortalLayout'))
+const PortalHome    = lazy(() => import('./pages/PortalCliente/PortalHome'))
+const FicharTab     = lazy(() => import('./pages/PortalCliente/FicharTab'))
+const PerfilTab     = lazy(() => import('./pages/PortalCliente/PerfilTab'))
+const ReservasTab   = lazy(() => import('./pages/PortalCliente/PlaceholderTab').then(m => ({ default: m.ReservasTab })))
+const RetosTab      = lazy(() => import('./pages/PortalCliente/PlaceholderTab').then(m => ({ default: m.RetosTab })))
+const LogrosTab     = lazy(() => import('./pages/PortalCliente/PlaceholderTab').then(m => ({ default: m.LogrosTab })))
 const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
 const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
 const NotificacionesPage = lazy(() => import('./pages/Notificaciones/NotificacionesPage'))
@@ -68,6 +79,17 @@ function AppRoutes() {
         <Route path="/login" element={user ? <Navigate to="/clientes" replace /> : <Login />} />
         <Route path="/verificar" element={<VerifyAccount mode="verify" />} />
         <Route path="/reset"     element={<VerifyAccount mode="reset" />} />
+
+        {/* Portal del cliente NoofitPro (auth aislada del admin) */}
+        <Route path="/portal/login" element={<PortalLogin />} />
+        <Route path="/portal" element={<PortalLayout />}>
+          <Route index             element={<PortalHome />} />
+          <Route path="fichar"     element={<FicharTab />} />
+          <Route path="perfil"     element={<PerfilTab />} />
+          <Route path="reservas"   element={<ReservasTab />} />
+          <Route path="retos"      element={<RetosTab />} />
+          <Route path="logros"     element={<LogrosTab />} />
+        </Route>
 
         <Route element={<RequireAuth><Layout /></RequireAuth>}>
           <Route index                  element={<Navigate to="/clientes" replace />} />
@@ -109,11 +131,13 @@ export default function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <AuthProvider>
-          <TrainerFilterProvider>
-            <ToastProvider>
-              <AppRoutes />
-            </ToastProvider>
-          </TrainerFilterProvider>
+          <PortalAuthProvider>
+            <TrainerFilterProvider>
+              <ToastProvider>
+                <AppRoutes />
+              </ToastProvider>
+            </TrainerFilterProvider>
+          </PortalAuthProvider>
         </AuthProvider>
       </BrowserRouter>
     </ErrorBoundary>

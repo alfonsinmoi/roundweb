@@ -79,10 +79,39 @@ def login_noofit_cliente(email: str, password: str):
         return False, 'noofit_unreachable'
 
 
-def trabajador_required(fn):
-    """Decorador: exige JWT de trabajador + trabajador activo + módulo activo.
+def _load_trabajador_by_id(trab_id: int) -> dict | None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT t.id, t.id_manager, t.cliente_idnoofit,
+                   t.id_trainer_empleador, t.nombre_completo, t.estado,
+                   mc.control_horario_enabled
+              FROM trabajador t
+              LEFT JOIN manager_config mc ON mc.id_manager = t.id_manager
+             WHERE t.id = %s
+        """, (trab_id,))
+        return cur.fetchone()
 
-    Carga `g.trabajador` (dict de la fila) y `g.id_manager`.
+
+def _load_trabajador_by_cliente(id_manager: str, cliente_idnoofit: str) -> dict | None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT t.id, t.id_manager, t.cliente_idnoofit,
+                   t.id_trainer_empleador, t.nombre_completo, t.estado,
+                   mc.control_horario_enabled
+              FROM trabajador t
+              LEFT JOIN manager_config mc ON mc.id_manager = t.id_manager
+             WHERE t.id_manager = %s AND t.cliente_idnoofit = %s
+        """, (str(id_manager), str(cliente_idnoofit)))
+        return cur.fetchone()
+
+
+def trabajador_required(fn):
+    """Decorador: acepta JWT `kind='trabajador'` (legacy) o `kind='cliente'`
+    con `es_trabajador=true`. Carga `g.trabajador` (dict) y `g.id_manager`.
+
+    Errores:
+      401 missing_token / invalid_token
+      403 trabajador_baja / trabajador_pendiente_alta / feature_not_enabled
     """
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -91,23 +120,30 @@ def trabajador_required(fn):
             return jsonify({'ok': False, 'error': 'missing_token'}), 401
         token = auth[len('Bearer '):].strip()
         claims = decode_jwt_trabajador(token)
-        if not claims or claims.get('kind') != 'trabajador':
-            return jsonify({'ok': False, 'error': 'invalid_token'}), 401
-        try:
-            trab_id = int(claims['sub'])
-        except (KeyError, ValueError, TypeError):
+        if not claims:
             return jsonify({'ok': False, 'error': 'invalid_token'}), 401
 
-        with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
-                SELECT t.id, t.id_manager, t.cliente_idnoofit,
-                       t.id_trainer_empleador, t.nombre_completo, t.estado,
-                       mc.control_horario_enabled
-                  FROM trabajador t
-                  LEFT JOIN manager_config mc ON mc.id_manager = t.id_manager
-                 WHERE t.id = %s
-            """, (trab_id,))
-            row = cur.fetchone()
+        kind = claims.get('kind')
+        row = None
+        if kind == 'trabajador':
+            try:
+                trab_id = int(claims['sub'])
+            except (KeyError, ValueError, TypeError):
+                return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+            row = _load_trabajador_by_id(trab_id)
+        elif kind == 'cliente':
+            if not claims.get('esw'):
+                return jsonify({
+                    'ok': False, 'error': 'no_eres_trabajador',
+                }), 403
+            cli = claims.get('sub')
+            mgr = claims.get('mgr')
+            if not cli or not mgr:
+                return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+            row = _load_trabajador_by_cliente(mgr, cli)
+        else:
+            return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+
         if not row:
             return jsonify({'ok': False, 'error': 'trabajador_no_encontrado'}), 401
         if row['estado'] != 'activo':

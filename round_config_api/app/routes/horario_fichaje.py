@@ -380,6 +380,24 @@ def fichaje():
     except (TypeError, ValueError):
         return jsonify({'ok': False, 'error': 'pausa_motivo_id_invalido'}), 400
 
+    # Fallback: si el cliente nos manda `pausa_motivo_codigo` (porque aún no
+    # tiene el id), lo resolvemos contra el catálogo (manager + globales).
+    if pausa_motivo_id is None:
+        codigo = (d.get('pausa_motivo_codigo') or '').strip().lower()
+        if codigo:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id FROM pausa_motivo
+                     WHERE codigo = %s
+                       AND activo = TRUE
+                       AND (id_manager = %s OR id_manager IS NULL)
+                     ORDER BY (id_manager IS NULL) ASC
+                     LIMIT 1
+                """, (codigo, str(g.trabajador['id_manager'])))
+                row = cur.fetchone()
+            if row:
+                pausa_motivo_id = row['id']
+
     lat = d.get('lat'); lng = d.get('lng'); acc = d.get('geo_accuracy_m')
     try:
         lat = float(lat) if lat not in (None, '') else None
