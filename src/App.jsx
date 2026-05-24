@@ -40,6 +40,8 @@ const FicharTab     = lazy(() => import('./pages/PortalCliente/FicharTab'))
 const PerfilTab     = lazy(() => import('./pages/PortalCliente/PerfilTab'))
 const ReservasTab   = lazy(() => import('./pages/PortalCliente/ReservasTab'))
 const RetosTab      = lazy(() => import('./pages/PortalCliente/RetosTab'))
+const EntrenamientosTab    = lazy(() => import('./pages/PortalCliente/EntrenamientosTab'))
+const EntrenamientoDetalle = lazy(() => import('./pages/PortalCliente/EntrenamientoDetalle'))
 const LogrosTab     = lazy(() => import('./pages/PortalCliente/PlaceholderTab').then(m => ({ default: m.LogrosTab })))
 const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
 const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
@@ -85,6 +87,8 @@ function AppRoutes() {
         <Route path="/portal" element={<PortalLayout />}>
           <Route index             element={<PortalHome />} />
           <Route path="fichar"     element={<FicharTab />} />
+          <Route path="entrenamientos"     element={<EntrenamientosTab />} />
+          <Route path="entrenamientos/:id" element={<EntrenamientoDetalle />} />
           <Route path="perfil"     element={<PerfilTab />} />
           <Route path="reservas"   element={<ReservasTab />} />
           <Route path="retos"      element={<RetosTab />} />
