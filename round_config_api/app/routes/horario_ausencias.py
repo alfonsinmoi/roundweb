@@ -266,10 +266,26 @@ def cancelar_ausencia(sol_id):
 @auth_required
 @require_feature('control_horario')
 def listar_ausencias_admin():
-    """Bandeja de solicitudes. Filtros: estado, trabajador_id, año."""
+    """Bandeja / relación de solicitudes. Filtros:
+      estado            (pendiente | aprobada | rechazada | cancelada | '')
+      trabajador_id     id concreto
+      tipo              uno de los TIPOS
+      ano               año (EXTRACT YEAR FROM fecha_desde)
+      mes               1..12 (combinable con ano)
+      desde / hasta     filtra solicitudes que solapen con el rango
+      limit             (default 1000)
+    """
     estado = (request.args.get('estado') or '').strip()
     trab   = (request.args.get('trabajador_id') or '').strip()
+    tipo   = (request.args.get('tipo') or '').strip()
     ano    = (request.args.get('ano') or '').strip()
+    mes    = (request.args.get('mes') or '').strip()
+    desde  = (request.args.get('desde') or '').strip()
+    hasta  = (request.args.get('hasta') or '').strip()
+    try:
+        limit = min(int(request.args.get('limit') or 1000), 5000)
+    except ValueError:
+        limit = 1000
 
     sql = """
         SELECT s.id, s.trabajador_id, t.nombre_completo AS trabajador_nombre,
@@ -286,9 +302,18 @@ def listar_ausencias_admin():
         sql += " AND s.estado = %s"; params.append(estado)
     if trab:
         sql += " AND s.trabajador_id = %s"; params.append(int(trab))
+    if tipo and tipo in TIPOS:
+        sql += " AND s.tipo = %s"; params.append(tipo)
     if ano:
         sql += " AND EXTRACT(YEAR FROM s.fecha_desde) = %s"; params.append(int(ano))
-    sql += " ORDER BY s.created_at DESC LIMIT 500"
+    if mes:
+        sql += " AND EXTRACT(MONTH FROM s.fecha_desde) = %s"; params.append(int(mes))
+    if desde:
+        sql += " AND s.fecha_hasta >= %s"; params.append(desde)
+    if hasta:
+        sql += " AND s.fecha_desde <= %s"; params.append(hasta)
+    sql += " ORDER BY s.fecha_desde DESC, s.created_at DESC LIMIT %s"
+    params.append(limit)
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql, params)

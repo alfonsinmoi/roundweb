@@ -1,5 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Check, X, RefreshCcw, Filter, CalendarRange, Sun, Stethoscope, Coffee, Plus } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import {
+  Check, X, RefreshCcw, Filter, CalendarRange, Sun, Stethoscope, Coffee, Plus,
+  Download, Users, Clock as ClockIcon, CheckCircle2, BarChart3,
+} from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState, Select, Input } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import Modal from '../../components/Modal'
@@ -9,21 +12,34 @@ import {
 } from '../../utils/horarioApi'
 
 
-const TIPO_LABEL = {
-  vacaciones:         { label: 'Vacaciones',         icon: Sun,         color: 'cyan'   },
-  asuntos_propios:    { label: 'Asuntos propios',    icon: CalendarRange, color: 'purple' },
-  medico:             { label: 'Médico',             icon: Stethoscope, color: 'red'    },
-  personal:           { label: 'Personal',           icon: Coffee,      color: 'amber'  },
-  baja_medica:        { label: 'Baja médica',        icon: Stethoscope, color: 'red'    },
-  permiso_retribuido: { label: 'Permiso retribuido', icon: CalendarRange, color: 'green'  },
-  otros:              { label: 'Otros',              icon: Coffee,      color: 'gray'   },
-}
+const TIPOS_LIST = [
+  { id: 'vacaciones',         label: 'Vacaciones',          color: 'cyan'   },
+  { id: 'asuntos_propios',    label: 'Asuntos propios',      color: 'purple' },
+  { id: 'medico',             label: 'Médico',               color: 'red'    },
+  { id: 'personal',           label: 'Personal',             color: 'amber'  },
+  { id: 'baja_medica',        label: 'Baja médica',          color: 'red'    },
+  { id: 'permiso_retribuido', label: 'Permiso retribuido',   color: 'green'  },
+  { id: 'otros',              label: 'Otros',                color: 'gray'   },
+]
+const TIPO_MAP = Object.fromEntries(TIPOS_LIST.map(t => [t.id, t]))
+
+const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+               'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
 
 
 export default function AusenciasTab({ identity }) {
   const toast = useToast()
-  const [estado, setEstado] = useState('pendiente')
-  const [trabajadorId, setTrabajadorId] = useState('')
+
+  const currentYear = new Date().getFullYear()
+  const [filters, setFilters] = useState({
+    estado:        '',                // '' = todos
+    trabajador_id: '',
+    tipo:          '',
+    ano:           String(currentYear),
+    mes:           '',
+    desde:         '',
+    hasta:         '',
+  })
   const [items, setItems] = useState([])
   const [trabajadores, setTrabajadores] = useState([])
   const [loading, setLoading] = useState(true)
@@ -37,14 +53,13 @@ export default function AusenciasTab({ identity }) {
     setLoading(true)
     try {
       const params = {}
-      if (estado) params.estado = estado
-      if (trabajadorId) params.trabajador_id = trabajadorId
+      Object.entries(filters).forEach(([k, v]) => { if (v) params[k] = v })
       const list = await ausenciasList(identity, params)
       setItems(list || [])
     } catch (e) {
       toast.error('Error: ' + (e.message || '?'))
     } finally { setLoading(false) }
-  }, [identity, estado, trabajadorId, toast])
+  }, [identity, filters, toast])
 
   useEffect(() => { reload() }, [reload])
 
@@ -52,50 +67,146 @@ export default function AusenciasTab({ identity }) {
     const motivo = prompt('Comentario al aprobar (opcional):', '') ?? ''
     try {
       await ausenciaAprobar(identity, s.id, { motivo })
-      toast.success('Solicitud aprobada')
-      reload()
+      toast.success('Solicitud aprobada'); reload()
     } catch (e) { toast.error('Error: ' + (e.body?.detalle || e.message)) }
   }
-
   async function handleRechazar(s) {
     const motivo = prompt(`Motivo del rechazo (lo verá ${s.trabajador_nombre}):`, '')
     if (motivo === null) return
     try {
       await ausenciaRechazar(identity, s.id, { motivo })
-      toast.success('Solicitud rechazada')
-      reload()
+      toast.success('Solicitud rechazada'); reload()
     } catch (e) { toast.error('Error: ' + (e.body?.detalle || e.message)) }
   }
 
-  const counts = {
-    pendiente:  items.filter(x => x.estado === 'pendiente').length,
+  // ── KPIs derivados del listado actual ──────────────────────────────────
+  const kpis = useMemo(() => {
+    const aprobadas = items.filter(x => x.estado === 'aprobada')
+    const pendientes = items.filter(x => x.estado === 'pendiente')
+    const totalDiasAprob = aprobadas.reduce((acc, s) => acc + diasSolicitud(s), 0)
+    const trabajadoresAfectados = new Set(aprobadas.map(s => s.trabajador_id)).size
+    const porTipo = {}
+    aprobadas.forEach(s => {
+      porTipo[s.tipo] = (porTipo[s.tipo] || 0) + diasSolicitud(s)
+    })
+    return {
+      totalSolicitudes:    items.length,
+      aprobadas:           aprobadas.length,
+      pendientes:          pendientes.length,
+      diasTotales:         totalDiasAprob,
+      trabajadoresAfectados,
+      porTipo,
+    }
+  }, [items])
+
+  function exportCsv() {
+    if (!items.length) { toast.error('Sin datos para exportar'); return }
+    const cols = ['id', 'trabajador_id', 'trabajador_nombre', 'tipo',
+                  'fecha_desde', 'fecha_hasta', 'jornada_completa',
+                  'hora_desde', 'hora_hasta', 'dias',
+                  'motivo_trabajador', 'estado', 'motivo_resolucion', 'ts_resolucion', 'created_at']
+    const csv = [
+      cols.join(','),
+      ...items.map(s => cols.map(c => {
+        const v = c === 'dias' ? diasSolicitud(s) : s[c]
+        if (v == null) return ''
+        const str = String(v).replace(/"/g, '""')
+        return /[,"\n]/.test(str) ? `"${str}"` : str
+      }).join(',')),
+    ].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    const tag = [filters.estado, filters.ano, filters.tipo].filter(Boolean).join('_') || 'todas'
+    a.download = `ausencias_${tag}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
+
+  function setF(k, v) { setFilters(f => ({ ...f, [k]: v })) }
 
   return (
     <div>
-      {/* ── Filtros ─────────────────────────────────────────────────── */}
+      {/* ── KPIs ─────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'grid', gap: 10,
+        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+        marginBottom: 14,
+      }}>
+        <Kpi icon={CheckCircle2} label="Aprobadas" value={kpis.aprobadas}
+             sub={`${kpis.diasTotales} días totales`} color="green" />
+        <Kpi icon={ClockIcon} label="Pendientes" value={kpis.pendientes}
+             sub="esperando autorización" color="amber" />
+        <Kpi icon={Users} label="Trabajadores" value={kpis.trabajadoresAfectados}
+             sub="con ausencia aprobada" />
+        <Kpi icon={Sun} label="Vacaciones" value={`${kpis.porTipo.vacaciones || 0}d`}
+             sub="aprobadas" color="cyan" />
+        <Kpi icon={CalendarRange} label="As. propios" value={`${kpis.porTipo.asuntos_propios || 0}d`}
+             sub="aprobados" color="purple" />
+        <Kpi icon={Stethoscope} label="Médico" value={`${(kpis.porTipo.medico || 0) + (kpis.porTipo.baja_medica || 0)}d`}
+             sub="médico + baja" color="red" />
+      </div>
+
+      {/* ── Filtros ──────────────────────────────────────────────────── */}
       <Card style={{ padding: 12, marginBottom: 14 }}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
-          <div>
-            <label style={lblStyle}>Estado</label>
-            <select value={estado} onChange={e => setEstado(e.target.value)} style={selectStyle}>
+        <div style={{
+          display: 'grid', gap: 10, alignItems: 'end',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+        }}>
+          <FilterField label="Estado">
+            <select value={filters.estado} onChange={e => setF('estado', e.target.value)} style={selectStyle}>
+              <option value="">Todos</option>
               <option value="pendiente">Pendientes</option>
               <option value="aprobada">Aprobadas</option>
               <option value="rechazada">Rechazadas</option>
               <option value="cancelada">Canceladas</option>
-              <option value="">Todas</option>
             </select>
-          </div>
-          <div>
-            <label style={lblStyle}>Trabajador</label>
-            <select value={trabajadorId} onChange={e => setTrabajadorId(e.target.value)} style={selectStyle}>
+          </FilterField>
+          <FilterField label="Trabajador">
+            <select value={filters.trabajador_id} onChange={e => setF('trabajador_id', e.target.value)} style={selectStyle}>
               <option value="">Todos</option>
               {trabajadores.map(t => (
                 <option key={t.id} value={t.id}>{t.nombre_completo || t.email || `#${t.id}`}</option>
               ))}
             </select>
-          </div>
-          <div style={{ flex: 1 }} />
+          </FilterField>
+          <FilterField label="Tipo">
+            <select value={filters.tipo} onChange={e => setF('tipo', e.target.value)} style={selectStyle}>
+              <option value="">Todos</option>
+              {TIPOS_LIST.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </FilterField>
+          <FilterField label="Año">
+            <select value={filters.ano} onChange={e => setF('ano', e.target.value)} style={selectStyle}>
+              <option value="">Todos</option>
+              {Array.from({ length: 5 }, (_, i) => currentYear - i).map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Mes">
+            <select value={filters.mes} onChange={e => setF('mes', e.target.value)} style={selectStyle}>
+              <option value="">Todos</option>
+              {MESES.map((m, i) => <option key={i + 1} value={i + 1}>{m}</option>)}
+            </select>
+          </FilterField>
+          <FilterField label="Desde (fecha)">
+            <input type="date" value={filters.desde} onChange={e => setF('desde', e.target.value)} style={inputStyle} />
+          </FilterField>
+          <FilterField label="Hasta (fecha)">
+            <input type="date" value={filters.hasta} onChange={e => setF('hasta', e.target.value)} style={inputStyle} />
+          </FilterField>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+          <Btn variant="ghost" size="sm" onClick={() => setFilters({
+            estado: '', trabajador_id: '', tipo: '',
+            ano: String(currentYear), mes: '', desde: '', hasta: '',
+          })}>
+            Limpiar
+          </Btn>
+          <Btn variant="ghost" size="sm" onClick={exportCsv}>
+            <Download size={14} /> CSV
+          </Btn>
           <Btn variant="ghost" size="sm" onClick={reload}>
             <RefreshCcw size={14} /> Recargar
           </Btn>
@@ -105,18 +216,18 @@ export default function AusenciasTab({ identity }) {
         </div>
       </Card>
 
-      {loading && <p style={{ color: 'var(--text-3)' }}>Cargando…</p>}
-
-      {!loading && items.length === 0 && (
-        <EmptyState icon={Filter} title="Sin solicitudes"
-                    description="No hay solicitudes que coincidan con los filtros." />
-      )}
-
       {showNueva && (
         <NuevaAusenciaModal identity={identity}
                             trabajadores={trabajadores}
                             onClose={() => setShowNueva(false)}
                             onSaved={() => { setShowNueva(false); reload() }} />
+      )}
+
+      {loading && <p style={{ color: 'var(--text-3)' }}>Cargando…</p>}
+
+      {!loading && items.length === 0 && (
+        <EmptyState icon={Filter} title="Sin solicitudes"
+                    description="No hay solicitudes que coincidan con los filtros." />
       )}
 
       {!loading && items.length > 0 && (
@@ -126,7 +237,7 @@ export default function AusenciasTab({ identity }) {
             columns={[
               { key: 'trab', label: 'Trabajador', render: (_, r) => r.trabajador_nombre || `#${r.trabajador_id}` },
               { key: 'tipo', label: 'Tipo', render: (_, r) => {
-                const cfg = TIPO_LABEL[r.tipo] || TIPO_LABEL.otros
+                const cfg = TIPO_MAP[r.tipo] || TIPO_MAP.otros
                 return <Badge color={cfg.color}>{cfg.label}</Badge>
               }},
               { key: 'periodo', label: 'Periodo', render: (_, r) => (
@@ -144,7 +255,7 @@ export default function AusenciasTab({ identity }) {
               )},
               { key: 'dias', label: 'Días', render: (_, r) => (
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                  {r.jornada_completa ? diasEntre(r.fecha_desde, r.fecha_hasta) : '½'}
+                  {diasSolicitud(r)}
                 </span>
               )},
               { key: 'motivo', label: 'Motivo', render: (_, r) => (
@@ -179,15 +290,59 @@ export default function AusenciasTab({ identity }) {
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Helpers + KPI card
+// ═══════════════════════════════════════════════════════════════════════════
+
+function Kpi({ icon: Icon, label, value, sub, color = 'gray' }) {
+  const fg = color === 'green'  ? 'var(--green, #10b981)'
+           : color === 'amber'  ? '#f59e0b'
+           : color === 'red'    ? 'var(--red, #f87171)'
+           : color === 'cyan'   ? '#22d3ee'
+           : color === 'purple' ? '#a78bfa'
+           : 'var(--text-0)'
+  return (
+    <div style={{
+      padding: '12px 14px', borderRadius: 12,
+      background: 'var(--bg-1)', border: '1px solid var(--line)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        {Icon && <Icon size={14} style={{ color: fg }} />}
+        <p style={{ margin: 0, fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>
+          {label}
+        </p>
+      </div>
+      <p style={{ margin: 0, fontFamily: 'var(--font-display, Outfit)', fontSize: 22, fontWeight: 700, color: fg, lineHeight: 1 }}>
+        {value}
+      </p>
+      {sub && (
+        <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-3)' }}>{sub}</p>
+      )}
+    </div>
+  )
+}
+
+
+function FilterField({ label, children }) {
+  return (
+    <div>
+      <label style={lblStyle}>{label}</label>
+      {children}
+    </div>
+  )
+}
+
+
 function fmtDate(iso) {
   if (!iso) return '—'
   try { return new Date(iso + 'T00:00:00').toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) }
   catch { return iso }
 }
-function diasEntre(d1, d2) {
+function diasSolicitud(s) {
+  if (!s.jornada_completa) return 0.5
   try {
-    const a = new Date(d1 + 'T00:00:00')
-    const b = new Date(d2 + 'T00:00:00')
+    const a = new Date(s.fecha_desde + 'T00:00:00')
+    const b = new Date(s.fecha_hasta + 'T00:00:00')
     return Math.round((b - a) / 86400000) + 1
   } catch { return 1 }
 }
@@ -196,28 +351,26 @@ function estadoColor(e) {
 }
 
 
-const lblStyle = { display: 'block', marginBottom: 4, fontSize: 11, color: 'var(--text-3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }
+const lblStyle = {
+  display: 'block', marginBottom: 4, fontSize: 11,
+  color: 'var(--text-3)', fontWeight: 600,
+  textTransform: 'uppercase', letterSpacing: '0.05em',
+}
 const selectStyle = {
-  padding: '8px 10px', borderRadius: 8,
+  width: '100%', padding: '8px 10px', borderRadius: 8,
   border: '1px solid var(--line)', background: 'var(--bg-1)',
-  color: 'var(--text-1)', fontSize: 13, minWidth: 180, cursor: 'pointer',
+  color: 'var(--text-1)', fontSize: 13, cursor: 'pointer',
+}
+const inputStyle = {
+  width: '100%', padding: '8px 10px', borderRadius: 8,
+  border: '1px solid var(--line)', background: 'var(--bg-1)',
+  color: 'var(--text-1)', fontSize: 13,
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ║  NuevaAusenciaModal — admin crea ausencia directamente (aprobada)      ║
 // ═══════════════════════════════════════════════════════════════════════════
-
-const TIPOS_LIST = [
-  { id: 'vacaciones',         label: 'Vacaciones' },
-  { id: 'asuntos_propios',    label: 'Asuntos propios' },
-  { id: 'medico',             label: 'Médico' },
-  { id: 'personal',           label: 'Personal' },
-  { id: 'baja_medica',        label: 'Baja médica' },
-  { id: 'permiso_retribuido', label: 'Permiso retribuido' },
-  { id: 'otros',              label: 'Otros' },
-]
-
 
 function NuevaAusenciaModal({ identity, trabajadores, onClose, onSaved }) {
   const toast = useToast()
