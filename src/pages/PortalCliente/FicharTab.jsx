@@ -261,7 +261,13 @@ function Banner({ kind, children, onClose }) {
 
 function JornadaResumen({ jornada, open, onToggle }) {
   if (!jornada) return null
-  const horas = (s) => `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
+  // Formato adaptativo: <1 min muestra segundos; <1 h muestra mm:ss; resto Xh YYm.
+  const horas = (s) => {
+    s = Math.max(0, Math.floor(s || 0))
+    if (s < 60)   return `${s}s`
+    if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+    return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
+  }
   return (
     <div style={{
       borderRadius: 12, border: '1px solid var(--line)',
