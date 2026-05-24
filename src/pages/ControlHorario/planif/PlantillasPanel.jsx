@@ -22,6 +22,8 @@ export default function PlantillasPanel({ identity }) {
   const [puestos, setPuestos] = useState([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState(null)
+  const [creando, setCreando] = useState(false)
+  const [nombreNuevo, setNombreNuevo] = useState('')
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -39,14 +41,22 @@ export default function PlantillasPanel({ identity }) {
   useEffect(() => { reload() }, []) // eslint-disable-line
 
   async function handleCrear() {
-    const nombre = prompt('Nombre de la plantilla (ej. Mañana, Tarde, Sábado):', '')
-    if (!nombre) return
+    const nombre = (nombreNuevo || '').trim()
+    if (!nombre) {
+      toast.error('Introduce un nombre')
+      return
+    }
     try {
       const p = await plantillaCreate(identity, { nombre })
       toast.success('Plantilla creada')
+      setNombreNuevo(''); setCreando(false)
       setSelectedId(p.id)
       reload()
-    } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
+    } catch (e) {
+      if (e.body?.error === 'nombre_duplicado')
+        toast.error('Ya existe una plantilla con ese nombre')
+      else toast.error('Error: ' + (e.body?.error || e.message))
+    }
   }
 
   async function handleBorrar(p) {
@@ -68,10 +78,38 @@ export default function PlantillasPanel({ identity }) {
       <Card style={{ padding: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>Plantillas</strong>
-          <Btn size="sm" onClick={handleCrear}>
+          <Btn size="sm" onClick={() => setCreando(v => !v)}>
             <Plus size={13} /> Nueva
           </Btn>
         </div>
+        {creando && (
+          <div style={{
+            padding: 10, borderRadius: 8, marginBottom: 8,
+            background: 'var(--bg-2)', border: '1px solid var(--green, #10b981)',
+            display: 'flex', flexDirection: 'column', gap: 6,
+          }}>
+            <input value={nombreNuevo}
+                   onChange={e => setNombreNuevo(e.target.value)}
+                   onKeyDown={e => {
+                     if (e.key === 'Enter') { e.preventDefault(); handleCrear() }
+                     if (e.key === 'Escape') { setCreando(false); setNombreNuevo('') }
+                   }}
+                   autoFocus
+                   placeholder="Nombre (Mañana, Tarde, Sábado…)"
+                   style={{
+                     padding: 7, borderRadius: 6,
+                     border: '1px solid var(--line)', background: 'var(--bg-1)',
+                     color: 'var(--text-0)', fontSize: 13,
+                   }} />
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <Btn size="sm" variant="ghost"
+                   onClick={() => { setCreando(false); setNombreNuevo('') }}>
+                Cancelar
+              </Btn>
+              <Btn size="sm" onClick={handleCrear}>Crear</Btn>
+            </div>
+          </div>
+        )}
         {loading && <p style={{ color: 'var(--text-3)', fontSize: 12 }}>Cargando…</p>}
         {!loading && items.length === 0 && (
           <p style={{ color: 'var(--text-3)', fontSize: 12 }}>
