@@ -1693,6 +1693,30 @@ EXCEPTION WHEN OTHERS THEN NULL;
 END$$;
 
 
+-- ─── HORARIO TEÓRICO SEMANAL DEL TRABAJADOR (Fase 2 A) ────────────────────
+-- Cada trabajador tiene N bloques horarios por día de la semana (ISO:
+-- 1=Lunes, 7=Domingo). Soporta jornadas partidas con varios bloques en
+-- un mismo día (Lun 09:00-14:00 + 16:00-19:00). Jornadas nocturnas
+-- (22:00-06:00) se modelan como dos bloques en días consecutivos.
+--
+-- Sin versionado histórico — una sola versión activa por trabajador.
+-- Cuando se edita, se reemplaza el horario entero en una transacción.
+-- La auditoría de "qué cambió" vive en `accion_log` con resumen del diff.
+CREATE TABLE IF NOT EXISTS horario_trabajador (
+  id              SERIAL PRIMARY KEY,
+  trabajador_id   INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
+  hora_inicio     TIME NOT NULL,
+  hora_fin        TIME NOT NULL,
+  orden           SMALLINT NOT NULL DEFAULT 1,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT horario_bloque_valido CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_horario_trabajador
+  ON horario_trabajador(trabajador_id, dia_semana, orden);
+
+
 -- ─── TRABAJADOR ↔ TRAINER (pivote N:M) ─────────────────────────────────────
 -- Un trabajador puede prestar servicios en varios trainers del mismo
 -- manager (cubrir turnos en otro centro). La entidad empleadora sigue
@@ -1898,6 +1922,7 @@ DROP TRIGGER IF EXISTS trg_trainer_empresa_upd  ON trainer_empresa;
 DROP TRIGGER IF EXISTS trg_trabajador_upd       ON trabajador;
 DROP TRIGGER IF EXISTS trg_pausa_motivo_upd     ON pausa_motivo;
 DROP TRIGGER IF EXISTS trg_correccion_sol_upd   ON correccion_solicitud;
+DROP TRIGGER IF EXISTS trg_horario_trab_upd     ON horario_trabajador;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -1966,6 +1991,8 @@ CREATE TRIGGER trg_trabajador_upd       BEFORE UPDATE ON trabajador
 CREATE TRIGGER trg_pausa_motivo_upd     BEFORE UPDATE ON pausa_motivo
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_correccion_sol_upd   BEFORE UPDATE ON correccion_solicitud
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_horario_trab_upd     BEFORE UPDATE ON horario_trabajador
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 

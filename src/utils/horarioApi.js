@@ -107,6 +107,11 @@ export const trabajadorRechazar = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/rechazar`, identity, body)
 export const trabajadorHistorial = (identity, id) =>
   _req('GET', `/trabajadores/${id}/historial`, identity).then(d => d.historial)
+
+export const trabajadorHorario = (identity, id) =>
+  _req('GET', `/trabajadores/${id}/horario`, identity).then(d => d.horario)
+export const trabajadorHorarioSave = (identity, id, horario) =>
+  _req('PUT', `/trabajadores/${id}/horario`, identity, { horario })
 export const trabajadorVincularTrainer = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/trainers`, identity, body)
 export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>

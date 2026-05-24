@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info, Pencil, History, Save } from 'lucide-react'
+import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info, Pencil, History, Save, CalendarDays, Plus, Trash2, Copy } from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import Modal from '../../components/Modal'
 import {
   trabajadoresList, trabajadoresPendientes, trabajadorAlta,
   trabajadorBaja, trabajadorReactivar, trabajadorUpdate, trabajadorHistorial,
+  trabajadorHorario, trabajadorHorarioSave,
 } from '../../utils/horarioApi'
 import { getEntrenadores } from '../../utils/api'
 
@@ -388,7 +389,8 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
         borderBottom: '1px solid var(--line)', flexShrink: 0,
       }}>
         <TabBtn active={tab === 'datos'}     onClick={() => setTab('datos')}><Pencil size={14} /> Datos</TabBtn>
-        <TabBtn active={tab === 'historial'} onClick={() => setTab('historial')}><History size={14} /> Historial de cambios</TabBtn>
+        <TabBtn active={tab === 'horario'}   onClick={() => setTab('horario')}><CalendarDays size={14} /> Horario</TabBtn>
+        <TabBtn active={tab === 'historial'} onClick={() => setTab('historial')}><History size={14} /> Historial</TabBtn>
       </div>
 
       {tab === 'datos' && (
@@ -464,6 +466,9 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
         </form>
       )}
 
+      {tab === 'horario' && (
+        <HorarioPanel trabajadorId={trabajador.id} identity={identity} />
+      )}
       {tab === 'historial' && (
         <HistorialPanel trabajadorId={trabajador.id} identity={identity} />
       )}
@@ -576,10 +581,197 @@ function accionColor(a) {
   return ({
     'alta_laboral': 'green',
     'editar': 'cyan',
+    'horario_editar': 'cyan',
     'baja': 'red',
     'reactivar': 'green',
     'autorizar': 'green',
     'rechazar': 'red',
   })[a] || 'gray'
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ║  HorarioPanel — planning semanal (Lun-Dom, bloques editables)          ║
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DIAS = [
+  { i: 1, label: 'Lun', long: 'Lunes' },
+  { i: 2, label: 'Mar', long: 'Martes' },
+  { i: 3, label: 'Mié', long: 'Miércoles' },
+  { i: 4, label: 'Jue', long: 'Jueves' },
+  { i: 5, label: 'Vie', long: 'Viernes' },
+  { i: 6, label: 'Sáb', long: 'Sábado' },
+  { i: 7, label: 'Dom', long: 'Domingo' },
+]
+
+
+function HorarioPanel({ trabajadorId, identity }) {
+  const toast = useToast()
+  const [horario, setHorario] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setLoading(true)
+    trabajadorHorario(identity, trabajadorId)
+      .then(h => setHorario(h || {}))
+      .catch(e => toast.error('Error: ' + (e.message || '?')))
+      .finally(() => setLoading(false))
+  }, [trabajadorId, identity, toast])
+
+  function setDia(dia, blocks) {
+    setHorario(h => ({ ...h, [String(dia)]: blocks }))
+  }
+
+  function addBloque(dia) {
+    const actuales = horario[String(dia)] || []
+    setDia(dia, [...actuales, { hora_inicio: '09:00', hora_fin: '14:00' }])
+  }
+
+  function removeBloque(dia, idx) {
+    const actuales = (horario[String(dia)] || []).slice()
+    actuales.splice(idx, 1)
+    setDia(dia, actuales)
+  }
+
+  function updateBloque(dia, idx, field, value) {
+    const actuales = (horario[String(dia)] || []).slice()
+    actuales[idx] = { ...actuales[idx], [field]: value }
+    setDia(dia, actuales)
+  }
+
+  function copyLunToWeekdays() {
+    const lun = horario['1'] || []
+    setHorario(h => ({
+      ...h,
+      '2': lun.map(b => ({ ...b })),
+      '3': lun.map(b => ({ ...b })),
+      '4': lun.map(b => ({ ...b })),
+      '5': lun.map(b => ({ ...b })),
+    }))
+    toast.success('Copiado lun → mar/mié/jue/vie')
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await trabajadorHorarioSave(identity, trabajadorId, horario)
+      toast.success('Horario guardado')
+    } catch (e) {
+      toast.error('Error: ' + (e.body?.detalle || e.message || '?'))
+    } finally { setSaving(false) }
+  }
+
+  if (loading) {
+    return <div style={{ padding: 24, color: 'var(--text-3)' }}>Cargando horario…</div>
+  }
+  if (!horario) return null
+
+  const lunHasContent = (horario['1'] || []).length > 0
+  const totalBlocks = DIAS.reduce((acc, d) => acc + (horario[String(d.i)] || []).length, 0)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div style={{
+        flex: 1, overflowY: 'auto', padding: '16px 24px',
+        display: 'flex', flexDirection: 'column', gap: 12,
+      }}>
+        <div style={{
+          padding: '10px 12px', borderRadius: 10,
+          background: 'rgba(59,130,246,0.06)', color: 'var(--text-2)',
+          border: '1px solid rgba(59,130,246,0.16)',
+          fontSize: 12, lineHeight: 1.5,
+        }}>
+          Cada día puede tener varios bloques (jornada partida).
+          Para jornada nocturna (22:00–06:00), añade un bloque hasta 23:59
+          y otro 00:00–06:00 al día siguiente. Los cambios quedan en el
+          historial del trabajador.
+        </div>
+
+        {lunHasContent && (
+          <Btn variant="ghost" size="sm" onClick={copyLunToWeekdays}
+               style={{ alignSelf: 'flex-start' }}>
+            <Copy size={13} /> Copiar lunes a mar/mié/jue/vie
+          </Btn>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {DIAS.map(d => {
+            const bloques = horario[String(d.i)] || []
+            return (
+              <div key={d.i} style={{
+                padding: 12, borderRadius: 12,
+                background: 'var(--bg-2)', border: '1px solid var(--line)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>{d.long}</strong>
+                  <button onClick={() => addBloque(d.i)}
+                          type="button"
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            padding: '4px 10px', borderRadius: 8,
+                            background: 'var(--bg-1)', border: '1px solid var(--line)',
+                            color: 'var(--green, #10b981)',
+                            cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                          }}>
+                    <Plus size={12} /> Añadir bloque
+                  </button>
+                </div>
+                {bloques.length === 0 && (
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-3)' }}>
+                    Día libre.
+                  </p>
+                )}
+                {bloques.map((b, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    marginTop: i === 0 ? 0 : 6,
+                  }}>
+                    <input type="time" value={b.hora_inicio}
+                           onChange={e => updateBloque(d.i, i, 'hora_inicio', e.target.value)}
+                           style={timeInput} />
+                    <span style={{ color: 'var(--text-3)' }}>→</span>
+                    <input type="time" value={b.hora_fin}
+                           onChange={e => updateBloque(d.i, i, 'hora_fin', e.target.value)}
+                           style={timeInput} />
+                    <button onClick={() => removeBloque(d.i, i)}
+                            type="button" title="Eliminar bloque"
+                            style={{
+                              padding: 6, borderRadius: 8, border: 'none',
+                              background: 'transparent', color: 'var(--red, #f87171)',
+                              cursor: 'pointer',
+                            }}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div style={{
+        padding: '16px 32px', borderTop: '1px solid var(--line)',
+        background: 'var(--bg-2)', flexShrink: 0,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+      }}>
+        <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)' }}>
+          {totalBlocks} bloques en total · zona horaria Europe/Madrid
+        </p>
+        <Btn type="button" onClick={handleSave} disabled={saving}>
+          <Save size={13} /> {saving ? 'Guardando…' : 'Guardar horario'}
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
+
+const timeInput = {
+  padding: '6px 10px', borderRadius: 8,
+  border: '1px solid var(--line)', background: 'var(--bg-1)',
+  color: 'var(--text-0)', fontSize: 13, fontFamily: 'var(--font-mono)',
+  width: 110,
 }
 

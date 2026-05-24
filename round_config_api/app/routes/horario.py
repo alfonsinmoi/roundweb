@@ -810,6 +810,145 @@ def actualizar_trabajador(trab_id):
     return jsonify({'ok': True, 'trabajador': _trabajador_to_dict(after)})
 
 
+@bp.route('/trabajadores/<int:trab_id>/horario', methods=['GET'])
+@auth_required
+@require_feature('control_horario')
+def get_horario_trabajador(trab_id):
+    """Horario teórico semanal: 7 días, cada uno con N bloques.
+
+    Devuelve dict { dia_semana: [{id, hora_inicio, hora_fin, orden}, ...] }
+    con dia_semana de '1' a '7' (ISO: lunes=1, domingo=7).
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT 1 FROM trabajador WHERE id=%s AND id_manager=%s
+        """, (trab_id, str(g.id_manager)))
+        if not cur.fetchone():
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        cur.execute("""
+            SELECT id, dia_semana, hora_inicio, hora_fin, orden
+              FROM horario_trabajador
+             WHERE trabajador_id = %s
+             ORDER BY dia_semana, orden
+        """, (trab_id,))
+        rows = cur.fetchall()
+    out = {str(d): [] for d in range(1, 8)}
+    for r in rows:
+        out[str(r['dia_semana'])].append({
+            'id': r['id'],
+            'hora_inicio': r['hora_inicio'].strftime('%H:%M'),
+            'hora_fin':    r['hora_fin'].strftime('%H:%M'),
+            'orden':       r['orden'],
+        })
+    return jsonify({'ok': True, 'horario': out})
+
+
+@bp.route('/trabajadores/<int:trab_id>/horario', methods=['PUT'])
+@auth_required
+@require_feature('control_horario')
+def put_horario_trabajador(trab_id):
+    """Reemplaza el horario completo del trabajador en una transacción.
+
+    Body: { horario: { "1": [{hora_inicio, hora_fin, orden?}, ...], "2": [...], ... } }
+    Las claves son '1'..'7' (ISO: lunes=1, domingo=7). Cada bloque DEBE
+    tener hora_inicio < hora_fin (formato 'HH:MM' o 'HH:MM:SS').
+
+    Si el body trae arrays vacíos o no incluye un día, ese día queda sin
+    horario (no se trabaja). El cambio queda registrado en accion_log
+    con un resumen "horario actualizado: N bloques".
+    """
+    d = request.get_json() or {}
+    horario = d.get('horario') or {}
+    if not isinstance(horario, dict):
+        return jsonify({'ok': False, 'error': 'horario_invalido'}), 400
+
+    # Validación y normalización
+    bloques = []   # lista [(dia, hh_ini, hh_fin, orden)]
+    for k, blocks in horario.items():
+        try:
+            dia = int(k)
+            if dia < 1 or dia > 7:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'dia_invalido', 'detalle': k}), 400
+        if not isinstance(blocks, list):
+            return jsonify({'ok': False, 'error': 'bloques_no_lista', 'dia': dia}), 400
+        # Ordena por hora_inicio para asignar orden automático si no viene
+        bs = []
+        for b in blocks:
+            hi = (b.get('hora_inicio') or '').strip()
+            hf = (b.get('hora_fin') or '').strip()
+            if len(hi) == 5: hi += ':00'
+            if len(hf) == 5: hf += ':00'
+            if not _is_hhmmss(hi) or not _is_hhmmss(hf):
+                return jsonify({'ok': False, 'error': 'hora_invalida',
+                                'detalle': f'dia {dia}: {hi} {hf}'}), 400
+            if hi >= hf:
+                return jsonify({'ok': False, 'error': 'rango_invalido',
+                                'detalle': f'dia {dia}: {hi} >= {hf}'}), 400
+            bs.append((hi, hf, b.get('orden')))
+        bs.sort(key=lambda x: x[0])
+        for i, (hi, hf, _orden) in enumerate(bs, start=1):
+            bloques.append((dia, hi, hf, i))
+
+    # Detectar solapamientos dentro del mismo día
+    by_day = {}
+    for (dia, hi, hf, _o) in bloques:
+        by_day.setdefault(dia, []).append((hi, hf))
+    for dia, bs in by_day.items():
+        bs.sort()
+        for (h1i, h1f), (h2i, _h2f) in zip(bs, bs[1:]):
+            if h2i < h1f:
+                return jsonify({'ok': False, 'error': 'bloques_solapan',
+                                'detalle': f'dia {dia}: {h1i}-{h1f} con {h2i}'}), 400
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM trabajador WHERE id=%s AND id_manager=%s",
+                    (trab_id, str(g.id_manager)))
+        if not cur.fetchone():
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+        # Snapshot antes del cambio para auditoría
+        cur.execute("""
+            SELECT dia_semana, hora_inicio, hora_fin, orden
+              FROM horario_trabajador
+             WHERE trabajador_id = %s
+             ORDER BY dia_semana, orden
+        """, (trab_id,))
+        before_rows = cur.fetchall()
+        before = [(r['dia_semana'],
+                   r['hora_inicio'].strftime('%H:%M'),
+                   r['hora_fin'].strftime('%H:%M')) for r in before_rows]
+        after = [(b[0], b[1][:5], b[2][:5]) for b in bloques]
+
+        # Reemplaza atómicamente: borra todo y vuelve a insertar.
+        cur.execute("DELETE FROM horario_trabajador WHERE trabajador_id = %s",
+                    (trab_id,))
+        for (dia, hi, hf, orden) in bloques:
+            cur.execute("""
+                INSERT INTO horario_trabajador
+                  (trabajador_id, dia_semana, hora_inicio, hora_fin, orden)
+                VALUES (%s, %s, %s::TIME, %s::TIME, %s)
+            """, (trab_id, dia, hi, hf, orden))
+
+    if before != after:
+        log_action(actor_from_request(), entidad='trabajador',
+                   entidad_id=trab_id, accion='horario_editar',
+                   resumen=f'{len(after)} bloques (antes {len(before)})',
+                   cambios={'before': before, 'after': after})
+    return jsonify({'ok': True, 'bloques': len(bloques)})
+
+
+def _is_hhmmss(s):
+    if not s or len(s) != 8 or s[2] != ':' or s[5] != ':':
+        return False
+    try:
+        hh, mm, ss = int(s[:2]), int(s[3:5]), int(s[6:])
+        return 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59
+    except ValueError:
+        return False
+
+
 @bp.route('/trabajadores/<int:trab_id>/historial', methods=['GET'])
 @auth_required
 @require_feature('control_horario')

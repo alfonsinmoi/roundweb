@@ -538,6 +538,34 @@ def mi_jornada_hoy():
     return jsonify(_jornada_dia(g.trabajador['id'], dt.date.today()))
 
 
+@bp.route('/mi-horario', methods=['GET'])
+@trabajador_required
+def mi_horario():
+    """Horario teórico semanal del trabajador logueado (Fase 2 A).
+
+    Devuelve { "1": [...], "2": [...], ..., "7": [...] } con bloques
+    {id, hora_inicio "HH:MM", hora_fin "HH:MM", orden} agrupados por día
+    ISO (1=lunes, 7=domingo).
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, dia_semana, hora_inicio, hora_fin, orden
+              FROM horario_trabajador
+             WHERE trabajador_id = %s
+             ORDER BY dia_semana, orden
+        """, (g.trabajador['id'],))
+        rows = cur.fetchall()
+    out = {str(d): [] for d in range(1, 8)}
+    for r in rows:
+        out[str(r['dia_semana'])].append({
+            'id': r['id'],
+            'hora_inicio': r['hora_inicio'].strftime('%H:%M'),
+            'hora_fin':    r['hora_fin'].strftime('%H:%M'),
+            'orden':       r['orden'],
+        })
+    return jsonify({'ok': True, 'horario': out})
+
+
 @bp.route('/mi-resumen', methods=['GET'])
 @trabajador_required
 def mi_resumen():
