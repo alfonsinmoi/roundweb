@@ -484,7 +484,7 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
               </div>
             )}
             {collapsed && <div style={{ height: 10 }} />}
-            {filterByFeatures(managerItems, features).map(item => <NavItem key={item.to} {...item} />)}
+            {filterByFeatures(filterByPerms(managerItems, user), features).map(item => <NavItem key={item.to} {...item} />)}
           </>
         )}
 
