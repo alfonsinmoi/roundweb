@@ -163,8 +163,47 @@ export const PERMISSIONS = {
           borrar: { label: '✗ Borrar centro', action: true },
         },
       },
-      cuotas_descuentos:   { label: 'Cuotas y Descuentos', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
-      email:               { label: 'Email (proveedores + plantillas)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      // Cada pestaña catálogo tiene su perm. cuotas_descuentos queda como
+      // legacy/compat para perfiles antiguos — los nuevos usan cuotas,
+      // descuentos y modificaciones por separado.
+      cuotas: {
+        label: 'Cuotas (catálogo)',
+        children: {
+          ver:    { label: 'Ver cuotas', action: true },
+          editar: { label: 'Editar cuotas', action: true },
+        },
+      },
+      descuentos: {
+        label: 'Descuentos (catálogo)',
+        children: {
+          ver:    { label: 'Ver descuentos', action: true },
+          editar: { label: 'Editar descuentos', action: true },
+        },
+      },
+      modificaciones: {
+        label: 'Modificaciones (catálogo)',
+        children: {
+          ver:    { label: 'Ver modificaciones', action: true },
+          editar: { label: 'Editar modificaciones', action: true },
+        },
+      },
+      modo_facturacion: {
+        label: 'Forma de facturar (mensual / trimestral / directa)',
+        children: {
+          ver:    { label: 'Ver modo', action: true },
+          editar: { label: '✗ Cambiar modo (impacto fiscal)', action: true },
+        },
+      },
+      contabilidad_tab: {
+        label: 'Contabilidad (toggle per-trainer + visibilidad listados)',
+        children: {
+          ver:    { label: 'Ver config', action: true },
+          editar: { label: 'Editar config', action: true },
+        },
+      },
+      cuotas_descuentos:   { label: 'Cuotas y Descuentos (legacy)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      email:               { label: 'Email (proveedores)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      email_templates:     { label: 'Plantillas email transaccional', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
       pasarelas:           { label: 'Pasarelas de pago (PayComet)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar credenciales', action: true } } },
       notificaciones:      { label: 'Notificaciones (OneSignal)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
       categorias_cliente:  { label: 'Categorías de cliente', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
@@ -204,6 +243,19 @@ export const PERMISSIONS = {
           ver: { label: 'Ver checklist', action: true },
         },
       },
+    },
+  },
+
+  // ── Configuración ERP (item separado en sidebar managerItems) ───────────
+  // Pantalla /erp-configuracion, sólo visible si el manager tiene
+  // contabilidad Odoo desplegada (feature flag 'contabilidad'). Configura
+  // datos fiscales globales del manager (CIF, razón social, IBAN, …) que
+  // se propagan a res.company de Odoo.
+  erp_configuracion: {
+    label: 'Configuración ERP (datos fiscales)',
+    children: {
+      ver:    { label: 'Ver configuración ERP', action: true },
+      editar: { label: '✗ Editar configuración ERP (impacto facturas)', action: true },
     },
   },
 }
