@@ -287,6 +287,7 @@ export default function ClientProfile() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
+  const { user } = useAuth()
   const [searchParams] = useSearchParams()
   const initialTab = searchParams.get('tab') || 'personal'
   const [tab, setTab] = useState(initialTab)
