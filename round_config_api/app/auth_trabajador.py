@@ -135,10 +135,10 @@ def trabajador_required(fn):
                 return jsonify({'ok': False, 'error': 'invalid_token'}), 401
             row = _load_trabajador_by_id(trab_id)
         elif kind == 'cliente':
-            if not claims.get('esw'):
-                return jsonify({
-                    'ok': False, 'error': 'no_eres_trabajador',
-                }), 403
+            # No miramos el claim `esw` del JWT — puede estar desactualizado si
+            # el cliente se logueó antes de que el admin le diera de alta.
+            # La verdad la determina la fila `trabajador` en BD, recalculada
+            # en cada request.
             cli = claims.get('sub')
             mgr = claims.get('mgr')
             if not cli or not mgr:
@@ -148,7 +148,7 @@ def trabajador_required(fn):
             return jsonify({'ok': False, 'error': 'invalid_token'}), 401
 
         if not row:
-            return jsonify({'ok': False, 'error': 'trabajador_no_encontrado'}), 401
+            return jsonify({'ok': False, 'error': 'no_eres_trabajador'}), 403
         if row['estado'] != 'activo':
             return jsonify({'ok': False, 'error': f'trabajador_{row["estado"]}'}), 403
         if not row.get('control_horario_enabled'):
