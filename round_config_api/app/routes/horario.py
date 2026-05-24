@@ -46,6 +46,67 @@ TRABAJADOR_CATEGORIAS = ('Trabajador', 'Trabajadores', 'Empleado', 'Empleados')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ║  ACTIVACIÓN DEL MÓDULO (suscripción)                                    ║
+# ═══════════════════════════════════════════════════════════════════════════
+
+# `/activar` y `/desactivar` se decoran con @auth_required pero NO con
+# @require_feature — son los endpoints que controlan precisamente esa flag.
+
+@bp.route('/activar', methods=['POST'])
+@auth_required
+def activar_modulo():
+    """Activa el módulo control horario para el manager actual.
+
+    Idempotente. Genera `control_horario_qr_secret` si está vacío.
+    Más adelante esta activación llegará vía GET desde NoofitPro
+    (suscripción pagada) — por ahora se activa desde admin.
+    """
+    import secrets as _secrets
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE manager_config
+               SET control_horario_enabled = TRUE,
+                   control_horario_activated_at = COALESCE(control_horario_activated_at, NOW()),
+                   control_horario_qr_secret = COALESCE(control_horario_qr_secret, %s),
+                   updated_at = NOW()
+             WHERE id_manager = %s
+            RETURNING control_horario_enabled, control_horario_activated_at
+        """, (_secrets.token_urlsafe(48), str(g.id_manager)))
+        row = cur.fetchone()
+    if not row:
+        return jsonify({'ok': False, 'error': 'manager_no_encontrado'}), 404
+    log_action(actor_from_request(), entidad='manager_config',
+               entidad_id=g.id_manager, accion='activar_control_horario',
+               resumen='')
+    return jsonify({
+        'ok': True,
+        'control_horario_enabled': True,
+        'activated_at': row['control_horario_activated_at'].isoformat() if row['control_horario_activated_at'] else None,
+    })
+
+
+@bp.route('/desactivar', methods=['POST'])
+@auth_required
+def desactivar_modulo():
+    """Desactiva el módulo. NO borra datos (los fichajes históricos se
+    conservan 4 años por normativa). Sólo deshabilita nuevos fichajes."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE manager_config
+               SET control_horario_enabled = FALSE,
+                   updated_at = NOW()
+             WHERE id_manager = %s
+            RETURNING control_horario_enabled
+        """, (str(g.id_manager),))
+        if not cur.fetchone():
+            return jsonify({'ok': False, 'error': 'manager_no_encontrado'}), 404
+    log_action(actor_from_request(), entidad='manager_config',
+               entidad_id=g.id_manager, accion='desactivar_control_horario',
+               resumen='')
+    return jsonify({'ok': True, 'control_horario_enabled': False})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ║  CONVENIOS                                                              ║
 # ═══════════════════════════════════════════════════════════════════════════
 

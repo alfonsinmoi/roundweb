@@ -29,6 +29,7 @@ const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
 const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
 const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
 const CuotasClientes = lazy(() => import('./pages/CuotasClientes/CuotasClientes'))
+const ControlHorario = lazy(() => import('./pages/ControlHorario/ControlHorario'))
 const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
 const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
 const NotificacionesPage = lazy(() => import('./pages/Notificaciones/NotificacionesPage'))
@@ -88,6 +89,7 @@ function AppRoutes() {
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
           <Route path="/configuracion"       element={<Configuracion />} />
           <Route path="/cuotas-clientes"     element={<CuotasClientes />} />
+          <Route path="/control-horario"     element={<ControlHorario />} />
           <Route path="/crm"                 element={<CrmPage />} />
           <Route path="/agenda-social"       element={<SocialAgenda />} />
           <Route path="/notificaciones"      element={<NotificacionesPage />} />
