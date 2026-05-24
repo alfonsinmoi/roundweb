@@ -1976,8 +1976,12 @@ DEFAULT_PERMISOS = {
         },
         'clases': {'ver_listado': True, 'ver_detalle': True, 'marcar_asistencia': True},
         'informe_asistencia': {
-            'faltas': True, 'tendencias': True, 'comparativa': True,
-            'ranking_clases': True, 'ocupacion_sala': True, 'analisis_patrones': True,
+            # Tabs reales (espejo de VALID_TABS en InformeAsistencia.jsx):
+            # faltas, control, distribucion, revisar, riesgo, patrones,
+            # retos, estado_fisico.
+            'faltas': True, 'control': True, 'distribucion': True,
+            'revisar': True, 'riesgo': True, 'patrones': True,
+            'retos': True, 'estado_fisico': True,
         },
         'configuracion': {
             'centros_trainers': {'ver': True},
@@ -2012,7 +2016,10 @@ DEFAULT_PERMISOS = {
             },
         },
         'informe_asistencia': {
-            'faltas': True, 'ocupacion_sala': True,
+            # Recepción ve los informes operativos (faltas/control/retos),
+            # no el avanzado de patrones ni el de riesgo (analítica fina).
+            'faltas': True, 'control': True, 'distribucion': True,
+            'retos': True,
         },
         'configuracion': {
             'centros_trainers':   {'ver': True},
@@ -2049,8 +2056,12 @@ DEFAULT_PERMISOS = {
             },
         },
         'informe_asistencia': {
-            'faltas': True, 'tendencias': True, 'comparativa': True,
-            'ranking_clases': True, 'ocupacion_sala': True, 'analisis_patrones': True,
+            # Tabs reales (espejo de VALID_TABS en InformeAsistencia.jsx):
+            # faltas, control, distribucion, revisar, riesgo, patrones,
+            # retos, estado_fisico.
+            'faltas': True, 'control': True, 'distribucion': True,
+            'revisar': True, 'riesgo': True, 'patrones': True,
+            'retos': True, 'estado_fisico': True,
         },
         'configuracion': {
             'centros_trainers':   {'ver': True},

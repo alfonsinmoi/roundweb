@@ -142,12 +142,23 @@ export const PERMISSIONS = {
   informe_asistencia: {
     label: 'Informe de Asistencia',
     children: {
-      faltas:            { label: 'Faltas', action: true },
-      tendencias:        { label: 'Tendencias', action: true },
-      comparativa:       { label: 'Comparativa', action: true },
-      ranking_clases:    { label: 'Ranking de clases', action: true },
-      ocupacion_sala:    { label: 'Ocupación de sala', action: true },
-      analisis_patrones: { label: 'Análisis de patrones (clusters)', action: true },
+      // Tabs reales (espejo de VALID_TABS en src/pages/InformeAsistencia.jsx).
+      faltas:        { label: 'Faltas de asistencia',     action: true },
+      control:       { label: 'Control de asistencia',    action: true },
+      distribucion:  { label: 'Distribución de clases',   action: true },
+      revisar:       { label: 'Para revisar (recomendaciones)', action: true },
+      riesgo:        { label: 'Clientes en riesgo (score fuga)', action: true },
+      patrones:      { label: 'Análisis de patrones (clusters)', action: true },
+      retos:         { label: 'Retos', action: true },
+      estado_fisico: { label: 'Estado físico (tests)',    action: true },
+      // Aliases legacy — se conservan para no romper perfiles antiguos.
+      // El árbol resuelve `informe_asistencia.analisis_patrones` como
+      // sinónimo de `informe_asistencia.patrones` durante el backfill.
+      analisis_patrones: { label: '(legacy) Análisis de patrones', action: true },
+      tendencias:        { label: '(legacy)', action: true },
+      comparativa:       { label: '(legacy)', action: true },
+      ranking_clases:    { label: '(legacy)', action: true },
+      ocupacion_sala:    { label: '(legacy)', action: true },
     },
   },
 
