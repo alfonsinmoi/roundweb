@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, Save, CalendarRange } from 'lucide-react'
-import { Card, Btn, Badge, Input, EmptyState } from '../../../components/UI'
+import { Card, Btn, Input, EmptyState } from '../../../components/UI'
 import { useToast } from '../../../components/Toast'
 import {
   temporadasList, temporadaCreate, temporadaUpdate, temporadaDelete,
@@ -12,6 +12,65 @@ const DIAS = [
   { i: 1, label: 'L' }, { i: 2, label: 'M' }, { i: 3, label: 'X' },
   { i: 4, label: 'J' }, { i: 5, label: 'V' }, { i: 6, label: 'S' }, { i: 7, label: 'D' },
 ]
+
+
+// `franja` UI = { hora_inicio, hora_fin, dias: Set<int> }
+// BD              = { "1": [{hora_inicio,hora_fin}, …], …, "7": [...] }
+// Agrupamos filas con mismo HH:MM en una sola franja con set de días.
+function agruparEnFranjas(apertura) {
+  const mapa = new Map()
+  for (const dia of Object.keys(apertura || {})) {
+    for (const b of (apertura[dia] || [])) {
+      const key = `${b.hora_inicio}|${b.hora_fin}`
+      if (!mapa.has(key)) {
+        mapa.set(key, { hora_inicio: b.hora_inicio, hora_fin: b.hora_fin, dias: new Set() })
+      }
+      mapa.get(key).dias.add(Number(dia))
+    }
+  }
+  return Array.from(mapa.values())
+    .sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || ''))
+}
+
+function franjasAApertura(franjas) {
+  const out = { '1': [], '2': [], '3': [], '4': [], '5': [], '6': [], '7': [] }
+  for (const f of franjas) {
+    for (const d of f.dias) {
+      out[String(d)].push({ hora_inicio: f.hora_inicio, hora_fin: f.hora_fin })
+    }
+  }
+  return out
+}
+
+function minutosFranja(f) {
+  if (!f.hora_inicio || !f.hora_fin) return 0
+  const [h1, m1] = f.hora_inicio.split(':').map(Number)
+  const [h2, m2] = f.hora_fin.split(':').map(Number)
+  return Math.max(0, (h2 * 60 + m2) - (h1 * 60 + m1))
+}
+
+function snapshotFranjas(franjas) {
+  if (!franjas) return ''
+  return franjas.map(f =>
+    `${f.hora_inicio}|${f.hora_fin}|${[...f.dias].sort().join(',')}`
+  ).sort().join('||')
+}
+
+function fmtMinShort(mins) {
+  if (!mins) return '—'
+  const h = Math.floor(mins / 60), m = mins % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}:${String(m).padStart(2, '0')}`
+}
+
+function fmtMin(mins) {
+  if (!mins) return '—'
+  const h = Math.floor(mins / 60), m = mins % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${String(m).padStart(2, '0')}m`
+}
 
 
 export default function TemporadasPanel({ identity }) {
@@ -159,7 +218,7 @@ function TemporadaRow({ t, active, identity, onSelect, onSaved, onDelete }) {
 
 function AperturaEditor({ identity, temporadaId, temporadaNombre }) {
   const toast = useToast()
-  const [apertura, setApertura] = useState(null)
+  const [franjas, setFranjas] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [pristine, setPristine] = useState('')
@@ -167,42 +226,66 @@ function AperturaEditor({ identity, temporadaId, temporadaNombre }) {
   useEffect(() => {
     setLoading(true)
     aperturaGet(identity, temporadaId)
-      .then(a => { setApertura(a || {}); setPristine(JSON.stringify(a || {})) })
+      .then(a => {
+        const fs = agruparEnFranjas(a || {})
+        setFranjas(fs); setPristine(snapshotFranjas(fs))
+      })
       .catch(e => toast.error('Error: ' + e.message))
       .finally(() => setLoading(false))
   }, [identity, temporadaId]) // eslint-disable-line
 
-  const dirty = apertura && JSON.stringify(apertura) !== pristine
+  const dirty = franjas !== null && snapshotFranjas(franjas) !== pristine
 
-  function setDia(dia, blocks) {
-    setApertura(a => ({ ...a, [String(dia)]: blocks }))
+  useEffect(() => {
+    if (!dirty) return
+    const handler = (e) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
+
+  function addFranja() {
+    setFranjas(fs => [...(fs || []), {
+      hora_inicio: '09:00', hora_fin: '22:00',
+      dias: new Set([1, 2, 3, 4, 5]),
+    }])
   }
-  function addBloque(dia) {
-    const prev = apertura[String(dia)] || []
-    setDia(dia, [...prev, { hora_inicio: '09:00', hora_fin: '22:00' }])
+  function setFranja(idx, patch) {
+    setFranjas(fs => fs.map((f, i) => i === idx ? { ...f, ...patch } : f))
   }
-  function updateBloque(dia, idx, field, value) {
-    const arr = (apertura[String(dia)] || []).slice()
-    arr[idx] = { ...arr[idx], [field]: value }
-    setDia(dia, arr)
+  function toggleDia(idx, dia) {
+    setFranjas(fs => fs.map((f, i) => {
+      if (i !== idx) return f
+      const dias = new Set(f.dias)
+      if (dias.has(dia)) dias.delete(dia); else dias.add(dia)
+      return { ...f, dias }
+    }))
   }
-  function removeBloque(dia, idx) {
-    const arr = (apertura[String(dia)] || []).slice()
-    arr.splice(idx, 1)
-    setDia(dia, arr)
+  function removeFranja(idx) {
+    setFranjas(fs => fs.filter((_, i) => i !== idx))
   }
+
   async function handleSave() {
     setSaving(true)
     try {
-      await aperturaSave(identity, temporadaId, apertura)
-      setPristine(JSON.stringify(apertura))
+      await aperturaSave(identity, temporadaId, franjasAApertura(franjas))
+      setPristine(snapshotFranjas(franjas))
       toast.success('Horario apertura guardado')
     } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
     finally { setSaving(false) }
   }
 
   if (loading) return <p style={{ color: 'var(--text-3)' }}>Cargando…</p>
-  if (!apertura) return null
+  if (!franjas) return null
+
+  // Totales por día
+  const totDia = DIAS.map(d => {
+    let mins = 0
+    for (const f of franjas) {
+      if (f.dias.has(d.i)) mins += minutosFranja(f)
+    }
+    return { dia: d, mins }
+  })
+  const totSemana = totDia.reduce((a, x) => a + x.mins, 0)
 
   return (
     <div>
@@ -229,49 +312,95 @@ function AperturaEditor({ identity, temporadaId, temporadaNombre }) {
       </div>
 
       <p style={{ margin: '0 0 12px', fontSize: 11, color: 'var(--text-3)' }}>
-        Cada día puede tener varios bloques de apertura (mañana + tarde).
-        Sin bloques = cerrado.
+        Cada fila es una franja de apertura. Marca los días en los que se
+        aplica. Si un día no aparece en ninguna franja = cerrado. Si necesitas
+        mañana + tarde, mete dos franjas con los mismos días.
       </p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {DIAS.map(d => {
-          const bloques = apertura[String(d.i)] || []
-          return (
-            <div key={d.i} style={{
-              padding: 10, borderRadius: 10,
-              background: 'var(--bg-2)', border: '1px solid var(--line)',
-              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-            }}>
-              <strong style={{ fontSize: 13, width: 24, textAlign: 'center' }}>{d.label}</strong>
-              {bloques.length === 0 && (
-                <span style={{ color: 'var(--text-3)', fontSize: 12, fontStyle: 'italic' }}>Cerrado</span>
-              )}
-              {bloques.map((b, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <input type="time" value={b.hora_inicio}
-                         onChange={e => updateBloque(d.i, i, 'hora_inicio', e.target.value)}
-                         style={timeInput} />
-                  <span style={{ color: 'var(--text-3)' }}>→</span>
-                  <input type="time" value={b.hora_fin}
-                         onChange={e => updateBloque(d.i, i, 'hora_fin', e.target.value)}
-                         style={timeInput} />
-                  <button onClick={() => removeBloque(d.i, i)} type="button"
-                          style={{ padding: 4, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--red, #f87171)', cursor: 'pointer' }}>
-                    <Trash2 size={12} />
-                  </button>
-                </div>
+      <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--line)' }}>
+        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: 'var(--bg-2)' }}>
+              <th style={thStyle}>Inicio</th>
+              <th style={thStyle}>Fin</th>
+              {DIAS.map(d => (
+                <th key={d.i} style={{ ...thStyle, textAlign: 'center', width: 32 }}>{d.label}</th>
               ))}
-              <button onClick={() => addBloque(d.i)} type="button"
-                      style={{
-                        padding: '4px 8px', borderRadius: 6,
-                        background: 'var(--bg-1)', border: '1px dashed var(--line)',
-                        color: 'var(--text-3)', cursor: 'pointer', fontSize: 11,
-                      }}>
-                <Plus size={10} style={{ verticalAlign: '-1px' }} /> bloque
-              </button>
-            </div>
-          )
-        })}
+              <th style={{ ...thStyle, width: 32 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {franjas.map((f, idx) => (
+              <tr key={idx} style={{ borderTop: '1px solid var(--line)' }}>
+                <td style={tdStyle}>
+                  <input type="time" value={f.hora_inicio}
+                         onChange={e => setFranja(idx, { hora_inicio: e.target.value })}
+                         style={timeInput} />
+                </td>
+                <td style={tdStyle}>
+                  <input type="time" value={f.hora_fin}
+                         onChange={e => setFranja(idx, { hora_fin: e.target.value })}
+                         style={timeInput} />
+                </td>
+                {DIAS.map(d => (
+                  <td key={d.i} style={{ ...tdStyle, textAlign: 'center', padding: '4px 6px' }}>
+                    <input type="checkbox" checked={f.dias.has(d.i)}
+                           onChange={() => toggleDia(idx, d.i)}
+                           style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--green, #10b981)' }} />
+                  </td>
+                ))}
+                <td style={{ ...tdStyle, textAlign: 'center', padding: '4px 6px' }}>
+                  <button onClick={() => removeFranja(idx)} type="button" title="Eliminar franja"
+                          style={{ padding: 4, borderRadius: 6, border: 'none', background: 'transparent', color: 'var(--red, #f87171)', cursor: 'pointer' }}>
+                    <Trash2 size={13} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {franjas.length === 0 && (
+              <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>
+                Sin franjas todavía. Pulsa "Añadir franja".
+              </td></tr>
+            )}
+          </tbody>
+          <tfoot>
+            <tr style={{ background: 'var(--bg-2)', borderTop: '2px solid var(--line)' }}>
+              <td colSpan={2} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '8px 10px' }}>
+                Horas / día
+              </td>
+              {totDia.map(t => (
+                <td key={t.dia.i} style={{
+                  ...tdStyle, padding: '8px 6px',
+                  textAlign: 'center', fontFamily: 'var(--font-mono)',
+                  fontSize: 13, fontWeight: 700,
+                  color: t.mins > 0 ? 'var(--green, #10b981)' : 'var(--text-3)',
+                }}>
+                  {fmtMinShort(t.mins)}
+                </td>
+              ))}
+              <td style={tdStyle}></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div style={{
+        marginTop: 14, padding: '12px 16px', borderRadius: 12,
+        background: 'var(--bg-2)', border: '1px solid var(--line)',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16,
+        flexWrap: 'wrap',
+      }}>
+        <Btn variant="ghost" size="sm" onClick={addFranja}>
+          <Plus size={13} /> Añadir franja
+        </Btn>
+        <div style={{ textAlign: 'right' }}>
+          <p style={{ margin: 0, fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+            Total apertura semanal
+          </p>
+          <p style={{ margin: '2px 0 0', fontFamily: 'var(--font-display, Outfit)', fontSize: 22, fontWeight: 700, color: 'var(--green, #10b981)' }}>
+            {fmtMin(totSemana)}
+          </p>
+        </div>
       </div>
     </div>
   )
@@ -287,3 +416,9 @@ const timeInput = {
   border: '1px solid var(--line)', background: 'var(--bg-1)',
   color: 'var(--text-0)', fontSize: 12, fontFamily: 'var(--font-mono)', width: 76,
 }
+const thStyle = {
+  textAlign: 'left', padding: '10px 12px',
+  fontSize: 10.5, fontWeight: 600, color: 'var(--text-3)',
+  textTransform: 'uppercase', letterSpacing: '0.05em',
+}
+const tdStyle = { padding: '6px 10px' }
