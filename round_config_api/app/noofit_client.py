@@ -264,6 +264,32 @@ def reactivar_cliente(cliente_id):
         return False
 
 
+def archivar_cliente(cliente_id, motivo: str = None):
+    """Archiva un cliente en NoofitPro (enabled=False, motivoArchivado=<motivo>).
+    Lo opuesto a reactivar_cliente. Devuelve True si OK, False si falló.
+    Usado por:
+      - endpoint POST /api/clientes/<id>/baja-programada cuando fecha_baja<=hoy
+      - cron_baja_programada (diario) para ejecutar bajas programadas
+    """
+    try:
+        clis = get_clientes() or []
+        cli = next((c for c in clis if c.get('id') == int(cliente_id)), None)
+        if not cli:
+            log.warning(f'archivar_cliente {cliente_id}: no encontrado')
+            return False
+        if cli.get('enabled') is False:
+            return True  # ya estaba archivado
+        body = [{**cli, 'enabled': False,
+                 'motivoArchivado': motivo or '',
+                 'toSend': False}]
+        post('/api/dispositivos/clientePlusv2', body)
+        log.info(f'cliente {cliente_id} archivado en NoofitPro (motivo: {motivo!r})')
+        return True
+    except Exception as e:
+        log.exception(f'archivar_cliente {cliente_id}: {e}')
+        return False
+
+
 def reservar_clase(sala_id, cliente_id, nombre_cliente=''):
     """Apunta a un cliente en una sala (clase)."""
     body = {

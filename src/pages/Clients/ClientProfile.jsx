@@ -30,7 +30,8 @@ import CuotasClienteCard from '../../components/subs/CuotasClienteCard'
 import DescuentosClienteCard from '../../components/subs/DescuentosClienteCard'
 import ModificacionesClienteCard from '../../components/subs/ModificacionesClienteCard'
 import FamiliaresClienteCard from '../../components/subs/FamiliaresClienteCard'
-import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate } from '../../utils/configApi'
+import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate,
+         bajaProgramadaGet, bajaProgramadaCreate, bajaProgramadaCancel } from '../../utils/configApi'
 import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
@@ -301,7 +302,16 @@ export default function ClientProfile() {
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
   const [motivoModal, setMotivoModal] = useState(false)
   const [motivo, setMotivo] = useState('')
+  // Fecha de inicio de inactividad. Default: hoy. Si el manager elige una
+  // fecha futura, NoofitPro mantiene al cliente activo hasta esa fecha y el
+  // cron `round_baja_programada` lo desactiva la noche del día indicado.
+  const [fechaBaja, setFechaBaja] = useState('')
+  // Baja programada pendiente cargada del backend (null si no hay).
+  const [bajaPendiente, setBajaPendiente] = useState(null)
+  const [confirmCancelarBaja, setConfirmCancelarBaja] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
+
+  const identity = getRoundIdentity(user)
 
   useEffect(() => {
     getClientes()
@@ -314,24 +324,84 @@ export default function ClientProfile() {
       .finally(() => setLoading(false))
   }, [id])
 
+  // Cargar baja programada pendiente del cliente (si la hay).
+  useEffect(() => {
+    if (!id || !identity?.managerId) return
+    let cancel = false
+    bajaProgramadaGet(identity, id)
+      .then(b => { if (!cancel) setBajaPendiente(b || null) })
+      .catch(() => { if (!cancel) setBajaPendiente(null) })
+    return () => { cancel = true }
+  }, [id, identity?.managerId])
+
   const handleArchivar = () => {
     if (!cliente) return
-    if (cliente.enabled === false) setConfirmArchivar(true)
-    else { setMotivoModal(true); setMotivo('') }
+    // Si ya está inactivo en NoofitPro → reactivar (flujo clásico)
+    if (cliente.enabled === false) { setConfirmArchivar(true); return }
+    // Si hay baja pendiente → ofrecer cancelarla
+    if (bajaPendiente) { setConfirmCancelarBaja(true); return }
+    // Si no, abrir modal con fecha + motivo
+    setFechaBaja(new Date().toISOString().slice(0,10))   // default: hoy
+    setMotivo('')
+    setMotivoModal(true)
   }
 
   const doArchivar = async (motivoArchivado = null) => {
-    const isArchived = cliente.enabled === false
+    // Solo se usa para REACTIVAR. La baja (programar inactivo) usa
+    // doProgramarBaja que llama al backend.
     setConfirmArchivar(false)
+    setActionLoading('archivar')
+    try {
+      const updated = { ...cliente, enabled: true, motivoArchivado: null }
+      await postClientes([updated])
+      setCliente(updated)
+      toast.success('Cliente reactivado')
+    } catch {
+      toast.error('Error al reactivar el cliente')
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  const doProgramarBaja = async () => {
+    if (!fechaBaja) { toast.error('Elige una fecha'); return }
     setMotivoModal(false)
     setActionLoading('archivar')
     try {
-      const updated = { ...cliente, enabled: isArchived, motivoArchivado: isArchived ? null : motivoArchivado }
-      await postClientes([updated])
-      setCliente(updated)
-      toast.success(isArchived ? 'Cliente reactivado' : 'Cliente marcado como inactivo')
-    } catch {
-      toast.error('Error al activar/inactivar el cliente')
+      const r = await bajaProgramadaCreate(identity, cliente.id, {
+        fecha_baja: fechaBaja,
+        motivo: motivo || null,
+        cliente_nombre: `${cliente.name || ''} ${cliente.surname || ''}`.trim(),
+        cliente_email: cliente.email || null,
+      })
+      setBajaPendiente(r.baja)
+      if (r.ejecutada_inmediato) {
+        // Refrescar el cliente para reflejar enabled=false en NoofitPro.
+        const refreshed = (await getClientes()).find(c => String(c.id) === String(id))
+        if (refreshed) setCliente(refreshed)
+        toast.success(r.retroactiva
+          ? '⚠️ Baja retroactiva aplicada. Revisa recibos del mes si toca anular.'
+          : 'Cliente marcado como inactivo')
+      } else {
+        const fecha = new Date(fechaBaja).toLocaleDateString('es-ES')
+        toast.success(`Baja programada para el ${fecha}. Hasta entonces puede seguir reservando.`)
+      }
+    } catch (e) {
+      toast.error('Error al programar la baja: ' + (e.body?.error || e.message))
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  const doCancelarBaja = async () => {
+    setConfirmCancelarBaja(false)
+    setActionLoading('archivar')
+    try {
+      await bajaProgramadaCancel(identity, cliente.id)
+      setBajaPendiente(null)
+      toast.success('Baja programada cancelada')
+    } catch (e) {
+      toast.error('Error al cancelar: ' + (e.body?.error || e.message))
     } finally {
       setActionLoading('')
     }
@@ -406,7 +476,12 @@ export default function ClientProfile() {
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {cliente.enabled === false
                   ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Inactivo</Badge>
-                  : cliente.activo === false ? <Badge color="yellow">No activo</Badge> : <Badge color="green">Activo</Badge>
+                  : bajaPendiente
+                    ? <Badge color="amber" title={bajaPendiente.motivo || ''}>
+                        <Clock size={10} aria-hidden="true" />
+                        {' '}Inactivo desde {new Date(bajaPendiente.fecha_baja).toLocaleDateString('es-ES')}
+                      </Badge>
+                    : cliente.activo === false ? <Badge color="yellow">No activo</Badge> : <Badge color="green">Activo</Badge>
                 }
                 {cliente.nivelConocimiento != null && <Badge color="blue">Nivel {cliente.nivelConocimiento}</Badge>}
               </div>
@@ -451,7 +526,11 @@ export default function ClientProfile() {
             {actionLoading === 'archivar'
               ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
               : <Archive size={15} aria-hidden="true" />}
-            {cliente.enabled === false ? ' Reactivar' : ' Inactivar'}
+            {cliente.enabled === false
+              ? ' Reactivar'
+              : bajaPendiente
+                ? ' Cancelar baja programada'
+                : ' Inactivar'}
           </Btn>
           <Btn variant="danger" size="md" onClick={() => setConfirmDesvincular(true)} disabled={!!actionLoading}>
             {actionLoading === 'desvincular'
@@ -544,23 +623,59 @@ export default function ClientProfile() {
 
       <Modal open={motivoModal} onClose={() => setMotivoModal(false)} title="Inactivar cliente"
              subtitle={`${cliente.name} ${cliente.surname}`} maxWidth={480}>
-        <div style={{ padding: '28px 32px' }}>
-          <label htmlFor="motivo-archivado" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
-            Motivo de inactivación (opcional)
-          </label>
-          <input id="motivo-archivado" type="text" value={motivo} onChange={e => setMotivo(e.target.value)}
-                 placeholder="Ej: Baja voluntaria, cambio de centro..."
-                 className="form-input"
-                 style={{
-                   width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
-                   background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
-                 }} />
+        <div style={{ padding: '28px 32px', display:'flex', flexDirection:'column', gap:18 }}>
+          <div>
+            <label htmlFor="fecha-baja" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+              Fecha de inicio de inactividad *
+            </label>
+            <input id="fecha-baja" type="date" value={fechaBaja}
+                   onChange={e => setFechaBaja(e.target.value)}
+                   style={{
+                     width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                     background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                   }} />
+            <p style={{ fontSize:12, color:'var(--text-3)', marginTop:6, lineHeight:1.5 }}>
+              {(() => {
+                const today = new Date().toISOString().slice(0,10)
+                if (!fechaBaja) return null
+                if (fechaBaja < today) return '⚠️ Fecha en el pasado: el cliente se marca inactivo AHORA y si ya hay recibo del mes con día 1 ≥ fecha, deberás anularlo a mano.'
+                if (fechaBaja === today) return 'El cliente se marca inactivo ahora mismo.'
+                return `Hasta el ${new Date(fechaBaja).toLocaleDateString('es-ES')} el cliente puede seguir reservando con normalidad. El día indicado, el sistema lo desactiva automáticamente.`
+              })()}
+            </p>
+          </div>
+          <div>
+            <label htmlFor="motivo-archivado" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+              Motivo (opcional)
+            </label>
+            <input id="motivo-archivado" type="text" value={motivo} onChange={e => setMotivo(e.target.value)}
+                   placeholder="Ej: Baja voluntaria, cambio de centro..."
+                   className="form-input"
+                   style={{
+                     width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                     background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                   }} />
+          </div>
         </div>
         <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <Btn variant="secondary" size="md" onClick={() => setMotivoModal(false)}>Cancelar</Btn>
-          <Btn variant="primary" size="md" onClick={() => doArchivar(motivo)}>Inactivar</Btn>
+          <Btn variant="primary" size="md" onClick={doProgramarBaja} disabled={!fechaBaja || !!actionLoading}>
+            {actionLoading === 'archivar' ? <Loader2 size={14} className="animate-spin" /> : 'Confirmar'}
+          </Btn>
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={confirmCancelarBaja}
+        title="Cancelar baja programada"
+        message={bajaPendiente
+          ? `¿Cancelar la baja programada para el ${new Date(bajaPendiente.fecha_baja).toLocaleDateString('es-ES')}? El cliente permanecerá activo.`
+          : ''}
+        confirmText="Cancelar baja"
+        variant="primary"
+        onConfirm={doCancelarBaja}
+        onCancel={() => setConfirmCancelarBaja(false)}
+      />
     </div>
   )
 }

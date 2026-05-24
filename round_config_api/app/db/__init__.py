@@ -608,6 +608,56 @@ CREATE INDEX IF NOT EXISTS idx_cli_log_manager ON cliente_estado_log(id_manager,
 CREATE INDEX IF NOT EXISTS idx_cli_log_estado  ON cliente_estado_log(estado_nuevo);
 
 
+-- ─── BAJA PROGRAMADA DEL CLIENTE ──────────────────────────────────────────
+-- Cuando el manager marca a un cliente como "Inactivo", elige una fecha de
+-- baja efectiva. Hasta esa fecha el cliente sigue activo en NoofitPro (puede
+-- reservar). El cron `round_baja_programada` corre cada noche y ejecuta las
+-- bajas con `fecha_baja <= hoy AND ejecutada_at IS NULL`:
+--   1) marca enabled=false en NoofitPro
+--   2) inserta evento en cliente_estado_log
+--   3) marca ejecutada_at = NOW() en esta tabla
+--
+-- Si la fecha es <= hoy al crear la baja, el endpoint la ejecuta inmediato
+-- y la inserta con ejecutada_at = NOW() (sin esperar al cron).
+--
+-- Si la fecha es < hoy (retroactivo), el endpoint además anula los recibos
+-- ya emitidos para los meses con día 1 >= fecha_baja.
+--
+-- La emisión mensual de recibos (preemision_v2.generar) consulta esta tabla
+-- y excluye clientes cuya `fecha_baja <= día 1 del mes que se emite`.
+--
+-- Solo una fila activa (no ejecutada) por cliente. Si se cancela
+-- (DELETE /api/clientes/<id>/baja-programada) la fila se borra.
+CREATE TABLE IF NOT EXISTS cliente_baja_programada (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  fecha_baja               DATE NOT NULL,
+  motivo                   TEXT,
+  -- snapshot del nombre/email al programar (por si después se borra de NF)
+  cliente_nombre           VARCHAR(240),
+  cliente_email            VARCHAR(160),
+  -- quién creó la baja (audit)
+  creada_por_email         VARCHAR(160),
+  creada_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- ejecutada: cuándo el cron (o el propio endpoint si fecha<=hoy) marcó
+  -- enabled=false en NoofitPro. NULL = aún pendiente.
+  ejecutada_at             TIMESTAMPTZ,
+  ejecutada_error          TEXT,
+  notas                    TEXT
+);
+-- Solo una baja pendiente por cliente (no ejecutada). Si quieres reprogramar,
+-- cancela primero la anterior.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_baja_prog_pendiente_unica
+  ON cliente_baja_programada (id_manager, cliente_idnoofit)
+  WHERE ejecutada_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_baja_prog_fecha
+  ON cliente_baja_programada (fecha_baja)
+  WHERE ejecutada_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_baja_prog_manager
+  ON cliente_baja_programada (id_manager, fecha_baja);
+
+
 -- ─── CLIENTE GYMPASS (extensión local — NoofitPro no persiste gympassId) ────
 CREATE TABLE IF NOT EXISTS cliente_gympass (
   id                       SERIAL PRIMARY KEY,

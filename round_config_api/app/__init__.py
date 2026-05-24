@@ -45,6 +45,7 @@ from .routes.emision_v2        import bp as bp_emision_v2
 from .routes.facturacion_trimestre import bp as bp_fact_trim
 from .routes.trimestre         import bp as bp_trimestre
 from .routes.canales_captacion import bp as bp_canales_captacion
+from .routes.baja_programada   import bp as bp_baja_programada
 
 
 def create_app():
@@ -215,5 +216,11 @@ def create_app():
     for prefix in ('/canales-captacion', '/api/config/canales-captacion'):
         app.register_blueprint(bp_canales_captacion,
                                 name=f'cc{prefix}', url_prefix=prefix)
+
+    # ── Baja programada de cliente (fecha futura/pasada)
+    # Rutas dentro del blueprint: /<id>/baja-programada y /baja-programada
+    for prefix in ('/clientes', '/api/clientes'):
+        app.register_blueprint(bp_baja_programada,
+                                name=f'bp{prefix}', url_prefix=prefix)
 
     return app

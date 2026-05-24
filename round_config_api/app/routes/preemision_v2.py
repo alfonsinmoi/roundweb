@@ -119,12 +119,38 @@ def generar(mes):
             """, (str(g.id_manager), mes))
             ya_existen = {r['cliente_idnoofit']: r['id'] for r in cur.fetchall()}
 
+        # Clientes con baja efectiva el día 1 del mes que se emite. No
+        # importa si `cliente_baja_programada.ejecutada_at` está NULL: solo
+        # cuenta `fecha_baja`. Esto permite que la regla funcione para bajas
+        # que aún no ha ejecutado el cron diario (porque el día 1 del mes
+        # entró antes que la noche de la fecha de baja).
+        # Si el cliente estaba inactivo el día 1 → no emite recibo.
+        target_y, target_m = map(int, mes.split('-'))
+        primer_dia = dt.date(target_y, target_m, 1)
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT cliente_idnoofit FROM cliente_baja_programada
+                 WHERE id_manager = %s AND fecha_baja <= %s
+            """, (str(g.id_manager), primer_dia))
+            inactivos_dia_1 = {str(r['cliente_idnoofit']) for r in cur.fetchall()}
+
         # Filtrar subs que tocan + agrupar por cliente
+        # Skipea clientes que estaban inactivos el día 1 del mes (regla
+        # de baja programada).
         por_cliente = defaultdict(list)
+        skipped_baja = 0
         for s in subs:
             if not _toca_emitir(s, mes): continue
             pid = s['partner_id'][0] if s.get('partner_id') else None
-            if pid: por_cliente[pid].append(s)
+            if not pid: continue
+            partner = partners_by_id.get(pid) or {}
+            idnoofit = str(partner.get('id_noofit') or '')
+            if idnoofit and idnoofit in inactivos_dia_1:
+                skipped_baja += 1
+                continue
+            por_cliente[pid].append(s)
+        if skipped_baja:
+            log.info(f'preemision {mes}: {skipped_baja} subs saltadas por baja efectiva día 1')
 
         # Pre-cómputo para descuentos "familiares":
         #   1) cuotas activas (de TODAS las subs activas, no solo las que tocan)

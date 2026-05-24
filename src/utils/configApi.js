@@ -270,6 +270,25 @@ export async function estadoFisicoSessionsCliente(idCliente, identity = null) {
     .then(d => d.sessions || [])
 }
 
+// ── Baja programada de cliente (fecha futura/pasada de inactivación) ─────
+// La pestaña vive en /api/clientes (no /api/config). Endpoints:
+//   GET    /api/clientes/<id>/baja-programada  → null o { fecha_baja, motivo, ... }
+//   POST   /api/clientes/<id>/baja-programada  → crea + (si fecha<=hoy) ejecuta
+//   DELETE /api/clientes/<id>/baja-programada  → cancela pendiente
+//   GET    /api/clientes/baja-programada       → lista del manager
+export const bajaProgramadaGet = (identity, clienteId) =>
+  _requestRoot('GET', `/api/clientes/${clienteId}/baja-programada`, identity)
+    .then(d => d.baja)
+export const bajaProgramadaCreate = (identity, clienteId, datos) =>
+  _requestRoot('POST', `/api/clientes/${clienteId}/baja-programada`, identity, datos)
+export const bajaProgramadaCancel = (identity, clienteId) =>
+  _requestRoot('DELETE', `/api/clientes/${clienteId}/baja-programada`, identity)
+export const bajaProgramadaList = (identity, incluirEjecutadas = false) =>
+  _requestRoot('GET',
+    `/api/clientes/baja-programada${incluirEjecutadas ? '?incluir_ejecutadas=1' : ''}`,
+    identity).then(d => d.bajas || [])
+
+
 // ── Canales de captación (mapping UTM → canal con nombre) ────────────────
 export const canalesList = (identity, incluirInactivos = false) =>
   _request('GET',
