@@ -1,12 +1,18 @@
 import { useState } from 'react'
-import { CalendarRange, Briefcase, Info } from 'lucide-react'
+import { CalendarRange, Briefcase, LayoutTemplate, CalendarDays, BarChart3, Info } from 'lucide-react'
 import TemporadasPanel from './planif/TemporadasPanel'
 import PuestosPanel    from './planif/PuestosPanel'
+import PlantillasPanel from './planif/PlantillasPanel'
+import CalendarioPanel from './planif/CalendarioPanel'
+import CoberturaPanel  from './planif/CoberturaPanel'
 
 
 const SUB_TABS = [
-  { id: 'temporadas', label: 'Temporadas y apertura', icon: CalendarRange, comp: TemporadasPanel },
-  { id: 'puestos',    label: 'Puestos y demanda',     icon: Briefcase,     comp: PuestosPanel },
+  { id: 'temporadas', label: 'Temporadas y apertura', icon: CalendarRange,    comp: TemporadasPanel },
+  { id: 'puestos',    label: 'Puestos y demanda',     icon: Briefcase,        comp: PuestosPanel },
+  { id: 'plantillas', label: 'Plantillas de turno',   icon: LayoutTemplate,   comp: PlantillasPanel },
+  { id: 'calendario', label: 'Calendario semanal',    icon: CalendarDays,     comp: CalendarioPanel },
+  { id: 'cobertura',  label: 'Cobertura',             icon: BarChart3,        comp: CoberturaPanel },
 ]
 
 
@@ -25,12 +31,12 @@ export default function PlanificacionTab({ identity }) {
       }}>
         <Info size={14} style={{ color: '#3b82f6', flexShrink: 0, marginTop: 2 }} />
         <div>
-          <strong>Configuración base de planificación.</strong> Define
-          aquí las temporadas, horarios de apertura del centro, puestos
-          de trabajo y demanda por puesto. Las capacidades y preferencias
-          de cada trabajador se editan en su ficha (tabs nuevas Capacidades
-          y Preferencias). La planificación visual y el algoritmo automático
-          llegan en una iteración posterior.
+          <strong>Planificación de personal.</strong> Configura
+          temporadas, horarios de apertura, puestos y demanda. Crea
+          plantillas de turno (Mañana, Tarde, Sábado…) y asignalas a
+          los trabajadores en el calendario semanal. La pestaña
+          Cobertura te dice qué franjas están descubiertas (déficit) o
+          tienen exceso de personal frente a la demanda configurada.
         </div>
       </div>
 

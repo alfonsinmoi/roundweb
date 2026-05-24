@@ -181,6 +181,32 @@ export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>
   _req('DELETE', `/trabajadores/${id}/trainers/${vinculoId}`, identity)
 
 
+// ── Planificación B.2: plantillas + asignaciones + cobertura ───────────────
+export const plantillasList = (identity) =>
+  _req('GET', '/turno-plantillas', identity).then(d => d.plantillas)
+export const plantillaGet = (identity, id) =>
+  _req('GET', `/turno-plantillas/${id}`, identity).then(d => d.plantilla)
+export const plantillaCreate = (identity, body) =>
+  _req('POST', '/turno-plantillas', identity, body).then(d => d.plantilla)
+export const plantillaUpdate = (identity, id, body) =>
+  _req('PATCH', `/turno-plantillas/${id}`, identity, body).then(d => d.plantilla)
+export const plantillaDelete = (identity, id) =>
+  _req('DELETE', `/turno-plantillas/${id}`, identity)
+export const plantillaBloquesSave = (identity, id, bloques) =>
+  _req('PUT', `/turno-plantillas/${id}/bloques`, identity, { bloques })
+
+export const asignacionesSemana = (identity, fechaLunes) =>
+  _req('GET', `/turno-asignaciones?fecha_lunes=${fechaLunes}`, identity)
+export const asignacionesBulk = (identity, ops) =>
+  _req('PUT', '/turno-asignaciones/bulk', identity, { ops })
+
+export const coberturaSemana = (identity, fechaLunes, temporadaId = null) => {
+  const qs = new URLSearchParams({ fecha_lunes: fechaLunes })
+  if (temporadaId) qs.set('temporada_id', String(temporadaId))
+  return _req('GET', `/cobertura?${qs.toString()}`, identity)
+}
+
+
 // ── Fichajes + correcciones + QR ────────────────────────────────────────────
 export const qrActual = (identity, idTrainer) =>
   _req('GET', `/qr-actual/${encodeURIComponent(idTrainer)}`, identity)
