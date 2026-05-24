@@ -2019,6 +2019,10 @@ DEFAULT_PERMISOS = {
             'categorias_cliente': {'ver': True},
             'canales_captacion':  {'ver': True},
             'checklist':          {'ver': True},
+            # Catálogos básicos en modo lectura (precios, descuentos) para
+            # que Recepción pueda informar al cliente.
+            'cuotas':             {'ver': True},
+            'descuentos':         {'ver': True},
         },
     },
     'Solo lectura': {
@@ -2050,17 +2054,25 @@ DEFAULT_PERMISOS = {
         },
         'configuracion': {
             'centros_trainers':   {'ver': True},
+            'cuotas':             {'ver': True},
+            'descuentos':         {'ver': True},
+            'modificaciones':     {'ver': True},
+            'modo_facturacion':   {'ver': True},
             'cuotas_descuentos':  {'ver': True},
             'email':              {'ver': True},
+            'email_templates':    {'ver': True},
             'pasarelas':          {'ver': True},
             'notificaciones':     {'ver': True},
             'categorias_cliente': {'ver': True},
             'catalogos':          {'ver': True},
+            'contabilidad_tab':   {'ver': True},
             'meta':               {'ver': True},
             'canales_captacion':  {'ver': True},
             'suscripciones':      {'ver': True},
             'checklist':          {'ver': True},
         },
+        # Configuración ERP en modo lectura (datos fiscales del manager).
+        'erp_configuracion': {'ver': True},
     },
 }
 
