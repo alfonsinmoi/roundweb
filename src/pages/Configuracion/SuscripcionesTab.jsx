@@ -30,7 +30,7 @@ import { Layers, CheckCircle2, AlertCircle, Loader2, Send, ShieldCheck,
 import { Card, Btn, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { useOdooStatus } from '../../hooks/useOdooStatus'
-import { managerWcCheck, managerSetWcommerceId } from '../../utils/configApi'
+import { managerWcCheck, managerSetWcommerceId, managerChecklist } from '../../utils/configApi'
 import WizardActivarCRM          from '../../components/WizardActivarCRM'
 import WizardActivarCuotas       from '../../components/WizardActivarCuotas'
 import WizardActivarContabilidad from '../../components/WizardActivarContabilidad'
@@ -204,6 +204,7 @@ export default function SuscripcionesTab({ identity }) {
       <CardModulo modulo={moduloActive}
                   status={status}
                   isElegible={isElegible}
+                  identity={identity}
                   onActivar={() => setWizardOpen(moduloActive.id)} />
 
       {/* ── Wizard del módulo (lazy: solo se renderiza si está abierto) ── */}
@@ -363,9 +364,32 @@ function CheckBanner({ check, tipoActual }) {
 
 
 // ── Card del módulo (CRM, Cuotas, Contabilidad) ──────────────────────────
-function CardModulo({ modulo, status, isElegible, onActivar }) {
+function CardModulo({ modulo, status, isElegible, identity, onActivar }) {
   const isOn = !!status?.[`odoo_${modulo.id}_enabled`]
   const Icon = modulo.icon
+
+  // Cargar checklist del módulo cuando está activo, para mostrar el badge
+  // de peligro/aviso en la card. Se recalcula si cambia el estado de Odoo.
+  const [checklistSummary, setChecklistSummary] = useState(null)
+  useEffect(() => {
+    if (!isOn || !identity?.managerId) { setChecklistSummary(null); return }
+    let cancel = false
+    managerChecklist(identity, modulo.id)
+      .then(r => { if (!cancel) setChecklistSummary(r.modulos?.[modulo.id] || null) })
+      .catch(() => { /* silent */ })
+    return () => { cancel = true }
+  }, [isOn, modulo.id, identity?.managerId])
+
+  const crit = checklistSummary?.critical_missing || 0
+  const warn = checklistSummary?.warn || 0
+  const okItems = checklistSummary?.ok_count || 0
+  const total = checklistSummary?.total || 0
+
+  const goToChecklist = () => {
+    window.location.hash = `#check_${modulo.id === 'contabilidad' ? 'contab' : modulo.id}`
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   return (
     <Card style={{ padding: 22 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 16 }}>
@@ -385,6 +409,46 @@ function CardModulo({ modulo, status, isElegible, onActivar }) {
             {isOn
               ? <Badge color="green">Activado</Badge>
               : <Badge color="gray">No activado</Badge>}
+            {/* Badge de peligro / aviso si hay items pendientes */}
+            {isOn && checklistSummary && (
+              crit > 0 ? (
+                <button onClick={goToChecklist}
+                        style={{
+                          background: 'rgba(248,113,113,0.18)',
+                          border: '1px solid #F87171',
+                          color: '#F87171',
+                          padding: '3px 10px', borderRadius: 999,
+                          fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        }}
+                        title="Hay items críticos pendientes — click para revisar">
+                  🔴 {crit} crítico{crit !== 1 ? 's' : ''}
+                </button>
+              ) : warn > 0 ? (
+                <button onClick={goToChecklist}
+                        style={{
+                          background: 'rgba(251,191,36,0.18)',
+                          border: '1px solid #FBBF24',
+                          color: '#FBBF24',
+                          padding: '3px 10px', borderRadius: 999,
+                          fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        }}
+                        title="Hay items recomendados pendientes">
+                  ⚠️ {warn} aviso{warn !== 1 ? 's' : ''}
+                </button>
+              ) : (
+                <button onClick={goToChecklist}
+                        style={{
+                          background: 'rgba(45,212,168,0.14)',
+                          border: '1px solid #2DD4A8',
+                          color: '#2DD4A8',
+                          padding: '3px 10px', borderRadius: 999,
+                          fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        }}
+                        title="Todos los items configurados">
+                  ✅ {okItems}/{total}
+                </button>
+              )
+            )}
           </div>
           <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 6, lineHeight: 1.55 }}>
             {modulo.descripcion}

@@ -126,6 +126,27 @@ def odoo_status():
     })
 
 
+# ─── GET /checklist ────────────────────────────────────────────────────────
+
+@bp.route('/checklist', methods=['GET'])
+@auth_required
+def checklist():
+    """Estado de configuración del manager por módulo.
+
+    Query params:
+      modulo=crm|cuotas|contabilidad  → solo ese (default: los 3)
+
+    Devuelve {ok, modulos: {<m>: {items:[...], critical_missing, warn,
+    ok_count, total}}}. Cada item lleva status (ok|warn|missing) y
+    `deeplink_tab` (id de la pestaña de Configuración para "Ir a configurar").
+    """
+    from ..checklist import compute_checklist
+    modulo = (request.args.get('modulo') or '').strip().lower() or None
+    if modulo and modulo not in ('crm', 'cuotas', 'contabilidad'):
+        return jsonify({'ok': False, 'error': 'modulo_invalid'}), 400
+    return jsonify(compute_checklist(g.id_manager, modulo))
+
+
 # ─── POST /wc-check ────────────────────────────────────────────────────────
 
 @bp.route('/wc-check', methods=['POST'])

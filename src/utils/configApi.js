@@ -690,6 +690,13 @@ export const managerSolicitudDespliegue = (identity, datos) =>
 export const managerProvisionModulo = (identity, modulo, datos = {}) =>
   _requestRoot('POST', `/api/manager/provision/${modulo}`, identity, datos)
 
+/** Checklist post-activación. Sin args devuelve los 3 módulos; con modulo
+ *  filtra. Devuelve {ok, modulos:{crm,cuotas,contabilidad: {items[], critical_missing, warn, ok_count, total}}}. */
+export const managerChecklist = (identity, modulo = null) => {
+  const q = modulo ? `?modulo=${encodeURIComponent(modulo)}` : ''
+  return _requestRoot('GET', `/api/manager/checklist${q}`, identity)
+}
+
 /** Lista la config analytic per-trainer del manager (Fase 4).
  *  Devuelve { trainers: [...], manager_analytic_default_id }. */
 export const managerTrainersContabilidad = (identity) =>
