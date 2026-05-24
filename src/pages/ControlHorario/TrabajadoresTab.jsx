@@ -595,67 +595,120 @@ function accionColor(a) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DIAS = [
-  { i: 1, label: 'Lun', long: 'Lunes' },
-  { i: 2, label: 'Mar', long: 'Martes' },
-  { i: 3, label: 'Mié', long: 'Miércoles' },
-  { i: 4, label: 'Jue', long: 'Jueves' },
-  { i: 5, label: 'Vie', long: 'Viernes' },
-  { i: 6, label: 'Sáb', long: 'Sábado' },
-  { i: 7, label: 'Dom', long: 'Domingo' },
+  { i: 1, label: 'L', long: 'Lunes' },
+  { i: 2, label: 'M', long: 'Martes' },
+  { i: 3, label: 'X', long: 'Miércoles' },
+  { i: 4, label: 'J', long: 'Jueves' },
+  { i: 5, label: 'V', long: 'Viernes' },
+  { i: 6, label: 'S', long: 'Sábado' },
+  { i: 7, label: 'D', long: 'Domingo' },
 ]
+
+const TIPOS = [
+  { id: 'trabajo',  label: 'Trabajo',  color: 'var(--green, #10b981)' },
+  { id: 'comida',   label: 'Comida',   color: '#f59e0b' },
+  { id: 'descanso', label: 'Descanso', color: '#60a5fa' },
+  { id: 'otros',    label: 'Otros',    color: 'var(--text-3)' },
+]
+
+
+// `franja` UI = { hora_inicio, hora_fin, tipo, dias: Set<int> }
+// BD              = una fila por (franja × dia marcado).
+// Al cargar, agrupamos filas idénticas (mismo HH:MM y tipo) en una franja.
+function agruparEnFranjas(horario) {
+  const mapa = new Map()
+  for (const dia of Object.keys(horario || {})) {
+    for (const b of (horario[dia] || [])) {
+      const key = `${b.hora_inicio}|${b.hora_fin}|${b.tipo || 'trabajo'}`
+      if (!mapa.has(key)) {
+        mapa.set(key, {
+          hora_inicio: b.hora_inicio,
+          hora_fin:    b.hora_fin,
+          tipo:        b.tipo || 'trabajo',
+          dias:        new Set(),
+        })
+      }
+      mapa.get(key).dias.add(Number(dia))
+    }
+  }
+  return Array.from(mapa.values())
+    .sort((a, b) => (a.hora_inicio || '').localeCompare(b.hora_inicio || ''))
+}
+
+
+function franjasACargaBD(franjas) {
+  // Expande franjas → estructura {dia: [bloques]} para el PUT
+  const out = { '1': [], '2': [], '3': [], '4': [], '5': [], '6': [], '7': [] }
+  for (const f of franjas) {
+    for (const d of f.dias) {
+      out[String(d)].push({
+        hora_inicio: f.hora_inicio,
+        hora_fin:    f.hora_fin,
+        tipo:        f.tipo,
+      })
+    }
+  }
+  return out
+}
+
+
+function minutosFranja(f) {
+  if (!f.hora_inicio || !f.hora_fin) return 0
+  const [h1, m1] = f.hora_inicio.split(':').map(Number)
+  const [h2, m2] = f.hora_fin.split(':').map(Number)
+  return Math.max(0, (h2 * 60 + m2) - (h1 * 60 + m1))
+}
 
 
 function HorarioPanel({ trabajadorId, identity }) {
   const toast = useToast()
-  const [horario, setHorario] = useState(null)
+  const [franjas, setFranjas] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     setLoading(true)
     trabajadorHorario(identity, trabajadorId)
-      .then(h => setHorario(h || {}))
+      .then(h => setFranjas(agruparEnFranjas(h || {})))
       .catch(e => toast.error('Error: ' + (e.message || '?')))
       .finally(() => setLoading(false))
   }, [trabajadorId, identity, toast])
 
-  function setDia(dia, blocks) {
-    setHorario(h => ({ ...h, [String(dia)]: blocks }))
+  function addFranja() {
+    setFranjas(fs => [...(fs || []), {
+      hora_inicio: '09:00', hora_fin: '14:00', tipo: 'trabajo',
+      dias: new Set([1, 2, 3, 4, 5]),
+    }])
   }
 
-  function addBloque(dia) {
-    const actuales = horario[String(dia)] || []
-    setDia(dia, [...actuales, { hora_inicio: '09:00', hora_fin: '14:00' }])
+  function setFranja(idx, patch) {
+    setFranjas(fs => {
+      const next = fs.slice()
+      next[idx] = { ...next[idx], ...patch }
+      return next
+    })
   }
 
-  function removeBloque(dia, idx) {
-    const actuales = (horario[String(dia)] || []).slice()
-    actuales.splice(idx, 1)
-    setDia(dia, actuales)
+  function toggleDia(idx, dia) {
+    setFranjas(fs => {
+      const next = fs.slice()
+      const dias = new Set(next[idx].dias)
+      if (dias.has(dia)) dias.delete(dia)
+      else dias.add(dia)
+      next[idx] = { ...next[idx], dias }
+      return next
+    })
   }
 
-  function updateBloque(dia, idx, field, value) {
-    const actuales = (horario[String(dia)] || []).slice()
-    actuales[idx] = { ...actuales[idx], [field]: value }
-    setDia(dia, actuales)
-  }
-
-  function copyLunToWeekdays() {
-    const lun = horario['1'] || []
-    setHorario(h => ({
-      ...h,
-      '2': lun.map(b => ({ ...b })),
-      '3': lun.map(b => ({ ...b })),
-      '4': lun.map(b => ({ ...b })),
-      '5': lun.map(b => ({ ...b })),
-    }))
-    toast.success('Copiado lun → mar/mié/jue/vie')
+  function removeFranja(idx) {
+    setFranjas(fs => fs.filter((_, i) => i !== idx))
   }
 
   async function handleSave() {
     setSaving(true)
     try {
-      await trabajadorHorarioSave(identity, trabajadorId, horario)
+      const body = franjasACargaBD(franjas)
+      await trabajadorHorarioSave(identity, trabajadorId, body)
       toast.success('Horario guardado')
     } catch (e) {
       toast.error('Error: ' + (e.body?.detalle || e.message || '?'))
@@ -665,77 +718,81 @@ function HorarioPanel({ trabajadorId, identity }) {
   if (loading) {
     return <div style={{ padding: 24, color: 'var(--text-3)' }}>Cargando horario…</div>
   }
-  if (!horario) return null
+  if (!franjas) return null
 
-  const lunHasContent = (horario['1'] || []).length > 0
-  const totalBlocks = DIAS.reduce((acc, d) => acc + (horario[String(d.i)] || []).length, 0)
+  // Totales por día y semanales
+  const totDia = DIAS.map(d => {
+    let trabajo = 0, pausa = 0
+    for (const f of franjas) {
+      if (!f.dias.has(d.i)) continue
+      const m = minutosFranja(f)
+      if (f.tipo === 'trabajo') trabajo += m
+      else pausa += m
+    }
+    return { dia: d, trabajo, pausa }
+  })
+  const totSemTrabajo = totDia.reduce((a, x) => a + x.trabajo, 0)
+  const totSemPausa   = totDia.reduce((a, x) => a + x.pausa,   0)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <div style={{
-        flex: 1, overflowY: 'auto', padding: '16px 24px',
-        display: 'flex', flexDirection: 'column', gap: 12,
-      }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
         <div style={{
-          padding: '10px 12px', borderRadius: 10,
+          padding: '10px 12px', borderRadius: 10, marginBottom: 12,
           background: 'rgba(59,130,246,0.06)', color: 'var(--text-2)',
           border: '1px solid rgba(59,130,246,0.16)',
           fontSize: 12, lineHeight: 1.5,
         }}>
-          Cada día puede tener varios bloques (jornada partida).
-          Para jornada nocturna (22:00–06:00), añade un bloque hasta 23:59
-          y otro 00:00–06:00 al día siguiente. Los cambios quedan en el
-          historial del trabajador.
+          Cada fila es una franja horaria. Marca los días en los que se
+          aplica. Para nocturna (22:00–06:00) añade dos franjas: una
+          22:00–23:59 lun-vie y otra 00:00–06:00 mar-sáb.
         </div>
 
-        {lunHasContent && (
-          <Btn variant="ghost" size="sm" onClick={copyLunToWeekdays}
-               style={{ alignSelf: 'flex-start' }}>
-            <Copy size={13} /> Copiar lunes a mar/mié/jue/vie
-          </Btn>
-        )}
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {DIAS.map(d => {
-            const bloques = horario[String(d.i)] || []
-            return (
-              <div key={d.i} style={{
-                padding: 12, borderRadius: 12,
-                background: 'var(--bg-2)', border: '1px solid var(--line)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>{d.long}</strong>
-                  <button onClick={() => addBloque(d.i)}
-                          type="button"
-                          style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            padding: '4px 10px', borderRadius: 8,
-                            background: 'var(--bg-1)', border: '1px solid var(--line)',
-                            color: 'var(--green, #10b981)',
-                            cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                          }}>
-                    <Plus size={12} /> Añadir bloque
-                  </button>
-                </div>
-                {bloques.length === 0 && (
-                  <p style={{ margin: 0, fontSize: 12, color: 'var(--text-3)' }}>
-                    Día libre.
-                  </p>
-                )}
-                {bloques.map((b, i) => (
-                  <div key={i} style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    marginTop: i === 0 ? 0 : 6,
-                  }}>
-                    <input type="time" value={b.hora_inicio}
-                           onChange={e => updateBloque(d.i, i, 'hora_inicio', e.target.value)}
+        <div style={{ overflowX: 'auto', borderRadius: 12, border: '1px solid var(--line)' }}>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-2)' }}>
+                <th style={thStyle}>Hora ini</th>
+                <th style={thStyle}>Hora fin</th>
+                <th style={thStyle}>Tipo</th>
+                {DIAS.map(d => (
+                  <th key={d.i} style={{ ...thStyle, textAlign: 'center', width: 36 }}>{d.label}</th>
+                ))}
+                <th style={{ ...thStyle, width: 40 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {franjas.map((f, idx) => (
+                <tr key={idx} style={{ borderTop: '1px solid var(--line)' }}>
+                  <td style={tdStyle}>
+                    <input type="time" value={f.hora_inicio}
+                           onChange={e => setFranja(idx, { hora_inicio: e.target.value })}
                            style={timeInput} />
-                    <span style={{ color: 'var(--text-3)' }}>→</span>
-                    <input type="time" value={b.hora_fin}
-                           onChange={e => updateBloque(d.i, i, 'hora_fin', e.target.value)}
+                  </td>
+                  <td style={tdStyle}>
+                    <input type="time" value={f.hora_fin}
+                           onChange={e => setFranja(idx, { hora_fin: e.target.value })}
                            style={timeInput} />
-                    <button onClick={() => removeBloque(d.i, i)}
-                            type="button" title="Eliminar bloque"
+                  </td>
+                  <td style={tdStyle}>
+                    <select value={f.tipo}
+                            onChange={e => setFranja(idx, { tipo: e.target.value })}
+                            style={selectInput}>
+                      {TIPOS.map(t => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </select>
+                  </td>
+                  {DIAS.map(d => (
+                    <td key={d.i} style={{ ...tdStyle, textAlign: 'center' }}>
+                      <input type="checkbox" checked={f.dias.has(d.i)}
+                             onChange={() => toggleDia(idx, d.i)}
+                             style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--green, #10b981)' }} />
+                    </td>
+                  ))}
+                  <td style={{ ...tdStyle, textAlign: 'center' }}>
+                    <button onClick={() => removeFranja(idx)}
+                            type="button" title="Eliminar franja"
                             style={{
                               padding: 6, borderRadius: 8, border: 'none',
                               background: 'transparent', color: 'var(--red, #f87171)',
@@ -743,11 +800,60 @@ function HorarioPanel({ trabajadorId, identity }) {
                             }}>
                       <Trash2 size={14} />
                     </button>
-                  </div>
+                  </td>
+                </tr>
+              ))}
+              {franjas.length === 0 && (
+                <tr><td colSpan={11} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>
+                  Sin franjas todavía. Pulsa "Añadir franja".
+                </td></tr>
+              )}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: 'var(--bg-2)', borderTop: '2px solid var(--line)' }}>
+                <td colSpan={3} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Trabajo / día
+                </td>
+                {totDia.map(t => (
+                  <td key={t.dia.i} style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: t.trabajo > 0 ? 'var(--green, #10b981)' : 'var(--text-3)' }}>
+                    {fmtMin(t.trabajo)}
+                  </td>
                 ))}
-              </div>
-            )
-          })}
+                <td style={tdStyle}></td>
+              </tr>
+              <tr style={{ background: 'var(--bg-2)' }}>
+                <td colSpan={3} style={{ ...tdStyle, fontSize: 11, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Pausa / día
+                </td>
+                {totDia.map(t => (
+                  <td key={t.dia.i} style={{ ...tdStyle, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11, color: t.pausa > 0 ? '#f59e0b' : 'var(--text-3)' }}>
+                    {fmtMin(t.pausa)}
+                  </td>
+                ))}
+                <td style={tdStyle}></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Btn variant="ghost" size="sm" onClick={addFranja}>
+            <Plus size={13} /> Añadir franja
+          </Btn>
+          <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
+            <strong>Total semanal:</strong>{' '}
+            <span style={{ color: 'var(--green, #10b981)', fontWeight: 600 }}>
+              {fmtMin(totSemTrabajo)}
+            </span>
+            <span style={{ color: 'var(--text-3)' }}> trabajo</span>
+            {totSemPausa > 0 && (
+              <>
+                {' · '}
+                <span style={{ color: '#f59e0b', fontWeight: 600 }}>{fmtMin(totSemPausa)}</span>
+                <span style={{ color: 'var(--text-3)' }}> pausa</span>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -757,7 +863,7 @@ function HorarioPanel({ trabajadorId, identity }) {
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
       }}>
         <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)' }}>
-          {totalBlocks} bloques en total · zona horaria Europe/Madrid
+          {franjas.length} franjas · zona horaria Europe/Madrid
         </p>
         <Btn type="button" onClick={handleSave} disabled={saving}>
           <Save size={13} /> {saving ? 'Guardando…' : 'Guardar horario'}
@@ -768,10 +874,34 @@ function HorarioPanel({ trabajadorId, identity }) {
 }
 
 
+function fmtMin(mins) {
+  if (!mins) return '—'
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${String(m).padStart(2, '0')}m`
+}
+
+
 const timeInput = {
   padding: '6px 10px', borderRadius: 8,
   border: '1px solid var(--line)', background: 'var(--bg-1)',
   color: 'var(--text-0)', fontSize: 13, fontFamily: 'var(--font-mono)',
-  width: 110,
+  width: 100,
+}
+const selectInput = {
+  padding: '6px 10px', borderRadius: 8,
+  border: '1px solid var(--line)', background: 'var(--bg-1)',
+  color: 'var(--text-0)', fontSize: 13, cursor: 'pointer',
+  minWidth: 110,
+}
+const thStyle = {
+  textAlign: 'left', padding: '10px 12px',
+  fontSize: 11, fontWeight: 600, color: 'var(--text-3)',
+  textTransform: 'uppercase', letterSpacing: '0.05em',
+}
+const tdStyle = {
+  padding: '8px 12px',
 }
 

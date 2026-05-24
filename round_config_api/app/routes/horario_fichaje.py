@@ -549,7 +549,7 @@ def mi_horario():
     """
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT id, dia_semana, hora_inicio, hora_fin, orden
+            SELECT id, dia_semana, hora_inicio, hora_fin, tipo, orden
               FROM horario_trabajador
              WHERE trabajador_id = %s
              ORDER BY dia_semana, orden
@@ -561,6 +561,7 @@ def mi_horario():
             'id': r['id'],
             'hora_inicio': r['hora_inicio'].strftime('%H:%M'),
             'hora_fin':    r['hora_fin'].strftime('%H:%M'),
+            'tipo':        r['tipo'],
             'orden':       r['orden'],
         })
     return jsonify({'ok': True, 'horario': out})

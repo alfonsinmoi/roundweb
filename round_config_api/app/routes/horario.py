@@ -826,7 +826,7 @@ def get_horario_trabajador(trab_id):
         if not cur.fetchone():
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""
-            SELECT id, dia_semana, hora_inicio, hora_fin, orden
+            SELECT id, dia_semana, hora_inicio, hora_fin, tipo, orden
               FROM horario_trabajador
              WHERE trabajador_id = %s
              ORDER BY dia_semana, orden
@@ -838,6 +838,7 @@ def get_horario_trabajador(trab_id):
             'id': r['id'],
             'hora_inicio': r['hora_inicio'].strftime('%H:%M'),
             'hora_fin':    r['hora_fin'].strftime('%H:%M'),
+            'tipo':        r['tipo'],
             'orden':       r['orden'],
         })
     return jsonify({'ok': True, 'horario': out})
@@ -863,7 +864,8 @@ def put_horario_trabajador(trab_id):
         return jsonify({'ok': False, 'error': 'horario_invalido'}), 400
 
     # Validación y normalización
-    bloques = []   # lista [(dia, hh_ini, hh_fin, orden)]
+    TIPOS_VALIDOS = ('trabajo', 'comida', 'descanso', 'otros')
+    bloques = []   # lista [(dia, hh_ini, hh_fin, tipo, orden)]
     for k, blocks in horario.items():
         try:
             dia = int(k)
@@ -878,6 +880,11 @@ def put_horario_trabajador(trab_id):
         for b in blocks:
             hi = (b.get('hora_inicio') or '').strip()
             hf = (b.get('hora_fin') or '').strip()
+            tipo = (b.get('tipo') or 'trabajo').strip().lower()
+            if tipo not in TIPOS_VALIDOS:
+                return jsonify({'ok': False, 'error': 'tipo_invalido',
+                                'detalle': f'dia {dia}: {tipo}',
+                                'permitidos': list(TIPOS_VALIDOS)}), 400
             if len(hi) == 5: hi += ':00'
             if len(hf) == 5: hf += ':00'
             if not _is_hhmmss(hi) or not _is_hhmmss(hf):
@@ -886,14 +893,14 @@ def put_horario_trabajador(trab_id):
             if hi >= hf:
                 return jsonify({'ok': False, 'error': 'rango_invalido',
                                 'detalle': f'dia {dia}: {hi} >= {hf}'}), 400
-            bs.append((hi, hf, b.get('orden')))
+            bs.append((hi, hf, tipo))
         bs.sort(key=lambda x: x[0])
-        for i, (hi, hf, _orden) in enumerate(bs, start=1):
-            bloques.append((dia, hi, hf, i))
+        for i, (hi, hf, tipo) in enumerate(bs, start=1):
+            bloques.append((dia, hi, hf, tipo, i))
 
     # Detectar solapamientos dentro del mismo día
     by_day = {}
-    for (dia, hi, hf, _o) in bloques:
+    for (dia, hi, hf, _tipo, _o) in bloques:
         by_day.setdefault(dia, []).append((hi, hf))
     for dia, bs in by_day.items():
         bs.sort()
@@ -910,7 +917,7 @@ def put_horario_trabajador(trab_id):
 
         # Snapshot antes del cambio para auditoría
         cur.execute("""
-            SELECT dia_semana, hora_inicio, hora_fin, orden
+            SELECT dia_semana, hora_inicio, hora_fin, tipo, orden
               FROM horario_trabajador
              WHERE trabajador_id = %s
              ORDER BY dia_semana, orden
@@ -918,18 +925,19 @@ def put_horario_trabajador(trab_id):
         before_rows = cur.fetchall()
         before = [(r['dia_semana'],
                    r['hora_inicio'].strftime('%H:%M'),
-                   r['hora_fin'].strftime('%H:%M')) for r in before_rows]
-        after = [(b[0], b[1][:5], b[2][:5]) for b in bloques]
+                   r['hora_fin'].strftime('%H:%M'),
+                   r['tipo']) for r in before_rows]
+        after = [(b[0], b[1][:5], b[2][:5], b[3]) for b in bloques]
 
         # Reemplaza atómicamente: borra todo y vuelve a insertar.
         cur.execute("DELETE FROM horario_trabajador WHERE trabajador_id = %s",
                     (trab_id,))
-        for (dia, hi, hf, orden) in bloques:
+        for (dia, hi, hf, tipo, orden) in bloques:
             cur.execute("""
                 INSERT INTO horario_trabajador
-                  (trabajador_id, dia_semana, hora_inicio, hora_fin, orden)
-                VALUES (%s, %s, %s::TIME, %s::TIME, %s)
-            """, (trab_id, dia, hi, hf, orden))
+                  (trabajador_id, dia_semana, hora_inicio, hora_fin, tipo, orden)
+                VALUES (%s, %s, %s::TIME, %s::TIME, %s, %s)
+            """, (trab_id, dia, hi, hf, tipo, orden))
 
     if before != after:
         log_action(actor_from_request(), entidad='trabajador',

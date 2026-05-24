@@ -1708,6 +1708,8 @@ CREATE TABLE IF NOT EXISTS horario_trabajador (
   dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
   hora_inicio     TIME NOT NULL,
   hora_fin        TIME NOT NULL,
+  tipo            VARCHAR(20) NOT NULL DEFAULT 'trabajo'
+                              CHECK (tipo IN ('trabajo','comida','descanso','otros')),
   orden           SMALLINT NOT NULL DEFAULT 1,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1715,6 +1717,20 @@ CREATE TABLE IF NOT EXISTS horario_trabajador (
 );
 CREATE INDEX IF NOT EXISTS idx_horario_trabajador
   ON horario_trabajador(trabajador_id, dia_semana, orden);
+
+-- Migracion idempotente para tablas ya creadas sin la columna tipo
+ALTER TABLE horario_trabajador
+  ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) NOT NULL DEFAULT 'trabajo';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname='horario_trabajador_tipo_check'
+  ) THEN
+    ALTER TABLE horario_trabajador ADD CONSTRAINT horario_trabajador_tipo_check
+      CHECK (tipo IN ('trabajo','comida','descanso','otros'));
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END$$;
 
 
 -- ─── TRABAJADOR ↔ TRAINER (pivote N:M) ─────────────────────────────────────
