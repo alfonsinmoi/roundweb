@@ -538,6 +538,135 @@ def mi_jornada_hoy():
     return jsonify(_jornada_dia(g.trabajador['id'], dt.date.today()))
 
 
+@bp.route('/mi-resumen', methods=['GET'])
+@trabajador_required
+def mi_resumen():
+    """Resumen agregado del trabajador para un año natural.
+
+    Query:
+      ano=YYYY  (opcional, default: año actual en Europe/Madrid)
+
+    Devuelve:
+      {
+        ok, ano,
+        anual:    {trabajo_seg, pausa_seg, dias_trabajados},
+        mensual:  [{mes:1..12, trabajo_seg, pausa_seg, dias_trabajados}],
+        semanal:  [{iso_year, iso_week, fecha_lunes, trabajo_seg, pausa_seg, dias_trabajados}],
+        diario:   [{fecha (YYYY-MM-DD), trabajo_seg, pausa_seg, n_eventos}]
+      }
+
+    Zona horaria: todos los agrupamientos por día/semana/mes se calculan
+    en Europe/Madrid (el día que ve el trabajador), no en UTC.
+    """
+    try:
+        ano = int(request.args.get('ano') or '')
+    except ValueError:
+        return jsonify({'ok': False, 'error': 'ano_invalido'}), 400
+    if not ano:
+        ano = dt.datetime.now(dt.timezone.utc).astimezone().year
+
+    trab_id = g.trabajador['id']
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT (ts_evento AT TIME ZONE 'Europe/Madrid')::DATE AS fecha_local,
+                   ts_evento, tipo
+              FROM fichaje_evento
+             WHERE trabajador_id = %s
+               AND EXTRACT(YEAR FROM (ts_evento AT TIME ZONE 'Europe/Madrid')) = %s
+               AND tipo IN ('ENTRADA','SALIDA','PAUSA_INI','PAUSA_FIN','CORRECCION_INSERT')
+             ORDER BY ts_evento ASC, id ASC
+        """, (trab_id, ano))
+        rows = cur.fetchall()
+
+    # Agrupa eventos por fecha local
+    por_dia = {}
+    for r in rows:
+        por_dia.setdefault(r['fecha_local'], []).append(r)
+
+    diario, anual_trab, anual_pausa, anual_dias = [], 0, 0, 0
+    mensual = [{'mes': m, 'trabajo_seg': 0, 'pausa_seg': 0, 'dias_trabajados': 0}
+               for m in range(1, 13)]
+    semanal_map = {}    # (iso_year, iso_week) -> dict
+
+    for fecha, evs in sorted(por_dia.items()):
+        trabajo_seg, pausa_seg = _calcular_seg(evs)
+        if trabajo_seg == 0 and pausa_seg == 0:
+            continue
+        diario.append({
+            'fecha': fecha.isoformat(),
+            'trabajo_seg': trabajo_seg,
+            'pausa_seg': pausa_seg,
+            'n_eventos': len(evs),
+        })
+        anual_trab += trabajo_seg
+        anual_pausa += pausa_seg
+        anual_dias += 1
+        # Mes
+        m = mensual[fecha.month - 1]
+        m['trabajo_seg'] += trabajo_seg
+        m['pausa_seg'] += pausa_seg
+        m['dias_trabajados'] += 1
+        # Semana ISO
+        iso_year, iso_week, iso_dow = fecha.isocalendar()
+        key = (iso_year, iso_week)
+        if key not in semanal_map:
+            # lunes de esa semana ISO
+            lunes = fecha - dt.timedelta(days=iso_dow - 1)
+            semanal_map[key] = {
+                'iso_year': iso_year, 'iso_week': iso_week,
+                'fecha_lunes': lunes.isoformat(),
+                'trabajo_seg': 0, 'pausa_seg': 0, 'dias_trabajados': 0,
+            }
+        w = semanal_map[key]
+        w['trabajo_seg'] += trabajo_seg
+        w['pausa_seg'] += pausa_seg
+        w['dias_trabajados'] += 1
+
+    semanal = sorted(semanal_map.values(),
+                     key=lambda x: (x['iso_year'], x['iso_week']))
+
+    return jsonify({
+        'ok': True,
+        'ano': ano,
+        'anual': {
+            'trabajo_seg': anual_trab,
+            'pausa_seg': anual_pausa,
+            'dias_trabajados': anual_dias,
+        },
+        'mensual': mensual,
+        'semanal': semanal,
+        'diario': diario,
+    })
+
+
+def _calcular_seg(eventos):
+    """Dada una lista de eventos ordenados por ts ASC del mismo día, devuelve
+    (trabajo_seg, pausa_seg) calculando los pares ENTRADA→SALIDA y
+    PAUSA_INI→PAUSA_FIN. PAUSA_INI interrumpe el cómputo de trabajo."""
+    total_trab, total_pausa = 0, 0
+    ult_entrada = None
+    ult_pausa = None
+    for e in eventos:
+        t = e['tipo']; ts = e['ts_evento']
+        if t == 'ENTRADA':
+            ult_entrada = ts
+        elif t == 'SALIDA' and ult_entrada:
+            total_trab += int((ts - ult_entrada).total_seconds())
+            ult_entrada = None
+        elif t == 'PAUSA_INI':
+            ult_pausa = ts
+            if ult_entrada:
+                total_trab += int((ts - ult_entrada).total_seconds())
+                ult_entrada = None
+        elif t == 'PAUSA_FIN':
+            if ult_pausa:
+                total_pausa += int((ts - ult_pausa).total_seconds())
+                ult_pausa = None
+            ult_entrada = ts
+    return total_trab, total_pausa
+
+
 def _jornada_dia(trabajador_id: int, fecha: dt.date) -> dict:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""

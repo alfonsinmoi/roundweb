@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Clock, User, Calendar, Trophy, Award, Dumbbell,
+  Clock, User, Calendar, Trophy, Award, Dumbbell, BarChart3,
   LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, Zap,
 } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
@@ -34,9 +34,10 @@ export default function PortalLayout() {
 
   const esTrabajador = !!cliente?.es_trabajador
 
-  // Tabs (Fichar PRIMERO si trabajador, después Entrenamientos)
+  // Tabs (Fichar PRIMERO si trabajador, después Mis jornadas, Entrenamientos…)
   const tabs = [
     esTrabajador && { to: '/portal/fichar',         icon: Clock,     label: 'Fichar' },
+    esTrabajador && { to: '/portal/mis-jornadas',   icon: BarChart3, label: 'Mis jornadas' },
                     { to: '/portal/entrenamientos', icon: Dumbbell,  label: 'Entrenamientos' },
                     { to: '/portal/reservas',       icon: Calendar,  label: 'Reservas' },
                     { to: '/portal/retos',          icon: Trophy,    label: 'Retos' },

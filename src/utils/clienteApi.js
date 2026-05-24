@@ -74,6 +74,9 @@ export const fichajePost = (token, body) =>
 export const fichajeMiJornada = (token) =>
   _req('GET', '/api/horario/mi-jornada/hoy', null, token)
 
+export const miResumen = (token, ano) =>
+  _req('GET', `/api/horario/mi-resumen?ano=${ano}`, null, token)
+
 export const fichajeCorreccion = (token, body) =>
   _req('POST', '/api/horario/correccion', body, token)
 
