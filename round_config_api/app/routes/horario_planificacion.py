@@ -773,9 +773,9 @@ def crear_plantilla():
         r = cur.fetchone()
         if not r:
             return jsonify({'ok': False, 'error': 'nombre_duplicado'}), 409
-        log_action(conn, actor_from_request(),
-                   recurso='turno_plantilla', recurso_id=r['id'],
-                   accion='crear', cambios={'nombre': nombre})
+    log_action(actor_from_request(), entidad='turno_plantilla',
+               entidad_id=r['id'], accion='crear',
+               cambios={'nombre': nombre})
     return jsonify({'ok': True, 'plantilla': _row_to_plantilla(r)})
 
 
@@ -809,9 +809,8 @@ def actualizar_plantilla(pid):
         r = cur.fetchone()
         if not r:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
-        log_action(conn, actor_from_request(),
-                   recurso='turno_plantilla', recurso_id=pid,
-                   accion='actualizar', cambios=d)
+    log_action(actor_from_request(), entidad='turno_plantilla',
+               entidad_id=pid, accion='actualizar', cambios=d)
     return jsonify({'ok': True, 'plantilla': _row_to_plantilla(r)})
 
 
@@ -833,8 +832,8 @@ def borrar_plantilla(pid):
         """, (pid, str(g.id_manager)))
         if not cur.fetchone():
             return jsonify({'ok': False, 'error': 'not_found'}), 404
-        log_action(conn, actor_from_request(),
-                   recurso='turno_plantilla', recurso_id=pid, accion='borrar')
+    log_action(actor_from_request(), entidad='turno_plantilla',
+               entidad_id=pid, accion='borrar')
     return jsonify({'ok': True})
 
 
@@ -895,9 +894,9 @@ def put_bloques(pid):
                 VALUES (%s, %s::TIME, %s::TIME, %s, %s, %s)
             """, (pid, b['hora_inicio'], b['hora_fin'], b['tipo'], b['puesto_id'], b['orden']))
         cur.execute("UPDATE turno_plantilla SET updated_at = NOW() WHERE id = %s", (pid,))
-        log_action(conn, actor_from_request(),
-                   recurso='turno_plantilla', recurso_id=pid,
-                   accion='bloques', cambios={'n': len(norm)})
+    log_action(actor_from_request(), entidad='turno_plantilla',
+               entidad_id=pid, accion='bloques',
+               cambios={'n': len(norm)})
     return jsonify({'ok': True, 'bloques': len(norm)})
 
 
@@ -1047,9 +1046,9 @@ def bulk_asignaciones():
                 """, (str(g.id_manager), x['trabajador_id'], x['fecha'],
                       x['turno_plantilla_id'], x['notas']))
                 n_upsert += 1
-        log_action(conn, actor_from_request(),
-                   recurso='turno_asignacion', recurso_id=None,
-                   accion='bulk', cambios={'upsert': n_upsert, 'delete': n_delete})
+    log_action(actor_from_request(), entidad='turno_asignacion',
+               accion='bulk',
+               cambios={'upsert': n_upsert, 'delete': n_delete})
     return jsonify({'ok': True, 'upsert': n_upsert, 'delete': n_delete})
 
 
