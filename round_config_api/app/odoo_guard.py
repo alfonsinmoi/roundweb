@@ -1,4 +1,4 @@
-"""Helper para gatear endpoints que requieren Odoo desplegado.
+"""Helper para gatear endpoints que requieren un módulo activado.
 
 Uso clásico (compat retro — mira odoo_enabled global):
     from flask import g
@@ -10,7 +10,7 @@ Uso clásico (compat retro — mira odoo_enabled global):
     def foo():
         ...
 
-Uso granular (Fase 6 — split por feature):
+Uso granular (Fase 6 + Fase 7 — split por feature):
     from ..odoo_guard import require_feature
 
     @bp.route('/leads', methods=['GET'])
@@ -19,9 +19,10 @@ Uso granular (Fase 6 — split por feature):
     def leads():
         ...
 
-Features válidas: 'crm', 'cuotas', 'contabilidad'. Cada una mira su columna
-correspondiente en manager_config (odoo_crm_enabled, odoo_cuotas_enabled,
-odoo_contabilidad_enabled).
+Features válidas: 'crm', 'cuotas', 'contabilidad', 'control_horario'.
+Cada una mira su columna correspondiente en manager_config
+(odoo_crm_enabled, odoo_cuotas_enabled, odoo_contabilidad_enabled,
+control_horario_enabled).
 
 El decorador inspecciona `manager_config` para el manager actual
 (g.id_manager) y, si la feature está a FALSE o el manager no existe en
@@ -39,9 +40,10 @@ from .db import get_conn
 
 # Map feature name → columna en manager_config
 _FEATURE_COLUMNS = {
-    'crm':           'odoo_crm_enabled',
-    'cuotas':        'odoo_cuotas_enabled',
-    'contabilidad':  'odoo_contabilidad_enabled',
+    'crm':              'odoo_crm_enabled',
+    'cuotas':           'odoo_cuotas_enabled',
+    'contabilidad':     'odoo_contabilidad_enabled',
+    'control_horario':  'control_horario_enabled',
 }
 
 
@@ -121,12 +123,15 @@ def require_feature(feature: str):
 
     # Mensaje específico per-feature
     _MENSAJES = {
-        'crm':           ('Este endpoint requiere el módulo CRM activado. '
-                          'Actívalo en Configuración → Suscripciones → CRM.'),
-        'cuotas':        ('Este endpoint requiere el módulo Cuotas activado. '
-                          'Actívalo en Configuración → Suscripciones → Cuotas.'),
-        'contabilidad':  ('Este endpoint requiere el módulo Contabilidad activado. '
-                          'Actívalo en Configuración → Suscripciones → Contabilidad.'),
+        'crm':              ('Este endpoint requiere el módulo CRM activado. '
+                             'Actívalo en Configuración → Suscripciones → CRM.'),
+        'cuotas':           ('Este endpoint requiere el módulo Cuotas activado. '
+                             'Actívalo en Configuración → Suscripciones → Cuotas.'),
+        'contabilidad':     ('Este endpoint requiere el módulo Contabilidad activado. '
+                             'Actívalo en Configuración → Suscripciones → Contabilidad.'),
+        'control_horario':  ('Este endpoint requiere el módulo Control horario '
+                             'activado. Actívalo en Configuración → Suscripciones '
+                             '→ Control horario.'),
     }
     motivo = _MENSAJES[feature]
 
