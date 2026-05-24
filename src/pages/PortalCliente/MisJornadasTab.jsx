@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { BarChart3, Calendar, CalendarDays, CalendarRange, Clock, Loader2 } from 'lucide-react'
+import {
+  BarChart3, Calendar, CalendarDays, CalendarRange, Clock, Loader2,
+  ChevronDown, ChevronRight,
+} from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
 import { miResumen } from '../../utils/clienteApi'
 
@@ -117,23 +120,48 @@ export default function MisJornadasTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function AnualView({ data }) {
+  const [open, setOpen] = useState(true)  // por defecto desplegado
+  const maxSeg = Math.max(1, ...data.mensual.map(m => m.trabajo_seg))
   return (
-    <Card>
-      <div style={{ padding: 24, textAlign: 'center' }}>
-        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          Año {data.ano}
-        </p>
-        <p style={{
-          margin: '8px 0 4px', fontSize: 44, fontWeight: 700,
-          fontFamily: 'var(--font-display, Outfit)', color: 'var(--green, #10b981)',
-        }}>
-          {fmtDur(data.anual.trabajo_seg)}
-        </p>
-        <p style={{ margin: 0, fontSize: 13, color: 'var(--text-3)' }}>
-          {data.anual.dias_trabajados} {data.anual.dias_trabajados === 1 ? 'día' : 'días'} trabajados
-          · Pausas: {fmtDur(data.anual.pausa_seg)}
-        </p>
-      </div>
+    <Card noPad>
+      <button onClick={() => setOpen(o => !o)}
+              style={rowBtnStyle(open)}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          <strong style={{ fontSize: 16, color: 'var(--text-0)' }}>Año {data.ano}</strong>
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            {data.anual.dias_trabajados} {data.anual.dias_trabajados === 1 ? 'día' : 'días'}
+          </span>
+          <span style={{ fontWeight: 700, fontSize: 18, color: 'var(--green, #10b981)' }}>
+            {fmtDur(data.anual.trabajo_seg)}
+          </span>
+        </span>
+      </button>
+      {open && (
+        <div style={{ borderTop: '1px solid var(--line)' }}>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-2)' }}>
+                <Th></Th><Th>Mes</Th><Th>Trabajo</Th><Th right>Días</Th>
+                <Th style={{ minWidth: 100 }}></Th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.mensual.filter(m => m.trabajo_seg > 0).map(m => (
+                <ExpandableMonth key={m.mes} m={m} maxSeg={maxSeg}
+                                  diasMes={data.diario.filter(d => Number(d.fecha.slice(5, 7)) === m.mes)} />
+              ))}
+              {data.mensual.every(m => m.trabajo_seg === 0) && (
+                <tr><td colSpan={5} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>
+                  Sin jornadas en {data.ano}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Card>
   )
 }
@@ -146,40 +174,64 @@ function MensualView({ data, currentMonth }) {
       <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--bg-2)' }}>
-            <Th>Mes</Th><Th>Trabajo</Th><Th right>Días</Th>
+            <Th></Th><Th>Mes</Th><Th>Trabajo</Th><Th right>Días</Th>
             <Th style={{ minWidth: 100 }}></Th>
           </tr>
         </thead>
         <tbody>
-          {data.mensual.map(m => {
-            const isCur = currentMonth === m.mes
-            return (
-              <tr key={m.mes} style={{ borderTop: '1px solid var(--line)',
-                                       background: isCur ? 'rgba(16,185,129,0.06)' : undefined }}>
-                <Td>
-                  <span style={{ fontWeight: isCur ? 700 : 500 }}>{MESES[m.mes - 1]}</span>
-                  {isCur && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)' }}>actual</span>}
-                </Td>
-                <Td>
-                  <span style={{ fontWeight: 600, color: m.trabajo_seg > 0 ? 'var(--text-0)' : 'var(--text-3)' }}>
-                    {fmtDur(m.trabajo_seg)}
-                  </span>
-                  {m.pausa_seg > 0 && (
-                    <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-3)' }}>
-                      · pausa {fmtDur(m.pausa_seg)}
-                    </span>
-                  )}
-                </Td>
-                <Td right>{m.dias_trabajados}</Td>
-                <Td>
-                  <Bar value={m.trabajo_seg} max={maxSeg} />
-                </Td>
-              </tr>
-            )
-          })}
+          {data.mensual.map(m => (
+            <ExpandableMonth key={m.mes} m={m} maxSeg={maxSeg}
+                              isCurrent={currentMonth === m.mes}
+                              diasMes={data.diario.filter(d => Number(d.fecha.slice(5, 7)) === m.mes)} />
+          ))}
         </tbody>
       </table>
     </Card>
+  )
+}
+
+
+function ExpandableMonth({ m, maxSeg, isCurrent, diasMes }) {
+  const [open, setOpen] = useState(false)
+  const canOpen = m.trabajo_seg > 0
+  return (
+    <>
+      <tr onClick={() => canOpen && setOpen(o => !o)}
+          style={{
+            borderTop: '1px solid var(--line)',
+            background: isCurrent ? 'rgba(16,185,129,0.06)' : undefined,
+            cursor: canOpen ? 'pointer' : 'default',
+          }}>
+        <Td>
+          <span style={{ color: 'var(--text-3)', visibility: canOpen ? 'visible' : 'hidden' }}>
+            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+        </Td>
+        <Td>
+          <span style={{ fontWeight: isCurrent ? 700 : 500 }}>{MESES[m.mes - 1]}</span>
+          {isCurrent && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)' }}>actual</span>}
+        </Td>
+        <Td>
+          <span style={{ fontWeight: 600, color: m.trabajo_seg > 0 ? 'var(--text-0)' : 'var(--text-3)' }}>
+            {fmtDur(m.trabajo_seg)}
+          </span>
+          {m.pausa_seg > 0 && (
+            <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-3)' }}>
+              · pausa {fmtDur(m.pausa_seg)}
+            </span>
+          )}
+        </Td>
+        <Td right>{m.dias_trabajados}</Td>
+        <Td><Bar value={m.trabajo_seg} max={maxSeg} /></Td>
+      </tr>
+      {open && diasMes.length > 0 && (
+        <tr>
+          <td colSpan={5} style={{ padding: 0, background: 'var(--bg-2)' }}>
+            <DiasSubTable dias={diasMes} />
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 
@@ -194,32 +246,108 @@ function SemanalView({ data, highlight }) {
       <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--bg-2)' }}>
-            <Th>Semana</Th><Th>Desde lunes</Th><Th>Trabajo</Th><Th right>Días</Th>
+            <Th></Th><Th>Semana</Th><Th>Desde lunes</Th><Th>Trabajo</Th><Th right>Días</Th>
             <Th style={{ minWidth: 100 }}></Th>
           </tr>
         </thead>
         <tbody>
           {data.semanal.map(s => {
             const isCur = highlight && s.iso_year === highlight.iso_year && s.iso_week === highlight.iso_week
+            const lunes = s.fecha_lunes
+            const domingo = addDays(lunes, 6)
+            const dias = data.diario.filter(d => d.fecha >= lunes && d.fecha <= domingo)
             return (
-              <tr key={`${s.iso_year}-${s.iso_week}`}
-                  style={{ borderTop: '1px solid var(--line)',
-                           background: isCur ? 'rgba(16,185,129,0.06)' : undefined }}>
-                <Td>
-                  <span style={{ fontWeight: isCur ? 700 : 500 }}>S{s.iso_week}</span>
-                  {isCur && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)' }}>actual</span>}
-                </Td>
-                <Td>{fmtDate(s.fecha_lunes)}</Td>
-                <Td><span style={{ fontWeight: 600 }}>{fmtDur(s.trabajo_seg)}</span></Td>
-                <Td right>{s.dias_trabajados}</Td>
-                <Td><Bar value={s.trabajo_seg} max={maxSeg} /></Td>
-              </tr>
+              <ExpandableWeek key={`${s.iso_year}-${s.iso_week}`}
+                              s={s} maxSeg={maxSeg} isCur={isCur} dias={dias} />
             )
           })}
         </tbody>
       </table>
     </Card>
   )
+}
+
+
+function ExpandableWeek({ s, maxSeg, isCur, dias }) {
+  const [open, setOpen] = useState(false)
+  const canOpen = s.trabajo_seg > 0
+  return (
+    <>
+      <tr onClick={() => canOpen && setOpen(o => !o)}
+          style={{
+            borderTop: '1px solid var(--line)',
+            background: isCur ? 'rgba(16,185,129,0.06)' : undefined,
+            cursor: canOpen ? 'pointer' : 'default',
+          }}>
+        <Td>
+          <span style={{ color: 'var(--text-3)', visibility: canOpen ? 'visible' : 'hidden' }}>
+            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+        </Td>
+        <Td>
+          <span style={{ fontWeight: isCur ? 700 : 500 }}>S{s.iso_week}</span>
+          {isCur && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)' }}>actual</span>}
+        </Td>
+        <Td>{fmtDate(s.fecha_lunes)}</Td>
+        <Td><span style={{ fontWeight: 600 }}>{fmtDur(s.trabajo_seg)}</span></Td>
+        <Td right>{s.dias_trabajados}</Td>
+        <Td><Bar value={s.trabajo_seg} max={maxSeg} /></Td>
+      </tr>
+      {open && dias.length > 0 && (
+        <tr>
+          <td colSpan={6} style={{ padding: 0, background: 'var(--bg-2)' }}>
+            <DiasSubTable dias={dias} />
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+
+function DiasSubTable({ dias }) {
+  return (
+    <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+      <tbody>
+        {dias.slice().reverse().map(d => (
+          <tr key={d.fecha} style={{ borderTop: '1px solid var(--line)' }}>
+            <td style={{ padding: '8px 14px 8px 36px', color: 'var(--text-2)', width: '40%' }}>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtDate(d.fecha)}</span>
+            </td>
+            <td style={{ padding: '8px 14px', color: 'var(--text-1)' }}>
+              <span style={{ fontWeight: 600 }}>{fmtDur(d.trabajo_seg)}</span>
+              {d.pausa_seg > 0 && (
+                <span style={{ marginLeft: 6, color: 'var(--text-3)' }}>
+                  · pausa {fmtDur(d.pausa_seg)}
+                </span>
+              )}
+            </td>
+            <td style={{ padding: '8px 14px', textAlign: 'right', color: 'var(--text-3)', fontSize: 11 }}>
+              {d.n_eventos} eventos
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+
+function rowBtnStyle(open) {
+  return {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    width: '100%', padding: '14px 16px',
+    background: open ? 'var(--bg-2)' : 'transparent',
+    border: 'none', cursor: 'pointer', textAlign: 'left',
+    color: 'var(--text-1)', fontSize: 14,
+  }
+}
+
+
+function addDays(isoYmd, days) {
+  const d = new Date(isoYmd + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
 }
 
 
