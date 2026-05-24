@@ -151,14 +151,6 @@ export const PERMISSIONS = {
       patrones:      { label: 'Análisis de patrones (clusters)', action: true },
       retos:         { label: 'Retos', action: true },
       estado_fisico: { label: 'Estado físico (tests)',    action: true },
-      // Aliases legacy — se conservan para no romper perfiles antiguos.
-      // El árbol resuelve `informe_asistencia.analisis_patrones` como
-      // sinónimo de `informe_asistencia.patrones` durante el backfill.
-      analisis_patrones: { label: '(legacy) Análisis de patrones', action: true },
-      tendencias:        { label: '(legacy)', action: true },
-      comparativa:       { label: '(legacy)', action: true },
-      ranking_clases:    { label: '(legacy)', action: true },
-      ocupacion_sala:    { label: '(legacy)', action: true },
     },
   },
 
