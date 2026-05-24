@@ -126,6 +126,55 @@ export const trabajadorSaldoAusencias = (identity, id, ano) =>
   _req('GET', `/trabajadores/${id}/saldo-ausencias?ano=${ano}`, identity)
 export const ausenciaCrearAdmin = (identity, body) =>
   _req('POST', '/ausencias', identity, body).then(d => d.solicitud)
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// PLANIFICACIÓN (Fase 2 B.1)
+// ══════════════════════════════════════════════════════════════════════════
+
+// Temporadas
+export const temporadasList = (identity) =>
+  _req('GET', '/temporadas', identity).then(d => d.temporadas)
+export const temporadaCreate = (identity, body) =>
+  _req('POST', '/temporadas', identity, body).then(d => d.temporada)
+export const temporadaUpdate = (identity, id, body) =>
+  _req('PATCH', `/temporadas/${id}`, identity, body).then(d => d.temporada)
+export const temporadaDelete = (identity, id) =>
+  _req('DELETE', `/temporadas/${id}`, identity)
+export const aperturaGet = (identity, tid) =>
+  _req('GET', `/temporadas/${tid}/apertura`, identity).then(d => d.apertura)
+export const aperturaSave = (identity, tid, apertura) =>
+  _req('PUT', `/temporadas/${tid}/apertura`, identity, { apertura })
+
+// Puestos
+export const puestosList = (identity) =>
+  _req('GET', '/puestos', identity).then(d => d.puestos)
+export const puestoCreate = (identity, body) =>
+  _req('POST', '/puestos', identity, body).then(d => d.puesto)
+export const puestoUpdate = (identity, id, body) =>
+  _req('PATCH', `/puestos/${id}`, identity, body).then(d => d.puesto)
+export const puestoDelete = (identity, id) =>
+  _req('DELETE', `/puestos/${id}`, identity)
+export const compatibilidadesGet = (identity) =>
+  _req('GET', '/puestos/compatibilidades', identity).then(d => d.pares)
+export const compatibilidadesSave = (identity, pares) =>
+  _req('PUT', '/puestos/compatibilidades', identity, { pares })
+export const demandaGet = (identity, pid, temporadaId) => {
+  const qs = temporadaId ? `?temporada_id=${temporadaId}` : ''
+  return _req('GET', `/puestos/${pid}/demanda${qs}`, identity).then(d => d.demanda)
+}
+export const demandaSave = (identity, pid, filas) =>
+  _req('PUT', `/puestos/${pid}/demanda`, identity, { filas })
+
+// Trabajador: capacidades + preferencias
+export const trabajadorPuestosGet = (identity, tid) =>
+  _req('GET', `/trabajadores/${tid}/puestos`, identity).then(d => d.puestos)
+export const trabajadorPuestosSave = (identity, tid, puestos) =>
+  _req('PUT', `/trabajadores/${tid}/puestos`, identity, { puestos })
+export const trabajadorPreferenciasGet = (identity, tid) =>
+  _req('GET', `/trabajadores/${tid}/preferencias`, identity).then(d => d.preferencias)
+export const trabajadorPreferenciasSave = (identity, tid, prefs) =>
+  _req('PUT', `/trabajadores/${tid}/preferencias`, identity, prefs)
 export const trabajadorVincularTrainer = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/trainers`, identity, body)
 export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>

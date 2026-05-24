@@ -12,15 +12,17 @@ import ConfiguracionTab  from './ConfiguracionTab'
 import QrCentroTab       from './QrCentroTab'
 import CorreccionesTab   from './CorreccionesTab'
 import AusenciasTab      from './AusenciasTab'
+import PlanificacionTab  from './PlanificacionTab'
 
 
 const TABS = [
-  { id: 'trabajadores', label: 'Trabajadores', comp: TrabajadoresTab },
-  { id: 'fichajes',     label: 'Fichajes',     comp: FichajesTab },
-  { id: 'ausencias',    label: 'Ausencias',    comp: AusenciasTab },
-  { id: 'qr',           label: 'QR del centro', comp: QrCentroTab },
-  { id: 'correcciones', label: 'Correcciones', comp: CorreccionesTab },
-  { id: 'config',       label: 'Configuración', comp: ConfiguracionTab },
+  { id: 'trabajadores',  label: 'Trabajadores',  comp: TrabajadoresTab },
+  { id: 'fichajes',      label: 'Fichajes',      comp: FichajesTab },
+  { id: 'ausencias',     label: 'Ausencias',     comp: AusenciasTab },
+  { id: 'planificacion', label: 'Planificación', comp: PlanificacionTab },
+  { id: 'qr',            label: 'QR del centro', comp: QrCentroTab },
+  { id: 'correcciones',  label: 'Correcciones',  comp: CorreccionesTab },
+  { id: 'config',        label: 'Configuración', comp: ConfiguracionTab },
 ]
 
 

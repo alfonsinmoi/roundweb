@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info, Pencil, History, Save, CalendarDays, Plus, Trash2, Copy } from 'lucide-react'
+import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info, Pencil, History, Save, CalendarDays, Plus, Trash2, Copy, Briefcase, Heart } from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import Modal from '../../components/Modal'
@@ -7,6 +7,8 @@ import {
   trabajadoresList, trabajadoresPendientes, trabajadorAlta,
   trabajadorBaja, trabajadorReactivar, trabajadorUpdate, trabajadorHistorial,
   trabajadorHorario, trabajadorHorarioSave,
+  puestosList, trabajadorPuestosGet, trabajadorPuestosSave,
+  trabajadorPreferenciasGet, trabajadorPreferenciasSave,
 } from '../../utils/horarioApi'
 import { getEntrenadores } from '../../utils/api'
 
@@ -387,10 +389,13 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
       <div style={{
         display: 'flex', gap: 6, padding: '12px 32px 0',
         borderBottom: '1px solid var(--line)', flexShrink: 0,
+        flexWrap: 'wrap',
       }}>
-        <TabBtn active={tab === 'datos'}     onClick={() => setTab('datos')}><Pencil size={14} /> Datos</TabBtn>
-        <TabBtn active={tab === 'horario'}   onClick={() => setTab('horario')}><CalendarDays size={14} /> Horario</TabBtn>
-        <TabBtn active={tab === 'historial'} onClick={() => setTab('historial')}><History size={14} /> Historial</TabBtn>
+        <TabBtn active={tab === 'datos'}        onClick={() => setTab('datos')}><Pencil size={14} /> Datos</TabBtn>
+        <TabBtn active={tab === 'horario'}      onClick={() => setTab('horario')}><CalendarDays size={14} /> Horario</TabBtn>
+        <TabBtn active={tab === 'capacidades'}  onClick={() => setTab('capacidades')}><Briefcase size={14} /> Capacidades</TabBtn>
+        <TabBtn active={tab === 'preferencias'} onClick={() => setTab('preferencias')}><Heart size={14} /> Preferencias</TabBtn>
+        <TabBtn active={tab === 'historial'}    onClick={() => setTab('historial')}><History size={14} /> Historial</TabBtn>
       </div>
 
       {tab === 'datos' && (
@@ -468,6 +473,12 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
 
       {tab === 'horario' && (
         <HorarioPanel trabajadorId={trabajador.id} identity={identity} />
+      )}
+      {tab === 'capacidades' && (
+        <CapacidadesPanel trabajadorId={trabajador.id} identity={identity} />
+      )}
+      {tab === 'preferencias' && (
+        <PreferenciasPanel trabajadorId={trabajador.id} identity={identity} />
       )}
       {tab === 'historial' && (
         <HistorialPanel trabajadorId={trabajador.id} identity={identity} />
@@ -943,6 +954,306 @@ function fmtMin(mins) {
   if (h === 0) return `${m}m`
   if (m === 0) return `${h}h`
   return `${h}h ${String(m).padStart(2, '0')}m`
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ║  Capacidades del trabajador (qué puestos puede desempeñar)             ║
+// ═══════════════════════════════════════════════════════════════════════════
+
+function CapacidadesPanel({ trabajadorId, identity }) {
+  const toast = useToast()
+  const [puestos, setPuestos] = useState([])
+  const [asignaciones, setAsignaciones] = useState([])     // [{puesto_id, nivel, preferente}]
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [pristine, setPristine] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    Promise.all([
+      puestosList(identity),
+      trabajadorPuestosGet(identity, trabajadorId),
+    ]).then(([all, mine]) => {
+      setPuestos(all || [])
+      const norm = (mine || []).map(p => ({
+        puesto_id: p.puesto_id, nivel: p.nivel || '', preferente: !!p.preferente,
+      }))
+      setAsignaciones(norm)
+      setPristine(JSON.stringify(norm))
+    }).catch(e => toast.error('Error: ' + e.message))
+      .finally(() => setLoading(false))
+  }, [trabajadorId, identity]) // eslint-disable-line
+
+  const dirty = JSON.stringify(asignaciones) !== pristine
+
+  function toggle(puesto_id) {
+    setAsignaciones(arr => {
+      const idx = arr.findIndex(a => a.puesto_id === puesto_id)
+      if (idx >= 0) return arr.filter((_, i) => i !== idx)
+      return [...arr, { puesto_id, nivel: '', preferente: false }]
+    })
+  }
+  function setField(puesto_id, field, value) {
+    setAsignaciones(arr => arr.map(a => a.puesto_id === puesto_id ? { ...a, [field]: value } : a))
+  }
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await trabajadorPuestosSave(identity, trabajadorId, asignaciones)
+      setPristine(JSON.stringify(asignaciones))
+      toast.success('Capacidades guardadas')
+    } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
+    finally { setSaving(false) }
+  }
+
+  if (loading) return <div style={{ padding: 24, color: 'var(--text-3)' }}>Cargando…</div>
+  if (puestos.length === 0) {
+    return (
+      <div style={{ padding: 24, color: 'var(--text-3)' }}>
+        Aún no hay puestos definidos. Ve a <strong>Planificación → Puestos</strong> para crear el catálogo.
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--text-3)' }}>
+          Marca los puestos que este trabajador puede desempeñar. Cada uno admite
+          un nivel libre (junior/senior…) y un flag "preferente" para que el
+          algoritmo le asigne ese puesto primero.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {puestos.map(p => {
+            const asig = asignaciones.find(a => a.puesto_id === p.id)
+            const has = !!asig
+            return (
+              <div key={p.id} style={{
+                padding: 10, borderRadius: 10,
+                background: has ? 'var(--green-bg, rgba(16,185,129,0.08))' : 'var(--bg-2)',
+                border: has ? '1px solid var(--green, #10b981)' : '1px solid var(--line)',
+                display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+              }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flex: 1 }}>
+                  <input type="checkbox" checked={has}
+                         onChange={() => toggle(p.id)}
+                         style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--green, #10b981)' }} />
+                  <Badge color={p.color}>{p.nombre}</Badge>
+                  <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+                    {p.codigo}
+                  </span>
+                </label>
+                {has && (
+                  <>
+                    <input type="text" placeholder="nivel (opcional)"
+                           value={asig.nivel}
+                           onChange={e => setField(p.id, 'nivel', e.target.value)}
+                           style={{
+                             padding: '5px 8px', borderRadius: 6,
+                             border: '1px solid var(--line)', background: 'var(--bg-1)',
+                             color: 'var(--text-0)', fontSize: 12, width: 130,
+                           }} />
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-3)' }}>
+                      <input type="checkbox" checked={asig.preferente}
+                             onChange={e => setField(p.id, 'preferente', e.target.checked)} />
+                      preferente
+                    </label>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <div style={{
+        padding: '14px 28px', borderTop: '1px solid var(--line)',
+        background: 'var(--bg-2)', flexShrink: 0,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+      }}>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          {asignaciones.length} de {puestos.length} puestos asignados
+          {dirty && <span style={{ marginLeft: 8, color: '#f59e0b', fontWeight: 700 }}>● sin guardar</span>}
+        </span>
+        <Btn onClick={handleSave} disabled={saving || !dirty}>
+          <Save size={13} /> {saving ? 'Guardando…' : 'Guardar'}
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ║  Preferencias del trabajador                                            ║
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DIAS_PREF = [
+  { i: 1, label: 'Lun' }, { i: 2, label: 'Mar' }, { i: 3, label: 'Mié' },
+  { i: 4, label: 'Jue' }, { i: 5, label: 'Vie' }, { i: 6, label: 'Sáb' }, { i: 7, label: 'Dom' },
+]
+
+
+function PreferenciasPanel({ trabajadorId, identity }) {
+  const toast = useToast()
+  const [form, setForm] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [pristine, setPristine] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    trabajadorPreferenciasGet(identity, trabajadorId)
+      .then(p => { setForm(p); setPristine(JSON.stringify(p)) })
+      .catch(e => toast.error('Error: ' + e.message))
+      .finally(() => setLoading(false))
+  }, [trabajadorId, identity]) // eslint-disable-line
+
+  const dirty = form && JSON.stringify(form) !== pristine
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  function toggleDiaLibre(d) {
+    setForm(f => ({
+      ...f,
+      dias_libres_preferidos: f.dias_libres_preferidos.includes(d)
+        ? f.dias_libres_preferidos.filter(x => x !== d)
+        : [...f.dias_libres_preferidos, d].sort(),
+    }))
+  }
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await trabajadorPreferenciasSave(identity, trabajadorId, form)
+      setPristine(JSON.stringify(form))
+      toast.success('Preferencias guardadas')
+    } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
+    finally { setSaving(false) }
+  }
+
+  if (loading || !form) return <div style={{ padding: 24, color: 'var(--text-3)' }}>Cargando…</div>
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '18px 28px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-3)' }}>
+          Preferencias del trabajador para el algoritmo de planificación
+          automática. Son <strong>blandas</strong>: el algoritmo intentará
+          respetarlas pero podrá ignorarlas si no hay forma de cubrir el
+          centro respetándolas todas.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Input label="Máx. horas / semana" type="number" step="0.5"
+                 value={form.max_horas_semana ?? ''}
+                 onChange={e => set('max_horas_semana', e.target.value === '' ? null : Number(e.target.value))} />
+          <Input label="Máx. turnos / semana" type="number"
+                 value={form.max_turnos_semana ?? ''}
+                 onChange={e => set('max_turnos_semana', e.target.value === '' ? null : Number(e.target.value))} />
+        </div>
+
+        <div>
+          <label style={prefLbl}>Franja preferida</label>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[
+              { id: 'manana',     label: 'Mañana' },
+              { id: 'tarde',      label: 'Tarde' },
+              { id: 'noche',      label: 'Noche' },
+              { id: 'cualquiera', label: 'Cualquiera' },
+            ].map(o => {
+              const active = form.prefiere_franja === o.id
+              return (
+                <button key={o.id} type="button"
+                        onClick={() => set('prefiere_franja', o.id)}
+                        style={{
+                          padding: '8px 14px', borderRadius: 10,
+                          border: active ? '1px solid var(--green, #10b981)' : '1px solid var(--line)',
+                          background: active ? 'var(--green-bg, rgba(16,185,129,0.10))' : 'var(--bg-2)',
+                          color: active ? 'var(--green, #10b981)' : 'var(--text-2)',
+                          fontWeight: active ? 700 : 500, fontSize: 13, cursor: 'pointer',
+                        }}>
+                  {o.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div>
+          <label style={prefLbl}>Días libres preferidos</label>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {DIAS_PREF.map(d => {
+              const active = form.dias_libres_preferidos.includes(d.i)
+              return (
+                <button key={d.i} type="button"
+                        onClick={() => toggleDiaLibre(d.i)}
+                        style={{
+                          padding: '6px 12px', borderRadius: 8,
+                          border: active ? '1px solid var(--green, #10b981)' : '1px solid var(--line)',
+                          background: active ? 'var(--green-bg, rgba(16,185,129,0.10))' : 'var(--bg-2)',
+                          color: active ? 'var(--green, #10b981)' : 'var(--text-2)',
+                          fontWeight: active ? 700 : 500, fontSize: 12, cursor: 'pointer',
+                        }}>
+                  {d.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <SwitchRow label="Acepta jornada partida"
+                     checked={form.acepta_partido}
+                     onChange={v => set('acepta_partido', v)} />
+          <SwitchRow label="Acepta turno nocturno"
+                     checked={form.acepta_nocturno}
+                     onChange={v => set('acepta_nocturno', v)} />
+          <SwitchRow label="Acepta fin de semana"
+                     checked={form.acepta_findesemana}
+                     onChange={v => set('acepta_findesemana', v)} />
+        </div>
+
+        <Input label="Notas" value={form.notas || ''}
+               onChange={e => set('notas', e.target.value)} />
+      </div>
+
+      <div style={{
+        padding: '14px 28px', borderTop: '1px solid var(--line)',
+        background: 'var(--bg-2)', flexShrink: 0,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+      }}>
+        <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          {dirty && <span style={{ color: '#f59e0b', fontWeight: 700 }}>● sin guardar</span>}
+        </span>
+        <Btn onClick={handleSave} disabled={saving || !dirty}>
+          <Save size={13} /> {saving ? 'Guardando…' : 'Guardar'}
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
+
+function SwitchRow({ label, checked, onChange }) {
+  return (
+    <label style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '8px 12px', borderRadius: 8,
+      background: 'var(--bg-2)', border: '1px solid var(--line)',
+      cursor: 'pointer', fontSize: 13, color: 'var(--text-1)',
+    }}>
+      {label}
+      <input type="checkbox" checked={checked}
+             onChange={e => onChange(e.target.checked)}
+             style={{ width: 18, height: 18, cursor: 'pointer', accentColor: 'var(--green, #10b981)' }} />
+    </label>
+  )
+}
+
+
+const prefLbl = {
+  display: 'block', marginBottom: 6, fontSize: 11,
+  color: 'var(--text-3)', fontWeight: 600,
+  textTransform: 'uppercase', letterSpacing: '0.05em',
 }
 
 
