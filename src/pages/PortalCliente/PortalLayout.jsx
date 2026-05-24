@@ -51,7 +51,10 @@ export default function PortalLayout() {
 
   return (
     <div style={{
-      minHeight: '100vh', minHeight: '100dvh',
+      // body global lleva overflow:hidden → el scroll vive dentro del <main>.
+      // Por eso aquí usamos height fijo + overflow:hidden (NO minHeight).
+      height: '100vh', height: '100dvh',
+      overflow: 'hidden',
       display: 'flex',
       background: 'var(--bg-0)',
       color: 'var(--text-0)',
@@ -86,14 +89,18 @@ export default function PortalLayout() {
         </>
       )}
 
-      {/* ── Contenido principal ─────────────────────────────────────────── */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* ── Columna derecha (header sin scroll + main con scroll) ──────── */}
+      <div style={{
+        display: 'flex', flexDirection: 'column',
+        flex: 1, minWidth: 0,
+        overflow: 'hidden',
+      }}>
         <header className="portal-header" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '12px 16px',
           background: 'var(--bg-1)',
           borderBottom: '1px solid var(--line)',
-          position: 'sticky', top: 0, zIndex: 10,
+          flexShrink: 0,
         }}>
           {/* Hamburger sólo en móvil */}
           <button onClick={() => setDrawerOpen(true)}
@@ -131,11 +138,15 @@ export default function PortalLayout() {
         </header>
 
         <main style={{
-          flex: 1, padding: '12px 12px 24px',
-          maxWidth: 960, width: '100%', margin: '0 auto',
+          flex: 1,
+          overflowY: 'auto',          // ← área scrolleable única
+          overflowX: 'hidden',
+          padding: '12px 12px 24px',
           boxSizing: 'border-box',
         }}>
-          <Outlet />
+          <div style={{ maxWidth: 960, width: '100%', margin: '0 auto' }}>
+            <Outlet />
+          </div>
         </main>
       </div>
 
@@ -179,8 +190,7 @@ function PortalSidebar({
              background: 'var(--bg-1)',
              borderRight: '1px solid var(--line)',
              transition: 'width 0.2s ease',
-             height: '100vh', height: '100dvh',
-             position: 'sticky', top: 0,
+             height: '100%',         // padre tiene overflow:hidden + height
              overflow: 'hidden',
            }}>
       {/* ── Brand + collapse / close ───────────────────────────────────── */}
