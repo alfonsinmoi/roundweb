@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { LogIn, LogOut, Coffee, PlayCircle, AlertCircle, MapPin, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { LogIn, LogOut, Coffee, PlayCircle, AlertCircle, MapPin, ChevronDown, ChevronUp, Loader2, Target } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
-import { fichajeEstado, fichajePost, fichajeMiJornada } from '../../utils/clienteApi'
+import { fichajeEstado, fichajePost, fichajeMiJornada, miHorario } from '../../utils/clienteApi'
 
 
 // Motivos de pausa por defecto (hasta que el endpoint público con JWT de
@@ -20,6 +20,7 @@ export default function FicharTab() {
   const { token, cliente } = usePortalAuth()
   const [estado, setEstado] = useState(null)        // {estado, ultimo_evento, pausa_motivo_id}
   const [jornada, setJornada] = useState(null)
+  const [horario, setHorario] = useState(null)      // horario teórico {1:[...], ..., 7:[...]}
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -31,12 +32,14 @@ export default function FicharTab() {
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const [e, j] = await Promise.all([
+      const [e, j, h] = await Promise.all([
         fichajeEstado(token),
         fichajeMiJornada(token).catch(() => null),
+        miHorario(token).catch(() => null),
       ])
       setEstado(e)
       setJornada(j)
+      setHorario(h)
     } catch (e) {
       setError(traduce(e))
     } finally { setLoading(false) }
@@ -85,6 +88,9 @@ export default function FicharTab() {
 
       {/* ── Estado actual (grande, visible de un vistazo) ─────────────── */}
       <EstadoBlock estado={st} ultimo={estado.ultimo_evento} />
+
+      {/* ── Progreso de la jornada de hoy (si tiene horario teórico) ─── */}
+      <ProgresoHoy horario={horario} trabajoSeg={jornada?.total_trabajo_seg || 0} />
 
       {/* ── Mensajes flash ─────────────────────────────────────────────── */}
       {info && <Banner kind="ok" onClose={() => setInfo('')}>{info}</Banner>}
@@ -432,6 +438,101 @@ function tipoLabel(t) {
     CORRECCION_INSERT: 'Corrección', CORRECCION_ANULAR: 'Anulación',
   })[t] || t
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Progreso jornada teórica de hoy (real vs esperado)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function ProgresoHoy({ horario, trabajoSeg }) {
+  if (!horario) return null
+  const isoDow = getISODow(new Date())   // 1=lun ... 7=dom
+  const franjasHoy = (horario[String(isoDow)] || []).filter(f => f.tipo === 'trabajo')
+  if (franjasHoy.length === 0) {
+    // No tiene horario teórico hoy
+    return (
+      <div style={{
+        padding: '10px 14px', borderRadius: 12,
+        background: 'var(--bg-1)', border: '1px solid var(--line)',
+        fontSize: 12, color: 'var(--text-3)', textAlign: 'center',
+      }}>
+        Hoy no tienes jornada teórica programada — descanso.
+      </div>
+    )
+  }
+  const minTeorico = franjasHoy.reduce((a, f) => a + minutosFranja(f.hora_inicio, f.hora_fin), 0)
+  const minReal = Math.floor((trabajoSeg || 0) / 60)
+  const pct = Math.min(100, Math.round((minReal / minTeorico) * 100))
+
+  const color = pct >= 100 ? 'var(--green, #10b981)'
+              : pct >= 50  ? '#f59e0b'
+              : 'var(--text-2)'
+
+  return (
+    <div style={{
+      padding: '14px 16px', borderRadius: 14,
+      background: 'var(--bg-1)', border: '1px solid var(--line)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 12, marginBottom: 8 }}>
+        <div>
+          <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+            <Target size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+            Jornada de hoy
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 700, color: 'var(--text-0)' }}>
+            <span style={{ color }}>{fmtMinHM(minReal)}</span>
+            <span style={{ color: 'var(--text-3)', fontWeight: 500, fontSize: 13 }}> / {fmtMinHM(minTeorico)}</span>
+          </p>
+          <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-3)' }}>
+            Horario teórico: {franjasHoy.map(f => `${f.hora_inicio}–${f.hora_fin}`).join(' · ')}
+          </p>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <p style={{
+            margin: 0, fontFamily: 'var(--font-display, Outfit)',
+            fontSize: 32, fontWeight: 700, color,
+            lineHeight: 1,
+          }}>
+            {pct}%
+          </p>
+          <p style={{ margin: '2px 0 0', fontSize: 10, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            completado
+          </p>
+        </div>
+      </div>
+      <div style={{
+        height: 8, borderRadius: 999, overflow: 'hidden',
+        background: 'var(--bg-3)',
+      }}>
+        <div style={{
+          height: '100%', width: `${pct}%`,
+          background: color,
+          transition: 'width 0.4s ease',
+        }} />
+      </div>
+    </div>
+  )
+}
+
+
+function getISODow(d) {
+  const js = d.getDay()
+  return js === 0 ? 7 : js
+}
+function minutosFranja(hi, hf) {
+  if (!hi || !hf) return 0
+  const [h1, m1] = hi.split(':').map(Number)
+  const [h2, m2] = hf.split(':').map(Number)
+  return Math.max(0, (h2 * 60 + m2) - (h1 * 60 + m1))
+}
+function fmtMinHM(mins) {
+  mins = Math.max(0, Math.floor(mins || 0))
+  if (mins === 0) return '0h'
+  const h = Math.floor(mins / 60); const m = mins % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${String(m).padStart(2, '0')}m`
+}
+
 
 function traduce(e) {
   const code = typeof e === 'string' ? e : (e?.body?.error || e?.message || '')

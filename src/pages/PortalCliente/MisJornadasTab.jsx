@@ -4,7 +4,7 @@ import {
   ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
-import { miResumen } from '../../utils/clienteApi'
+import { miResumen, miHorario } from '../../utils/clienteApi'
 
 
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
@@ -13,13 +13,21 @@ export default function MisJornadasTab() {
   const { token } = usePortalAuth()
   const [ano, setAno] = useState(() => new Date().getFullYear())
   const [data, setData] = useState(null)
+  const [horario, setHorario] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [view, setView] = useState('mensual')   // anual | mensual | semanal | diario
 
   const reload = useCallback(async () => {
     setLoading(true); setError('')
-    try { setData(await miResumen(token, ano)) }
+    try {
+      const [d, h] = await Promise.all([
+        miResumen(token, ano),
+        miHorario(token).catch(() => null),
+      ])
+      setData(d)
+      setHorario(h)
+    }
     catch (e) {
       setError(traduce(e))
       setData(null)
@@ -28,6 +36,10 @@ export default function MisJornadasTab() {
   }, [token, ano])
 
   useEffect(() => { reload() }, [reload])
+
+  // Pre-calcula minutos teóricos por día ISO (1..7) en función del horario.
+  // Cacheado durante el render para no recomputar 365 veces.
+  const minTeoricosPorDow = horario ? calcularTeoricosPorDow(horario) : null
 
   // Año actual y mes/semana actual para destacar
   const today = new Date()
@@ -103,11 +115,12 @@ export default function MisJornadasTab() {
             <SubTab active={view === 'anual'}    onClick={() => setView('anual')}><Clock size={14} /> Anual</SubTab>
           </div>
 
-          {view === 'anual'    && <AnualView data={data} />}
-          {view === 'mensual'  && <MensualView data={data} currentMonth={isCurrentYear ? curMonth : null} />}
-          {view === 'semanal'  && <SemanalView data={data}
+          {view === 'anual'    && <AnualView data={data} mtd={minTeoricosPorDow} />}
+          {view === 'mensual'  && <MensualView data={data} mtd={minTeoricosPorDow}
+                                               currentMonth={isCurrentYear ? curMonth : null} />}
+          {view === 'semanal'  && <SemanalView data={data} mtd={minTeoricosPorDow}
                                                highlight={isCurrentYear ? { iso_year: curIsoYear, iso_week: curIsoWeek } : null} />}
-          {view === 'diario'   && <DiarioView data={data} />}
+          {view === 'diario'   && <DiarioView data={data} mtd={minTeoricosPorDow} />}
         </>
       )}
     </div>
@@ -119,13 +132,13 @@ export default function MisJornadasTab() {
 // Vistas
 // ═══════════════════════════════════════════════════════════════════════════
 
-function AnualView({ data }) {
-  const [open, setOpen] = useState(true)  // por defecto desplegado
+function AnualView({ data, mtd }) {
+  const [open, setOpen] = useState(true)
   const maxSeg = Math.max(1, ...data.mensual.map(m => m.trabajo_seg))
+  const teoricoAno = mtd ? minutosTeoricosAno(data.ano, mtd) * 60 : null  // en segundos
   return (
     <Card noPad>
-      <button onClick={() => setOpen(o => !o)}
-              style={rowBtnStyle(open)}>
+      <button onClick={() => setOpen(o => !o)} style={rowBtnStyle(open)}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           <strong style={{ fontSize: 16, color: 'var(--text-0)' }}>Año {data.ano}</strong>
@@ -134,9 +147,7 @@ function AnualView({ data }) {
           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
             {data.anual.dias_trabajados} {data.anual.dias_trabajados === 1 ? 'día' : 'días'}
           </span>
-          <span style={{ fontWeight: 700, fontSize: 18, color: 'var(--green, #10b981)' }}>
-            {fmtDur(data.anual.trabajo_seg)}
-          </span>
+          <RealVsTeorico realSeg={data.anual.trabajo_seg} teoricoSeg={teoricoAno} big />
         </span>
       </button>
       {open && (
@@ -144,20 +155,15 @@ function AnualView({ data }) {
           <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--bg-2)' }}>
-                <Th></Th><Th>Mes</Th><Th>Trabajo</Th><Th right>Días</Th>
+                <Th></Th><Th>Mes</Th><Th>Real / Teórico</Th><Th right>%</Th><Th right>Días</Th>
                 <Th style={{ minWidth: 100 }}></Th>
               </tr>
             </thead>
             <tbody>
-              {data.mensual.filter(m => m.trabajo_seg > 0).map(m => (
-                <ExpandableMonth key={m.mes} m={m} maxSeg={maxSeg}
+              {data.mensual.filter(m => m.trabajo_seg > 0 || (mtd && minutosTeoricosMes(data.ano, m.mes, mtd) > 0)).map(m => (
+                <ExpandableMonth key={m.mes} m={m} maxSeg={maxSeg} mtd={mtd} ano={data.ano}
                                   diasMes={data.diario.filter(d => Number(d.fecha.slice(5, 7)) === m.mes)} />
               ))}
-              {data.mensual.every(m => m.trabajo_seg === 0) && (
-                <tr><td colSpan={5} style={{ padding: 24, textAlign: 'center', color: 'var(--text-3)' }}>
-                  Sin jornadas en {data.ano}
-                </td></tr>
-              )}
             </tbody>
           </table>
         </div>
@@ -167,20 +173,20 @@ function AnualView({ data }) {
 }
 
 
-function MensualView({ data, currentMonth }) {
+function MensualView({ data, mtd, currentMonth }) {
   const maxSeg = Math.max(1, ...data.mensual.map(m => m.trabajo_seg))
   return (
     <Card noPad>
       <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--bg-2)' }}>
-            <Th></Th><Th>Mes</Th><Th>Trabajo</Th><Th right>Días</Th>
+            <Th></Th><Th>Mes</Th><Th>Real / Teórico</Th><Th right>%</Th><Th right>Días</Th>
             <Th style={{ minWidth: 100 }}></Th>
           </tr>
         </thead>
         <tbody>
           {data.mensual.map(m => (
-            <ExpandableMonth key={m.mes} m={m} maxSeg={maxSeg}
+            <ExpandableMonth key={m.mes} m={m} maxSeg={maxSeg} mtd={mtd} ano={data.ano}
                               isCurrent={currentMonth === m.mes}
                               diasMes={data.diario.filter(d => Number(d.fecha.slice(5, 7)) === m.mes)} />
           ))}
@@ -191,9 +197,11 @@ function MensualView({ data, currentMonth }) {
 }
 
 
-function ExpandableMonth({ m, maxSeg, isCurrent, diasMes }) {
+function ExpandableMonth({ m, maxSeg, isCurrent, diasMes, mtd, ano }) {
   const [open, setOpen] = useState(false)
-  const canOpen = m.trabajo_seg > 0
+  const teoricoSeg = mtd ? minutosTeoricosMes(ano, m.mes, mtd) * 60 : null
+  const canOpen = m.trabajo_seg > 0 || (diasMes && diasMes.length > 0)
+  const pct = teoricoSeg && teoricoSeg > 0 ? Math.round((m.trabajo_seg / teoricoSeg) * 100) : null
   return (
     <>
       <tr onClick={() => canOpen && setOpen(o => !o)}
@@ -211,23 +219,15 @@ function ExpandableMonth({ m, maxSeg, isCurrent, diasMes }) {
           <span style={{ fontWeight: isCurrent ? 700 : 500 }}>{MESES[m.mes - 1]}</span>
           {isCurrent && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)' }}>actual</span>}
         </Td>
-        <Td>
-          <span style={{ fontWeight: 600, color: m.trabajo_seg > 0 ? 'var(--text-0)' : 'var(--text-3)' }}>
-            {fmtDur(m.trabajo_seg)}
-          </span>
-          {m.pausa_seg > 0 && (
-            <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-3)' }}>
-              · pausa {fmtDur(m.pausa_seg)}
-            </span>
-          )}
-        </Td>
+        <Td><RealVsTeorico realSeg={m.trabajo_seg} teoricoSeg={teoricoSeg} /></Td>
+        <Td right><PctBadge pct={pct} /></Td>
         <Td right>{m.dias_trabajados}</Td>
-        <Td><Bar value={m.trabajo_seg} max={maxSeg} /></Td>
+        <Td><Bar value={m.trabajo_seg} max={Math.max(maxSeg, teoricoSeg || 0)} /></Td>
       </tr>
-      {open && diasMes.length > 0 && (
+      {open && diasMes && diasMes.length > 0 && (
         <tr>
-          <td colSpan={5} style={{ padding: 0, background: 'var(--bg-2)' }}>
-            <DiasSubTable dias={diasMes} />
+          <td colSpan={6} style={{ padding: 0, background: 'var(--bg-2)' }}>
+            <DiasSubTable dias={diasMes} mtd={mtd} />
           </td>
         </tr>
       )}
@@ -236,7 +236,7 @@ function ExpandableMonth({ m, maxSeg, isCurrent, diasMes }) {
 }
 
 
-function SemanalView({ data, highlight }) {
+function SemanalView({ data, mtd, highlight }) {
   if (data.semanal.length === 0) {
     return <Empty>Sin jornadas en {data.ano}.</Empty>
   }
@@ -246,8 +246,8 @@ function SemanalView({ data, highlight }) {
       <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: 'var(--bg-2)' }}>
-            <Th></Th><Th>Semana</Th><Th>Desde lunes</Th><Th>Trabajo</Th><Th right>Días</Th>
-            <Th style={{ minWidth: 100 }}></Th>
+            <Th></Th><Th>Semana</Th><Th>Desde lunes</Th><Th>Real / Teórico</Th>
+            <Th right>%</Th><Th right>Días</Th><Th style={{ minWidth: 100 }}></Th>
           </tr>
         </thead>
         <tbody>
@@ -258,7 +258,7 @@ function SemanalView({ data, highlight }) {
             const dias = data.diario.filter(d => d.fecha >= lunes && d.fecha <= domingo)
             return (
               <ExpandableWeek key={`${s.iso_year}-${s.iso_week}`}
-                              s={s} maxSeg={maxSeg} isCur={isCur} dias={dias} />
+                              s={s} maxSeg={maxSeg} isCur={isCur} dias={dias} mtd={mtd} />
             )
           })}
         </tbody>
@@ -268,9 +268,11 @@ function SemanalView({ data, highlight }) {
 }
 
 
-function ExpandableWeek({ s, maxSeg, isCur, dias }) {
+function ExpandableWeek({ s, maxSeg, isCur, dias, mtd }) {
   const [open, setOpen] = useState(false)
-  const canOpen = s.trabajo_seg > 0
+  const teoricoSeg = mtd ? minutosTeoricosSemana(s.fecha_lunes, mtd) * 60 : null
+  const canOpen = dias.length > 0
+  const pct = teoricoSeg && teoricoSeg > 0 ? Math.round((s.trabajo_seg / teoricoSeg) * 100) : null
   return (
     <>
       <tr onClick={() => canOpen && setOpen(o => !o)}
@@ -289,14 +291,15 @@ function ExpandableWeek({ s, maxSeg, isCur, dias }) {
           {isCur && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--green)' }}>actual</span>}
         </Td>
         <Td>{fmtDate(s.fecha_lunes)}</Td>
-        <Td><span style={{ fontWeight: 600 }}>{fmtDur(s.trabajo_seg)}</span></Td>
+        <Td><RealVsTeorico realSeg={s.trabajo_seg} teoricoSeg={teoricoSeg} /></Td>
+        <Td right><PctBadge pct={pct} /></Td>
         <Td right>{s.dias_trabajados}</Td>
-        <Td><Bar value={s.trabajo_seg} max={maxSeg} /></Td>
+        <Td><Bar value={s.trabajo_seg} max={Math.max(maxSeg, teoricoSeg || 0)} /></Td>
       </tr>
       {open && dias.length > 0 && (
         <tr>
-          <td colSpan={6} style={{ padding: 0, background: 'var(--bg-2)' }}>
-            <DiasSubTable dias={dias} />
+          <td colSpan={7} style={{ padding: 0, background: 'var(--bg-2)' }}>
+            <DiasSubTable dias={dias} mtd={mtd} />
           </td>
         </tr>
       )}
@@ -305,30 +308,75 @@ function ExpandableWeek({ s, maxSeg, isCur, dias }) {
 }
 
 
-function DiasSubTable({ dias }) {
+function DiasSubTable({ dias, mtd }) {
   return (
     <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
       <tbody>
-        {dias.slice().reverse().map(d => (
-          <tr key={d.fecha} style={{ borderTop: '1px solid var(--line)' }}>
-            <td style={{ padding: '8px 14px 8px 36px', color: 'var(--text-2)', width: '40%' }}>
-              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtDate(d.fecha)}</span>
-            </td>
-            <td style={{ padding: '8px 14px', color: 'var(--text-1)' }}>
-              <span style={{ fontWeight: 600 }}>{fmtDur(d.trabajo_seg)}</span>
-              {d.pausa_seg > 0 && (
-                <span style={{ marginLeft: 6, color: 'var(--text-3)' }}>
-                  · pausa {fmtDur(d.pausa_seg)}
-                </span>
-              )}
-            </td>
-            <td style={{ padding: '8px 14px', textAlign: 'right', color: 'var(--text-3)', fontSize: 11 }}>
-              {d.n_eventos} eventos
-            </td>
-          </tr>
-        ))}
+        {dias.slice().reverse().map(d => {
+          const teoMin = mtd ? minutosTeoricosDia(d.fecha, mtd) : null
+          const teoSeg = teoMin != null ? teoMin * 60 : null
+          const pct = teoSeg && teoSeg > 0 ? Math.round((d.trabajo_seg / teoSeg) * 100) : null
+          return (
+            <tr key={d.fecha} style={{ borderTop: '1px solid var(--line)' }}>
+              <td style={{ padding: '8px 14px 8px 36px', color: 'var(--text-2)', width: '32%' }}>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtDate(d.fecha)}</span>
+              </td>
+              <td style={{ padding: '8px 14px', color: 'var(--text-1)' }}>
+                <RealVsTeorico realSeg={d.trabajo_seg} teoricoSeg={teoSeg} />
+                {d.pausa_seg > 0 && (
+                  <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 11 }}>
+                    · pausa {fmtDur(d.pausa_seg)}
+                  </span>
+                )}
+              </td>
+              <td style={{ padding: '8px 14px', textAlign: 'right', width: 60 }}>
+                <PctBadge pct={pct} />
+              </td>
+              <td style={{ padding: '8px 14px', textAlign: 'right', color: 'var(--text-3)', fontSize: 11, width: 80 }}>
+                {d.n_eventos} eventos
+              </td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
+  )
+}
+
+
+// ── Compara real vs teórico inline ────────────────────────────────────────
+function RealVsTeorico({ realSeg, teoricoSeg, big }) {
+  const real = fmtDur(realSeg)
+  if (teoricoSeg == null) {
+    return <span style={{ fontWeight: big ? 700 : 600, fontSize: big ? 18 : 13, color: 'var(--green)' }}>{real}</span>
+  }
+  return (
+    <span style={{ fontWeight: big ? 700 : 600, fontSize: big ? 18 : 13 }}>
+      <span style={{ color: 'var(--text-0)' }}>{real}</span>
+      <span style={{ color: 'var(--text-3)', fontWeight: 500, fontSize: big ? 13 : 11 }}>
+        {' / '}{fmtDur(teoricoSeg)}
+      </span>
+    </span>
+  )
+}
+
+
+function PctBadge({ pct }) {
+  if (pct == null) return <span style={{ color: 'var(--text-3)', fontSize: 11 }}>—</span>
+  const color = pct >= 100 ? 'var(--green, #10b981)'
+              : pct >= 80  ? '#f59e0b'
+              : 'var(--red, #f87171)'
+  const bg    = pct >= 100 ? 'rgba(16,185,129,0.10)'
+              : pct >= 80  ? 'rgba(245,158,11,0.10)'
+              : 'rgba(248,113,133,0.10)'
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+      background: bg, color, fontSize: 11, fontWeight: 700,
+      fontFamily: 'var(--font-mono)',
+    }}>
+      {pct}%
+    </span>
   )
 }
 
@@ -351,11 +399,10 @@ function addDays(isoYmd, days) {
 }
 
 
-function DiarioView({ data }) {
+function DiarioView({ data, mtd }) {
   if (data.diario.length === 0) {
     return <Empty>Sin jornadas en {data.ano}.</Empty>
   }
-  // Agrupar por mes para que sea más legible
   const byMonth = {}
   data.diario.forEach(d => {
     const m = Number(d.fecha.slice(5, 7))
@@ -376,24 +423,30 @@ function DiarioView({ data }) {
           </div>
           <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
             <tbody>
-              {byMonth[m].slice().reverse().map(d => (
-                <tr key={d.fecha} style={{ borderTop: '1px solid var(--line)' }}>
-                  <Td><span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{fmtDate(d.fecha)}</span></Td>
-                  <Td>
-                    <span style={{ fontWeight: 600 }}>{fmtDur(d.trabajo_seg)}</span>
-                    {d.pausa_seg > 0 && (
-                      <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-3)' }}>
-                        · pausa {fmtDur(d.pausa_seg)}
+              {byMonth[m].slice().reverse().map(d => {
+                const teoMin = mtd ? minutosTeoricosDia(d.fecha, mtd) : null
+                const teoSeg = teoMin != null ? teoMin * 60 : null
+                const pct = teoSeg && teoSeg > 0 ? Math.round((d.trabajo_seg / teoSeg) * 100) : null
+                return (
+                  <tr key={d.fecha} style={{ borderTop: '1px solid var(--line)' }}>
+                    <Td><span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{fmtDate(d.fecha)}</span></Td>
+                    <Td>
+                      <RealVsTeorico realSeg={d.trabajo_seg} teoricoSeg={teoSeg} />
+                      {d.pausa_seg > 0 && (
+                        <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-3)' }}>
+                          · pausa {fmtDur(d.pausa_seg)}
+                        </span>
+                      )}
+                    </Td>
+                    <Td right><PctBadge pct={pct} /></Td>
+                    <Td right>
+                      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                        {d.n_eventos} eventos
                       </span>
-                    )}
-                  </Td>
-                  <Td right>
-                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {d.n_eventos} eventos
-                    </span>
-                  </Td>
-                </tr>
-              ))}
+                    </Td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </Card>
@@ -547,6 +600,71 @@ function getISOYear(d) {
   date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7))
   return date.getUTCFullYear()
 }
+
+// ── Helpers teóricos vs reales ─────────────────────────────────────────────
+
+// Devuelve un map {1: minutos, 2: minutos, ..., 7: minutos} con los minutos
+// teóricos de TRABAJO por día de la semana ISO (1=Lun, 7=Dom).
+function calcularTeoricosPorDow(horario) {
+  const out = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 }
+  for (let d = 1; d <= 7; d++) {
+    const franjas = horario[String(d)] || []
+    for (const f of franjas) {
+      if (f.tipo !== 'trabajo') continue
+      out[d] += hhmmToMin(f.hora_fin) - hhmmToMin(f.hora_inicio)
+    }
+  }
+  return out
+}
+
+function hhmmToMin(s) {
+  if (!s) return 0
+  const [h, m] = s.split(':').map(Number)
+  return (h || 0) * 60 + (m || 0)
+}
+
+// Minutos teóricos de un día concreto (YYYY-MM-DD)
+function minutosTeoricosDia(isoYmd, mtd) {
+  if (!mtd) return 0
+  const d = new Date(isoYmd + 'T00:00:00')
+  const dow = d.getDay() === 0 ? 7 : d.getDay()
+  return mtd[dow] || 0
+}
+
+// Minutos teóricos de un mes natural (ano, mes 1..12)
+function minutosTeoricosMes(ano, mes, mtd) {
+  if (!mtd) return 0
+  const ultimoDia = new Date(ano, mes, 0).getDate()
+  let total = 0
+  for (let day = 1; day <= ultimoDia; day++) {
+    const d = new Date(ano, mes - 1, day)
+    const dow = d.getDay() === 0 ? 7 : d.getDay()
+    total += mtd[dow] || 0
+  }
+  return total
+}
+
+// Minutos teóricos de una semana ISO a partir de la fecha del lunes
+function minutosTeoricosSemana(isoLunesYmd, mtd) {
+  if (!mtd) return 0
+  let total = 0
+  const lun = new Date(isoLunesYmd + 'T00:00:00')
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(lun); d.setDate(d.getDate() + i)
+    const dow = d.getDay() === 0 ? 7 : d.getDay()
+    total += mtd[dow] || 0
+  }
+  return total
+}
+
+// Minutos teóricos de un año natural
+function minutosTeoricosAno(ano, mtd) {
+  if (!mtd) return 0
+  let total = 0
+  for (let m = 1; m <= 12; m++) total += minutosTeoricosMes(ano, m, mtd)
+  return total
+}
+
 
 function traduce(e) {
   const code = typeof e === 'string' ? e : (e?.body?.error || e?.message || '')
