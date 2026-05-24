@@ -270,6 +270,19 @@ export async function estadoFisicoSessionsCliente(idCliente, identity = null) {
     .then(d => d.sessions || [])
 }
 
+// ── Canales de captación (mapping UTM → canal con nombre) ────────────────
+export const canalesList = (identity, incluirInactivos = false) =>
+  _request('GET',
+           `/canales-captacion${incluirInactivos ? '?incluir_inactivos=1' : ''}`,
+           identity).then(d => d.canales || [])
+export const canalCreate = (identity, data) =>
+  _request('POST', '/canales-captacion', identity, data).then(d => d.canal)
+export const canalUpdate = (identity, id, data) =>
+  _request('PATCH', `/canales-captacion/${id}`, identity, data).then(d => d.canal)
+export const canalDelete = (identity, id, hard = false) =>
+  _request('DELETE', `/canales-captacion/${id}${hard ? '?hard=1' : ''}`, identity)
+
+
 // ── Modificaciones ──────────────────────────────────────────────────────────
 // ── Proveedor de email transaccional (Resend / Postmark / SMTP / Gmail) ───
 // Si trainerId omitido → config global del manager. Si pasa trainerId → override por centro.

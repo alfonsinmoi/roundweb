@@ -624,6 +624,39 @@ CREATE INDEX IF NOT EXISTS idx_cligym_cliente ON cliente_gympass(cliente_idnoofi
 CREATE INDEX IF NOT EXISTS idx_cligym_manager ON cliente_gympass(id_manager);
 
 
+-- ─── CANALES DE CAPTACIÓN (mapping UTM → canal con nombre amigable) ────────
+-- Cada manager define sus canales (Instagram orgánico, Google Ads, Recom., …)
+-- y los patrones `utm_source` que entran por la web del lead. Al crear un
+-- lead el backend busca match (case-insensitive) en `utm_source_match` y
+-- guarda el canal_id en lead_asignacion.canal_id. Permite analítica de
+-- eficacia por canal.
+CREATE TABLE IF NOT EXISTS canal_captacion (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  nombre                   VARCHAR(80) NOT NULL,        -- 'Instagram', 'Google Ads'…
+  color                    VARCHAR(20),                  -- badge color
+  utm_source_match         TEXT[] DEFAULT ARRAY[]::TEXT[], -- ['instagram','ig','meta_ad']
+  notas                    TEXT,
+  activa                   BOOLEAN NOT NULL DEFAULT TRUE,
+  orden                    INTEGER DEFAULT 0,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT canal_captacion_unique UNIQUE (id_manager, nombre)
+);
+CREATE INDEX IF NOT EXISTS idx_canal_capt_manager ON canal_captacion(id_manager);
+
+-- Añadir canal_id a lead_asignacion (referencia opcional al canal detectado).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='lead_asignacion')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                      WHERE table_name='lead_asignacion' AND column_name='canal_id') THEN
+    ALTER TABLE lead_asignacion ADD COLUMN canal_id INTEGER REFERENCES canal_captacion(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_lead_asig_canal ON lead_asignacion(canal_id);
+  END IF;
+END $$;
+
+
 -- ─── CATEGORÍAS DE CLIENTE (manager-level catalog) ──────────────────────────
 -- Reemplaza progresivamente al campo Gympass hardcoded. Cada cliente puede
 -- tener una sola categoría (Gympass, Trabajador, Invitado, …). Sin asignación

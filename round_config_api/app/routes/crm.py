@@ -177,14 +177,22 @@ def crear_lead_publico():
     }
     qualification = {k: v for k, v in qualification.items() if v}
 
+    # Mapear utm_source → canal_id si el manager tiene canales configurados.
+    # Si no hay match (o el manager no configuró canales), canal_id queda NULL.
+    try:
+        from .canales_captacion import resolver_canal_id
+        canal_id = resolver_canal_id(id_manager, d.get('utm_source'))
+    except Exception:
+        canal_id = None
+
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO lead_asignacion
                   (id_manager, id_trainer, odoo_lead_id, origen,
                    utm_source, utm_medium, utm_campaign, raw_payload,
-                   qualification, score, stage_history)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   qualification, score, stage_history, canal_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (odoo_lead_id) DO NOTHING
                 RETURNING *
             """, (id_manager, centro['id_trainer'], odoo_lead_id or 0, 'web_form',
@@ -192,7 +200,8 @@ def crear_lead_publico():
                   json.dumps(d, ensure_ascii=False),
                   json.dumps(qualification, ensure_ascii=False),
                   0,  # score se calcula a continuación
-                  json.dumps([{'stage': 'Nuevo', 'at': datetime.now(timezone.utc).isoformat()}], ensure_ascii=False)))
+                  json.dumps([{'stage': 'Nuevo', 'at': datetime.now(timezone.utc).isoformat()}], ensure_ascii=False),
+                  canal_id))
             row = cur.fetchone()
             # Score inicial
             if row:

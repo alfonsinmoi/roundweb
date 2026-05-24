@@ -439,16 +439,28 @@ def _procesar_reserva_async(p):
                                WHERE id=%s""",
                             (cliente_id, odoo_lead_id, p['reserva_id']))
                 if odoo_lead_id:
+                    # Resolver UTM → canal_id (si el manager tiene canales).
+                    try:
+                        from .canales_captacion import resolver_canal_id
+                        utm_src = (p.get('raw_form') or {}).get('utm_source')
+                        canal_id = resolver_canal_id(p['id_manager'], utm_src)
+                    except Exception:
+                        canal_id = None
                     cur.execute("""
                         INSERT INTO lead_asignacion
                           (id_manager, id_trainer, odoo_lead_id, origen,
-                           qualification, raw_payload)
-                        VALUES (%s,%s,%s,'web_form',%s,%s)
+                           qualification, raw_payload, canal_id,
+                           utm_source, utm_medium, utm_campaign)
+                        VALUES (%s,%s,%s,'web_form',%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (odoo_lead_id) DO NOTHING
                     """, (p['id_manager'], str(p['centro']['id_trainer']), odoo_lead_id,
                           json.dumps({'documento': f'{p["tipo_doc"]}:{p["doc_norm"]}',
                                       'slot_reserva_id': p['reserva_id']}),
-                          json.dumps(p['raw_form'], ensure_ascii=False)))
+                          json.dumps(p['raw_form'], ensure_ascii=False),
+                          canal_id,
+                          (p.get('raw_form') or {}).get('utm_source'),
+                          (p.get('raw_form') or {}).get('utm_medium'),
+                          (p.get('raw_form') or {}).get('utm_campaign')))
         except Exception as e:
             log.exception(f'[bg reserva-{p["reserva_id"]}] update bd')
 

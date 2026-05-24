@@ -44,6 +44,7 @@ from .routes.preemision_v2     import bp as bp_preemision_v2
 from .routes.emision_v2        import bp as bp_emision_v2
 from .routes.facturacion_trimestre import bp as bp_fact_trim
 from .routes.trimestre         import bp as bp_trimestre
+from .routes.canales_captacion import bp as bp_canales_captacion
 
 
 def create_app():
@@ -209,5 +210,10 @@ def create_app():
     # ── Aviso trimestre (banner)
     for prefix in ('/trimestre', '/api/cuotas/trimestre'):
         app.register_blueprint(bp_trimestre, name=f'tri{prefix}', url_prefix=prefix)
+
+    # ── Canales de captación (UTMs → canal con nombre amigable)
+    for prefix in ('/canales-captacion', '/api/config/canales-captacion'):
+        app.register_blueprint(bp_canales_captacion,
+                                name=f'cc{prefix}', url_prefix=prefix)
 
     return app
