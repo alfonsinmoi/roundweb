@@ -34,7 +34,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_guard import require_feature
-from ..audit_log import log_action, actor_from_request
+from ..audit_log import log_action, actor_from_request, diff_dict
 
 bp = Blueprint('horario', __name__)
 log = logging.getLogger(__name__)
@@ -725,33 +725,72 @@ def get_trabajador(trab_id):
     return jsonify({'ok': True, 'trabajador': out})
 
 
+_TRABAJADOR_EDITABLE = (
+    # (column, key_in_body, conversor)
+    ('id_trainer_empleador',           'id_trainer_empleador',           _opt_str),
+    ('nif',                            'nif',                            _opt_str),
+    ('nombre_completo',                'nombre_completo',                _opt_str),
+    ('email',                          'email',                          _opt_str),
+    ('jornada_h_semana',               'jornada_h_semana',               _opt_num),
+    ('categoria_profesional',          'categoria_profesional',          _opt_str),
+    ('tipo_contrato',                  'tipo_contrato',                  _opt_str),
+    ('fecha_alta_laboral',             'fecha_alta_laboral',             _opt_str),
+    ('vacaciones_dias_override',       'vacaciones_dias_override',       _opt_int),
+    ('asuntos_propios_dias_override',  'asuntos_propios_dias_override',  _opt_int),
+    ('notas',                          'notas',                          _opt_str),
+)
+
+
+def _trabajador_snapshot(row):
+    """Subset de campos que entran en el diff de auditoría."""
+    if not row:
+        return None
+    out = {}
+    for col, _, _conv in _TRABAJADOR_EDITABLE:
+        v = row.get(col) if hasattr(row, 'get') else row[col]
+        # Normalizamos tipos para que el diff no marque cambios cosméticos
+        # (Decimal vs float, date vs string, …).
+        if v is None:
+            out[col] = None
+        elif hasattr(v, 'isoformat'):
+            out[col] = v.isoformat()
+        else:
+            try:
+                out[col] = float(v) if isinstance(v, (int, float)) or str(v).replace('.', '', 1).replace('-', '', 1).isdigit() else str(v)
+            except Exception:
+                out[col] = str(v)
+    return out
+
+
 @bp.route('/trabajadores/<int:trab_id>', methods=['PATCH'])
 @auth_required
 @require_feature('control_horario')
 def actualizar_trabajador(trab_id):
     d = request.get_json() or {}
     sets, params = [], []
-    for col, key, conv in (
-        ('id_trainer_empleador',           'id_trainer_empleador',           _opt_str),
-        ('nif',                            'nif',                            _opt_str),
-        ('nombre_completo',                'nombre_completo',                _opt_str),
-        ('email',                          'email',                          _opt_str),
-        ('jornada_h_semana',               'jornada_h_semana',               _opt_num),
-        ('categoria_profesional',          'categoria_profesional',          _opt_str),
-        ('tipo_contrato',                  'tipo_contrato',                  _opt_str),
-        ('fecha_alta_laboral',             'fecha_alta_laboral',             _opt_str),
-        ('vacaciones_dias_override',       'vacaciones_dias_override',       _opt_int),
-        ('asuntos_propios_dias_override',  'asuntos_propios_dias_override',  _opt_int),
-        ('notas',                          'notas',                          _opt_str),
-    ):
+    for col, key, conv in _TRABAJADOR_EDITABLE:
         if key in d:
             sets.append(f'{col} = %s'); params.append(conv(d[key]))
     if not sets:
         return jsonify({'ok': False, 'error': 'sin_cambios'}), 400
-    params.extend([trab_id, str(g.id_manager)])
     with get_conn() as conn, conn.cursor() as cur:
+        # Snapshot ANTES del UPDATE para el diff de auditoría.
+        cur.execute("""
+            SELECT id, id_manager, cliente_idnoofit, id_trainer_empleador,
+                   nif, nombre_completo, email, jornada_h_semana,
+                   categoria_profesional, tipo_contrato, fecha_alta_laboral,
+                   fecha_baja_laboral, vacaciones_dias_override,
+                   asuntos_propios_dias_override, estado, notas
+              FROM trabajador
+             WHERE id = %s AND id_manager = %s
+        """, (trab_id, str(g.id_manager)))
+        before = cur.fetchone()
+        if not before:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+        params.extend([trab_id, str(g.id_manager)])
         cur.execute(f"""
-            UPDATE trabajador SET {', '.join(sets)}
+            UPDATE trabajador SET {', '.join(sets)}, updated_at = NOW()
              WHERE id = %s AND id_manager = %s
             RETURNING id, id_manager, cliente_idnoofit, id_trainer_empleador,
                       nif, nombre_completo, email, jornada_h_semana,
@@ -759,13 +798,57 @@ def actualizar_trabajador(trab_id):
                       fecha_baja_laboral, vacaciones_dias_override,
                       asuntos_propios_dias_override, estado, notas
         """, params)
-        row = cur.fetchone()
-    if not row:
-        return jsonify({'ok': False, 'error': 'not_found'}), 404
-    log_action(actor_from_request(), entidad='trabajador',
-               entidad_id=trab_id, accion='editar',
-               resumen=f'cli={row["cliente_idnoofit"]}')
-    return jsonify({'ok': True, 'trabajador': _trabajador_to_dict(row)})
+        after = cur.fetchone()
+
+    cambios = diff_dict(_trabajador_snapshot(before), _trabajador_snapshot(after))
+    if cambios:
+        resumen = ', '.join(sorted(cambios.keys()))[:240]
+        log_action(actor_from_request(), entidad='trabajador',
+                   entidad_id=trab_id, accion='editar',
+                   resumen=f'cambios: {resumen}',
+                   cambios=cambios)
+    return jsonify({'ok': True, 'trabajador': _trabajador_to_dict(after)})
+
+
+@bp.route('/trabajadores/<int:trab_id>/historial', methods=['GET'])
+@auth_required
+@require_feature('control_horario')
+def historial_trabajador(trab_id):
+    """Devuelve la timeline de acciones registradas para este trabajador.
+
+    Lee `accion_log` filtrando por entidad='trabajador' y entidad_id=<id>.
+    Acciones típicas: alta_laboral, editar, baja, reactivar, autorizar, rechazar.
+    """
+    # Comprobamos primero que el trabajador pertenece al manager actual.
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM trabajador WHERE id=%s AND id_manager=%s",
+                    (trab_id, str(g.id_manager)))
+        if not cur.fetchone():
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+        cur.execute("""
+            SELECT id, ts, actor_kind, actor_label, actor_email,
+                   accion, resumen, cambios
+              FROM accion_log
+             WHERE entidad = 'trabajador'
+               AND entidad_id = %s
+               AND id_manager = %s
+             ORDER BY ts DESC
+             LIMIT 200
+        """, (str(trab_id), str(g.id_manager)))
+        rows = cur.fetchall()
+    return jsonify({
+        'ok': True,
+        'historial': [{
+            'id': r['id'],
+            'ts': r['ts'].isoformat() if r['ts'] else None,
+            'actor': r['actor_label'] or r['actor_email'] or r['actor_kind'] or '?',
+            'actor_kind': r['actor_kind'],
+            'accion': r['accion'],
+            'resumen': r['resumen'] or '',
+            'cambios': r['cambios'],
+        } for r in rows],
+    })
 
 
 @bp.route('/trabajadores/<int:trab_id>/autorizar', methods=['POST'])

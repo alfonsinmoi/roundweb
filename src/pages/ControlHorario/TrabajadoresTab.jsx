@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info } from 'lucide-react'
+import { UserPlus, RefreshCcw, UserMinus, UserCheck, Info, Pencil, History, Save } from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import Modal from '../../components/Modal'
 import {
   trabajadoresList, trabajadoresPendientes, trabajadorAlta,
-  trabajadorBaja, trabajadorReactivar,
+  trabajadorBaja, trabajadorReactivar, trabajadorUpdate, trabajadorHistorial,
 } from '../../utils/horarioApi'
 import { getEntrenadores } from '../../utils/api'
 
@@ -17,8 +17,9 @@ export default function TrabajadoresTab({ identity }) {
   const [bajas, setBajas] = useState([])
   const [loading, setLoading] = useState(true)
   const [trainers, setTrainers] = useState([])
-  const [showAlta, setShowAlta] = useState(null)  // pendiente seleccionado o objeto vacío
-  const [view, setView] = useState('activos')     // activos | pendientes | bajas
+  const [showAlta, setShowAlta] = useState(null)     // pendiente seleccionado o objeto vacío
+  const [showEditar, setShowEditar] = useState(null) // trabajador a editar
+  const [view, setView] = useState('activos')        // activos | pendientes | bajas
   const initialViewSet = useRef(false)
 
   const reload = useCallback(async () => {
@@ -111,10 +112,10 @@ export default function TrabajadoresTab({ identity }) {
         <PendientesView pendientes={pendientes} onAlta={(p) => setShowAlta(p)} />
       )}
       {!loading && view === 'activos' && (
-        <ListView trabajadores={activos} onBaja={handleBaja} />
+        <ListView trabajadores={activos} onBaja={handleBaja} onEditar={t => setShowEditar(t)} />
       )}
       {!loading && view === 'bajas' && (
-        <ListView trabajadores={bajas} onReactivar={handleReactivar} />
+        <ListView trabajadores={bajas} onReactivar={handleReactivar} onEditar={t => setShowEditar(t)} />
       )}
 
       {showAlta && (
@@ -122,6 +123,14 @@ export default function TrabajadoresTab({ identity }) {
                    onClose={() => setShowAlta(null)}
                    onSaved={() => { setShowAlta(null); reload() }}
                    identity={identity} />
+      )}
+      {showEditar && (
+        <EditarTrabajadorModal
+          trabajador={showEditar}
+          trainers={trainers}
+          identity={identity}
+          onClose={() => setShowEditar(null)}
+          onSaved={() => { setShowEditar(null); reload() }} />
       )}
     </div>
   )
@@ -165,7 +174,7 @@ function PendientesView({ pendientes, onAlta }) {
 }
 
 
-function ListView({ trabajadores, onBaja, onReactivar }) {
+function ListView({ trabajadores, onBaja, onReactivar, onEditar }) {
   if (trabajadores.length === 0) {
     return <EmptyState icon={UserPlus} title="Sin trabajadores"
              description="No hay trabajadores en esta vista." />
@@ -183,6 +192,11 @@ function ListView({ trabajadores, onBaja, onReactivar }) {
           { key: 'baja',    label: 'Baja',              render: (_, r) => r.fecha_baja_laboral || '—' },
           { key: 'acciones', label: '',                 render: (_, r) => (
             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              {onEditar && (
+                <Btn size="sm" variant="ghost" onClick={() => onEditar(r)} title="Editar / ver historial">
+                  <Pencil size={13} /> Editar
+                </Btn>
+              )}
               {onBaja && (
                 <Btn size="sm" variant="ghost" onClick={() => onBaja(r)}>
                   <UserMinus size={13} /> Baja
@@ -308,3 +322,264 @@ function AltaModal({ pendiente, trainers, onClose, onSaved, identity }) {
     </Modal>
   )
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ║  EditarTrabajadorModal — edición + tab Historial de cambios            ║
+// ═══════════════════════════════════════════════════════════════════════════
+
+function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSaved }) {
+  const toast = useToast()
+  const [tab, setTab] = useState('datos')
+  const [form, setForm] = useState(() => ({
+    nombre_completo:                trabajador.nombre_completo || '',
+    email:                          trabajador.email || '',
+    nif:                            trabajador.nif || '',
+    jornada_h_semana:               trabajador.jornada_h_semana ?? '',
+    id_trainer_empleador:           trabajador.id_trainer_empleador || '',
+    categoria_profesional:          trabajador.categoria_profesional || '',
+    tipo_contrato:                  trabajador.tipo_contrato || 'indefinido',
+    fecha_alta_laboral:             trabajador.fecha_alta_laboral || '',
+    vacaciones_dias_override:       trabajador.vacaciones_dias_override ?? '',
+    asuntos_propios_dias_override:  trabajador.asuntos_propios_dias_override ?? '',
+    notas:                          trabajador.notas || '',
+  }))
+  const [saving, setSaving] = useState(false)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  async function handleSave(e) {
+    e.preventDefault()
+    if (!form.nif.trim() || !form.jornada_h_semana || !form.id_trainer_empleador) {
+      toast.error('NIF, jornada y trainer son obligatorios')
+      return
+    }
+    setSaving(true)
+    try {
+      // Diff client-side: solo enviar campos que cambian.
+      const diff = {}
+      Object.keys(form).forEach(k => {
+        const orig = trabajador[k]
+        const nuevo = form[k] === '' ? null : form[k]
+        const origNorm = (orig === null || orig === undefined) ? null : orig
+        if (String(nuevo ?? '') !== String(origNorm ?? '')) {
+          diff[k] = form[k] === '' ? null : form[k]
+        }
+      })
+      if (Object.keys(diff).length === 0) {
+        toast.success('Sin cambios')
+        onClose()
+        return
+      }
+      await trabajadorUpdate(identity, trabajador.id, diff)
+      toast.success('Cambios guardados')
+      onSaved()
+    } catch (e) {
+      toast.error('Error: ' + (e.body?.detalle || e.message))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose}
+           title={'Trabajador · ' + (trabajador.nombre_completo || trabajador.email || '—')}
+           subtitle={'NIF ' + (trabajador.nif || '—') + ' · estado ' + trabajador.estado}
+           maxWidth={720}>
+      <div style={{
+        display: 'flex', gap: 6, padding: '12px 32px 0',
+        borderBottom: '1px solid var(--line)', flexShrink: 0,
+      }}>
+        <TabBtn active={tab === 'datos'}     onClick={() => setTab('datos')}><Pencil size={14} /> Datos</TabBtn>
+        <TabBtn active={tab === 'historial'} onClick={() => setTab('historial')}><History size={14} /> Historial de cambios</TabBtn>
+      </div>
+
+      {tab === 'datos' && (
+        <form onSubmit={handleSave}
+              style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+          <div style={{
+            flex: 1, overflowY: 'auto', padding: '20px 32px',
+            display: 'flex', flexDirection: 'column', gap: 14,
+          }}>
+            <Input label="Nombre completo" value={form.nombre_completo}
+                   onChange={e => set('nombre_completo', e.target.value)} />
+            <Input label="Email" type="email" value={form.email}
+                   onChange={e => set('email', e.target.value)} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Input label="NIF / NIE / Pasaporte *" value={form.nif}
+                     onChange={e => set('nif', e.target.value.toUpperCase())} required />
+              <Input label="Jornada (h/semana) *" type="number" step="0.5"
+                     value={form.jornada_h_semana}
+                     onChange={e => set('jornada_h_semana', e.target.value)} required />
+            </div>
+            <Select label="Trainer empleador *"
+                    value={form.id_trainer_empleador}
+                    onChange={e => set('id_trainer_empleador', e.target.value)} required>
+              <option value="">— Selecciona trainer —</option>
+              {trainers.map(t => (
+                <option key={t.id} value={t.id}>
+                  {(t.nombre || t.name || '') + ' ' + (t.apellidos || t.surname || '')}
+                </option>
+              ))}
+            </Select>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Select label="Tipo de contrato"
+                      value={form.tipo_contrato}
+                      onChange={e => set('tipo_contrato', e.target.value)}>
+                <option value="indefinido">Indefinido</option>
+                <option value="temporal">Temporal</option>
+                <option value="formacion">Formación / aprendizaje</option>
+                <option value="practicas">Prácticas</option>
+              </Select>
+              <Input label="Fecha alta laboral" type="date"
+                     value={form.fecha_alta_laboral}
+                     onChange={e => set('fecha_alta_laboral', e.target.value)} />
+            </div>
+            <Input label="Categoría profesional" value={form.categoria_profesional}
+                   onChange={e => set('categoria_profesional', e.target.value)} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Input label="Vacaciones override (días)" type="number"
+                     value={form.vacaciones_dias_override}
+                     onChange={e => set('vacaciones_dias_override', e.target.value)} />
+              <Input label="Asuntos propios override (días)" type="number"
+                     value={form.asuntos_propios_dias_override}
+                     onChange={e => set('asuntos_propios_dias_override', e.target.value)} />
+            </div>
+            <Input label="Notas" value={form.notas}
+                   onChange={e => set('notas', e.target.value)} />
+          </div>
+
+          <div style={{
+            padding: '16px 32px', borderTop: '1px solid var(--line)',
+            background: 'var(--bg-2)', flexShrink: 0,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+          }}>
+            <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)' }}>
+              Cada cambio queda registrado en "Historial de cambios" (auditoría).
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Btn variant="ghost" type="button" onClick={onClose}>Cancelar</Btn>
+              <Btn type="submit" disabled={saving}>
+                <Save size={13} /> {saving ? 'Guardando…' : 'Guardar cambios'}
+              </Btn>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {tab === 'historial' && (
+        <HistorialPanel trabajadorId={trabajador.id} identity={identity} />
+      )}
+    </Modal>
+  )
+}
+
+
+function TabBtn({ active, children, ...rest }) {
+  return (
+    <button type="button" {...rest}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '10px 14px',
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              color: active ? 'var(--text-0)' : 'var(--text-3)',
+              fontWeight: active ? 700 : 500, fontSize: 13,
+              borderBottom: active ? '2px solid var(--green, #10b981)' : '2px solid transparent',
+              marginBottom: -1,
+            }}>
+      {children}
+    </button>
+  )
+}
+
+
+function HistorialPanel({ trabajadorId, identity }) {
+  const [items, setItems] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    trabajadorHistorial(identity, trabajadorId)
+      .then(setItems)
+      .catch(e => setError(e.message || 'Error'))
+  }, [trabajadorId, identity])
+
+  if (error) return <div style={{ padding: 24, color: 'var(--red)' }}>No se pudo cargar: {error}</div>
+  if (items === null) return <div style={{ padding: 24, color: 'var(--text-3)' }}>Cargando historial…</div>
+  if (items.length === 0) {
+    return <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)' }}>
+      Sin acciones registradas todavía.
+    </div>
+  }
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '16px 32px 24px' }}>
+      <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {items.map(h => (
+          <li key={h.id} style={{
+            padding: '12px 14px', borderRadius: 10,
+            background: 'var(--bg-2)', border: '1px solid var(--line)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>
+                <Badge color={accionColor(h.accion)}>{h.accion}</Badge>
+                <span style={{ marginLeft: 8, color: 'var(--text-2)' }}>{h.actor}</span>
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-3)' }}>
+                {fmtTs(h.ts)}
+              </span>
+            </div>
+            {h.resumen && (
+              <p style={{ margin: '4px 0 6px', fontSize: 12, color: 'var(--text-3)' }}>
+                {h.resumen}
+              </p>
+            )}
+            {h.cambios && Object.keys(h.cambios).length > 0 && (
+              <DiffTable cambios={h.cambios} />
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+
+function DiffTable({ cambios }) {
+  return (
+    <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', marginTop: 4 }}>
+      <thead>
+        <tr style={{ color: 'var(--text-3)' }}>
+          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--line)' }}>Campo</th>
+          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--line)' }}>Antes</th>
+          <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--line)' }}>Después</th>
+        </tr>
+      </thead>
+      <tbody>
+        {Object.entries(cambios).map(([k, v]) => (
+          <tr key={k}>
+            <td style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)', color: 'var(--text-2)' }}>{k}</td>
+            <td style={{ padding: '4px 8px', color: 'var(--text-3)', textDecoration: 'line-through' }}>{fmtVal(v?.before)}</td>
+            <td style={{ padding: '4px 8px', color: 'var(--green, #10b981)', fontWeight: 600 }}>{fmtVal(v?.after)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+
+function fmtVal(v) {
+  if (v === null || v === undefined || v === '') return '—'
+  return String(v)
+}
+function fmtTs(iso) {
+  if (!iso) return ''
+  try { return new Date(iso).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'medium' }) }
+  catch { return iso }
+}
+function accionColor(a) {
+  return ({
+    'alta_laboral': 'green',
+    'editar': 'cyan',
+    'baja': 'red',
+    'reactivar': 'green',
+    'autorizar': 'green',
+    'rechazar': 'red',
+  })[a] || 'gray'
+}
+

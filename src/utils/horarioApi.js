@@ -105,6 +105,8 @@ export const trabajadorAutorizar = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/autorizar`, identity, body)
 export const trabajadorRechazar = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/rechazar`, identity, body)
+export const trabajadorHistorial = (identity, id) =>
+  _req('GET', `/trabajadores/${id}/historial`, identity).then(d => d.historial)
 export const trabajadorVincularTrainer = (identity, id, body) =>
   _req('POST', `/trabajadores/${id}/trainers`, identity, body)
 export const trabajadorDesvincularTrainer = (identity, id, vinculoId) =>
