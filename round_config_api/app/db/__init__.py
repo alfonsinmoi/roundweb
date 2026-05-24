@@ -1693,6 +1693,184 @@ EXCEPTION WHEN OTHERS THEN NULL;
 END$$;
 
 
+-- ─── PLANIFICACIÓN — TEMPORADAS Y HORARIOS DE APERTURA (Fase 2 B.1) ──────
+-- Una temporada es un rango de fechas con un horario de apertura propio.
+-- Ej. "Horario invierno" (15-sep a 14-jun), "Verano" (15-jun a 14-sep),
+-- "Navidad" (24-dic a 6-ene). Si dos solapan, la más reciente gana.
+-- Una temporada activa con fechas NULL/NULL = la "permanente" (default).
+CREATE TABLE IF NOT EXISTS temporada (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  nombre          VARCHAR(80) NOT NULL,
+  fecha_desde     DATE,
+  fecha_hasta     DATE,
+  activa          BOOLEAN NOT NULL DEFAULT TRUE,
+  notas           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT temporada_unique UNIQUE (id_manager, nombre),
+  CONSTRAINT temporada_fechas CHECK (fecha_hasta IS NULL OR fecha_desde IS NULL OR fecha_hasta >= fecha_desde)
+);
+CREATE INDEX IF NOT EXISTS idx_temporada_manager ON temporada(id_manager);
+
+
+-- Horario de apertura del centro por temporada. Si no hay fila para un día,
+-- ese día el centro está cerrado. Permite varios bloques por día (mañana
+-- + tarde) con la columna `orden`.
+CREATE TABLE IF NOT EXISTS horario_apertura (
+  id              SERIAL PRIMARY KEY,
+  temporada_id    INTEGER NOT NULL REFERENCES temporada(id) ON DELETE CASCADE,
+  dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
+  hora_inicio     TIME NOT NULL,
+  hora_fin        TIME NOT NULL,
+  orden           SMALLINT NOT NULL DEFAULT 1,
+  CONSTRAINT horario_apertura_rango CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_horario_apertura_temp
+  ON horario_apertura(temporada_id, dia_semana, orden);
+
+
+-- ─── PLANIFICACIÓN — CATÁLOGO DE PUESTOS (Fase 2 B.1) ────────────────────
+-- Recepción, Monitor sala, Monitor entrenamiento personal, Limpieza,
+-- Mantenimiento, etc. Cada puesto tiene su demanda (cuántos trabajadores
+-- en qué franja) y sus compatibilidades.
+CREATE TABLE IF NOT EXISTS puesto_trabajo (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  codigo          VARCHAR(40) NOT NULL,
+  nombre          VARCHAR(80) NOT NULL,
+  color           VARCHAR(20) NOT NULL DEFAULT 'cyan',
+  descripcion     TEXT,
+  activo          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT puesto_unique UNIQUE (id_manager, codigo)
+);
+CREATE INDEX IF NOT EXISTS idx_puesto_manager ON puesto_trabajo(id_manager);
+
+
+-- Compatibilidad entre puestos: si un trabajador puede simultanear dos
+-- puestos (ej. recepción + bar). Pivote simétrico — guardamos sólo
+-- (a, b) con a < b para evitar duplicados.
+CREATE TABLE IF NOT EXISTS puesto_compatible (
+  puesto_a_id     INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  puesto_b_id     INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (puesto_a_id, puesto_b_id),
+  CONSTRAINT puesto_compatible_orden CHECK (puesto_a_id < puesto_b_id)
+);
+
+
+-- Demanda por puesto: cuántos trabajadores hacen falta en cada franja
+-- horaria. La franja se asocia opcionalmente a una temporada. Por día
+-- de la semana (ISO 1..7). N franjas por (puesto, temporada, día).
+CREATE TABLE IF NOT EXISTS puesto_demanda (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  puesto_id       INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  temporada_id    INTEGER REFERENCES temporada(id) ON DELETE SET NULL,
+  dia_semana      SMALLINT NOT NULL CHECK (dia_semana BETWEEN 1 AND 7),
+  hora_inicio     TIME NOT NULL,
+  hora_fin        TIME NOT NULL,
+  n_trabajadores  SMALLINT NOT NULL DEFAULT 1 CHECK (n_trabajadores >= 1),
+  notas           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT puesto_demanda_rango CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_puesto_demanda_puesto
+  ON puesto_demanda(puesto_id, dia_semana);
+CREATE INDEX IF NOT EXISTS idx_puesto_demanda_temp
+  ON puesto_demanda(temporada_id);
+
+
+-- ─── PLANIFICACIÓN — TRABAJADOR (capacidades + preferencias) ──────────────
+-- Capacidad: qué puestos puede desempeñar este trabajador. Nivel opcional
+-- (junior/senior/etc.) lo dejamos como texto libre para no over-modelar.
+CREATE TABLE IF NOT EXISTS trabajador_puesto (
+  trabajador_id   INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  puesto_id       INTEGER NOT NULL REFERENCES puesto_trabajo(id) ON DELETE CASCADE,
+  nivel           VARCHAR(20),         -- 'junior'|'senior'|'experto'|... libre
+  preferente      BOOLEAN NOT NULL DEFAULT FALSE,  -- es su puesto preferido
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (trabajador_id, puesto_id)
+);
+CREATE INDEX IF NOT EXISTS idx_trabajador_puesto_puesto
+  ON trabajador_puesto(puesto_id);
+
+
+-- Preferencias generales del trabajador para la planificación automática.
+-- Una fila por trabajador (UNIQUE). Si no existe, default razonable.
+CREATE TABLE IF NOT EXISTS trabajador_preferencias (
+  trabajador_id          INTEGER PRIMARY KEY REFERENCES trabajador(id) ON DELETE CASCADE,
+  max_horas_semana       NUMERIC(5,2),       -- hard cap (NULL = lo del contrato)
+  max_turnos_semana      SMALLINT,           -- N de turnos máx (NULL = sin limite)
+  prefiere_franja        VARCHAR(20),        -- 'manana'|'tarde'|'noche'|'cualquiera'
+  dias_libres_preferidos JSONB DEFAULT '[]'::jsonb,  -- array de int 1..7 (ISO)
+  acepta_partido         BOOLEAN NOT NULL DEFAULT TRUE,
+  acepta_nocturno        BOOLEAN NOT NULL DEFAULT TRUE,
+  acepta_findesemana     BOOLEAN NOT NULL DEFAULT TRUE,
+  notas                  TEXT,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- ─── PLANIFICACIÓN — TURNOS PLANIFICADOS ──────────────────────────────────
+-- Plantillas reutilizables (Mañana / Tarde / Noche / Sábado / …) que el
+-- manager asigna a los trabajadores día por día. Una asignación SOBRESCRIBE
+-- el horario teórico semanal (horario_trabajador) para ese día concreto.
+--
+-- Si una fecha tiene asignacion con turno_plantilla_id NULL = día libre
+-- explícito (sobrescribe el teórico con "no se trabaja hoy").
+--
+-- Si NO hay asignacion → se usa el horario_trabajador del día de la semana.
+CREATE TABLE IF NOT EXISTS turno_plantilla (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64),                     -- NULL = plantilla global
+  nombre          VARCHAR(80) NOT NULL,
+  color           VARCHAR(20) NOT NULL DEFAULT 'cyan',
+  notas           TEXT,
+  activo          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT turno_plantilla_unique UNIQUE (id_manager, nombre)
+);
+CREATE INDEX IF NOT EXISTS idx_turno_plantilla_manager ON turno_plantilla(id_manager);
+
+
+CREATE TABLE IF NOT EXISTS turno_plantilla_bloque (
+  id                   SERIAL PRIMARY KEY,
+  turno_plantilla_id   INTEGER NOT NULL REFERENCES turno_plantilla(id) ON DELETE CASCADE,
+  hora_inicio          TIME NOT NULL,
+  hora_fin             TIME NOT NULL,
+  tipo                 VARCHAR(20) NOT NULL DEFAULT 'trabajo'
+                                       CHECK (tipo IN ('trabajo','comida','descanso','otros')),
+  orden                SMALLINT NOT NULL DEFAULT 1,
+  CONSTRAINT turno_plantilla_bloque_rango CHECK (hora_fin > hora_inicio)
+);
+CREATE INDEX IF NOT EXISTS idx_turno_plantilla_bloque_pl
+  ON turno_plantilla_bloque(turno_plantilla_id, orden);
+
+
+CREATE TABLE IF NOT EXISTS turno_asignacion (
+  id                   BIGSERIAL PRIMARY KEY,
+  id_manager           VARCHAR(64) NOT NULL,
+  trabajador_id        INTEGER NOT NULL REFERENCES trabajador(id) ON DELETE CASCADE,
+  fecha                DATE NOT NULL,
+  turno_plantilla_id   INTEGER REFERENCES turno_plantilla(id) ON DELETE RESTRICT,
+  -- NULL = libre explícito; > 0 = aplica esta plantilla.
+  notas                TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT turno_asignacion_unique UNIQUE (trabajador_id, fecha)
+);
+CREATE INDEX IF NOT EXISTS idx_turno_asignacion_trab_fecha
+  ON turno_asignacion(trabajador_id, fecha);
+CREATE INDEX IF NOT EXISTS idx_turno_asignacion_manager_fecha
+  ON turno_asignacion(id_manager, fecha);
+
+
 -- ─── SOLICITUDES DE AUSENCIA (Fase 2 C: vacaciones, asuntos propios, …) ──
 -- Flujo: trabajador solicita desde portal/mynoofit -> manager o trainer
 -- autoriza o rechaza. El saldo de dias se calcula on-the-fly mirando esta
@@ -1984,6 +2162,12 @@ DROP TRIGGER IF EXISTS trg_pausa_motivo_upd     ON pausa_motivo;
 DROP TRIGGER IF EXISTS trg_correccion_sol_upd   ON correccion_solicitud;
 DROP TRIGGER IF EXISTS trg_horario_trab_upd     ON horario_trabajador;
 DROP TRIGGER IF EXISTS trg_solicitud_ausencia_upd ON solicitud_ausencia;
+DROP TRIGGER IF EXISTS trg_turno_plantilla_upd   ON turno_plantilla;
+DROP TRIGGER IF EXISTS trg_turno_asignacion_upd  ON turno_asignacion;
+DROP TRIGGER IF EXISTS trg_temporada_upd          ON temporada;
+DROP TRIGGER IF EXISTS trg_puesto_trabajo_upd     ON puesto_trabajo;
+DROP TRIGGER IF EXISTS trg_puesto_demanda_upd     ON puesto_demanda;
+DROP TRIGGER IF EXISTS trg_trabajador_pref_upd    ON trabajador_preferencias;
 
 CREATE TRIGGER trg_cuota_upd        BEFORE UPDATE ON cuota
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
@@ -2056,6 +2240,18 @@ CREATE TRIGGER trg_correccion_sol_upd   BEFORE UPDATE ON correccion_solicitud
 CREATE TRIGGER trg_horario_trab_upd     BEFORE UPDATE ON horario_trabajador
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_solicitud_ausencia_upd BEFORE UPDATE ON solicitud_ausencia
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_turno_plantilla_upd   BEFORE UPDATE ON turno_plantilla
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_turno_asignacion_upd  BEFORE UPDATE ON turno_asignacion
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_temporada_upd          BEFORE UPDATE ON temporada
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_puesto_trabajo_upd     BEFORE UPDATE ON puesto_trabajo
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_puesto_demanda_upd     BEFORE UPDATE ON puesto_demanda
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_trabajador_pref_upd    BEFORE UPDATE ON trabajador_preferencias
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 """
 
