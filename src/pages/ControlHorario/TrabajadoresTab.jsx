@@ -238,45 +238,67 @@ function AltaModal({ pendiente, trainers, onClose, onSaved, identity }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Alta laboral del trabajador">
-      <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <Input label="Nombre completo" value={form.nombre_completo}
-               onChange={e => set('nombre_completo', e.target.value)} />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <Input label="NIF / NIE / Pasaporte *" value={form.nif}
-                 onChange={e => set('nif', e.target.value.toUpperCase())} required />
-          <Input label="Jornada (h/semana) *" type="number" step="0.5"
-                 value={form.jornada_h_semana}
-                 onChange={e => set('jornada_h_semana', e.target.value)} required />
-        </div>
-        <Select label="Trainer empleador *"
-                value={form.id_trainer_empleador}
-                onChange={e => set('id_trainer_empleador', e.target.value)} required>
-          <option value="">— Selecciona trainer —</option>
-          {trainers.map(t => (
-            <option key={t.id} value={t.id}>
-              {`${t.nombre || t.name || ''} ${t.apellidos || t.surname || ''}`.trim() || t.email}
-            </option>
-          ))}
-        </Select>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <Select label="Tipo de contrato"
-                  value={form.tipo_contrato}
-                  onChange={e => set('tipo_contrato', e.target.value)}>
-            <option value="indefinido">Indefinido</option>
-            <option value="temporal">Temporal</option>
-            <option value="formacion">Formación / aprendizaje</option>
-            <option value="practicas">Prácticas</option>
+    <Modal open onClose={onClose}
+           title="Alta laboral del trabajador"
+           subtitle={pendiente.nombre_completo || pendiente.email}
+           maxWidth={620}>
+      <form onSubmit={handleSave}
+            style={{
+              display: 'flex', flexDirection: 'column',
+              flex: 1, minHeight: 0,    // permite que el body interno scrollee
+            }}>
+        {/* Cuerpo scrolleable */}
+        <div style={{
+          flex: 1, overflowY: 'auto',
+          padding: '20px 32px',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}>
+          <Input label="Nombre completo" value={form.nombre_completo}
+                 onChange={e => set('nombre_completo', e.target.value)} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Input label="NIF / NIE / Pasaporte *" value={form.nif}
+                   onChange={e => set('nif', e.target.value.toUpperCase())} required />
+            <Input label="Jornada (h/semana) *" type="number" step="0.5"
+                   value={form.jornada_h_semana}
+                   onChange={e => set('jornada_h_semana', e.target.value)} required />
+          </div>
+          <Select label="Trainer empleador *"
+                  value={form.id_trainer_empleador}
+                  onChange={e => set('id_trainer_empleador', e.target.value)} required>
+            <option value="">— Selecciona trainer —</option>
+            {trainers.map(t => (
+              <option key={t.id} value={t.id}>
+                {`${t.nombre || t.name || ''} ${t.apellidos || t.surname || ''}`.trim() || t.email}
+              </option>
+            ))}
           </Select>
-          <Input label="Fecha alta laboral" type="date"
-                 value={form.fecha_alta_laboral}
-                 onChange={e => set('fecha_alta_laboral', e.target.value)} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <Select label="Tipo de contrato"
+                    value={form.tipo_contrato}
+                    onChange={e => set('tipo_contrato', e.target.value)}>
+              <option value="indefinido">Indefinido</option>
+              <option value="temporal">Temporal</option>
+              <option value="formacion">Formación / aprendizaje</option>
+              <option value="practicas">Prácticas</option>
+            </Select>
+            <Input label="Fecha alta laboral" type="date"
+                   value={form.fecha_alta_laboral}
+                   onChange={e => set('fecha_alta_laboral', e.target.value)} />
+          </div>
+          <Input label="Categoría profesional (opcional)" value={form.categoria_profesional}
+                 onChange={e => set('categoria_profesional', e.target.value)} />
+          <Input label="Notas" value={form.notas}
+                 onChange={e => set('notas', e.target.value)} />
         </div>
-        <Input label="Categoría profesional (opcional)" value={form.categoria_profesional}
-               onChange={e => set('categoria_profesional', e.target.value)} />
-        <Input label="Notas" value={form.notas}
-               onChange={e => set('notas', e.target.value)} />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+
+        {/* Footer fijo con botones — siempre visible */}
+        <div style={{
+          padding: '16px 32px',
+          borderTop: '1px solid var(--line)',
+          background: 'var(--bg-2)',
+          display: 'flex', justifyContent: 'flex-end', gap: 8,
+          flexShrink: 0,
+        }}>
           <Btn variant="ghost" type="button" onClick={onClose}>Cancelar</Btn>
           <Btn type="submit" disabled={saving}>
             {saving ? 'Guardando…' : 'Activar trabajador'}
