@@ -172,7 +172,9 @@ def add_cliente_a_familia(idnoofit):
     d = request.get_json() or {}
     force_move = bool(d.get('force_move', False))
     target_familia_id = d.get('familia_id')
-    otro_idn = (d.get('otro_cliente_idnoofit') or '').strip()
+    # otro_cliente_idnoofit puede llegar como int desde NoofitPro o string.
+    _raw_otro = d.get('otro_cliente_idnoofit')
+    otro_idn = str(_raw_otro).strip() if _raw_otro is not None else ''
 
     with get_conn() as conn, conn.cursor() as cur:
         # ¿Ya está en alguna familia?

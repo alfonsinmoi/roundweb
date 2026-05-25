@@ -57,7 +57,9 @@ def create_forma_pago():
     }
     """
     d = request.get_json() or {}
-    cli = (d.get('cliente_idnoofit') or '').strip()
+    # cliente_idnoofit puede llegar como int desde NoofitPro o string. Normalizar.
+    raw = d.get('cliente_idnoofit')
+    cli = str(raw).strip() if raw is not None else ''
     forma = d.get('forma_pago')
     if not cli:
         return jsonify({'ok': False, 'error': 'cliente_idnoofit_required'}), 400
