@@ -160,23 +160,26 @@ export const asignacionesClienteList = (identity, idnoofit) =>
     .then(d => d.asignaciones)
 
 // ── Familias ────────────────────────────────────────────────────────────────
+// El blueprint familias se registra bajo `/api/familias` (NO bajo
+// `/api/config/familias`), por eso usamos _requestRoot con la URL absoluta
+// en vez de _request (que prepende /api/config).
 export const familiasList = (identity) =>
-  _request('GET', '/familias', identity).then(d => d.familias)
+  _requestRoot('GET', '/api/familias', identity).then(d => d.familias)
 export const familiaGet = (identity, id) =>
-  _request('GET', `/familias/${id}`, identity).then(d => d.familia)
+  _requestRoot('GET', `/api/familias/${id}`, identity).then(d => d.familia)
 export const familiaCreate = (identity, body) =>
-  _request('POST', '/familias', identity, body).then(d => d.familia)
+  _requestRoot('POST', '/api/familias', identity, body).then(d => d.familia)
 export const familiaUpdate = (identity, id, body) =>
-  _request('PATCH', `/familias/${id}`, identity, body).then(d => d.familia)
+  _requestRoot('PATCH', `/api/familias/${id}`, identity, body).then(d => d.familia)
 export const familiaDelete = (identity, id) =>
-  _request('DELETE', `/familias/${id}`, identity)
+  _requestRoot('DELETE', `/api/familias/${id}`, identity)
 export const familiaDeCliente = (identity, idnoofit) =>
-  _request('GET', `/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
+  _requestRoot('GET', `/api/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
     .then(d => d.familia)
 export const familiaAddCliente = (identity, idnoofit, body) =>
-  _request('POST', `/familias/cliente/${encodeURIComponent(idnoofit)}`, identity, body)
+  _requestRoot('POST', `/api/familias/cliente/${encodeURIComponent(idnoofit)}`, identity, body)
 export const familiaRemoveCliente = (identity, idnoofit) =>
-  _request('DELETE', `/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
+  _requestRoot('DELETE', `/api/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
 
 // ── Banner "Nuevos clientes esperando cobro" — dismiss persistente ─────────
 // Usa /api/clientes-atendidos (no /api/config), de ahí el path completo
