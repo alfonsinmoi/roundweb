@@ -258,7 +258,10 @@ def replace_subscription(sid):
             return jsonify({'ok': False, 'error': 'partner_no_resuelto'}), 400
 
         # 1) Cerrar la actual
-        o._call('round.subscription', 'write', [[sid]],
+        # NOTA: write() de Odoo espera primer arg como lista de IDs ([sid]),
+        # NO lista de listas ([[sid]]). Lo segundo provoca TypeError en
+        # _track_prepare de mail.thread: "unhashable type: 'list'".
+        o._call('round.subscription', 'write', [sid],
             {'fecha_fin': fecha_corte, 'estado': 'cancelada'})
 
         # 2) Crear la nueva
@@ -300,7 +303,8 @@ def cancel_subscription(sid):
             return jsonify({'ok': False, 'error': 'subscription_no_encontrada'}), 404
         if old[0]['estado'] == 'cancelada':
             return jsonify({'ok': False, 'error': 'ya_cancelada'}), 400
-        o._call('round.subscription', 'write', [[sid]],
+        # write() espera [sid], no [[sid]] — ver nota en replace_subscription.
+        o._call('round.subscription', 'write', [sid],
             {'fecha_fin': fecha_corte, 'estado': 'cancelada'})
         log_action(actor_from_request(), entidad='subscription', entidad_id=sid,
                    accion='cancel', resumen=f'Cancelada · motivo: {motivo}')
