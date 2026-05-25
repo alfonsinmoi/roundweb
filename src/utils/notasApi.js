@@ -3,6 +3,8 @@
 // Las llamadas como usuario_web usan Authorization: Bearer <jwt>.
 // Detecto automáticamente cuál usar según el user.
 
+import { getRoundIdentity } from './configApi'
+
 const CONFIG_API_TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
 
 function buildHeaders(user) {
@@ -12,12 +14,16 @@ function buildHeaders(user) {
     return { 'Content-Type': 'application/json',
              'Authorization': `Bearer ${user.jwt || user.token}` }
   }
-  // Manager (login NoofitPro)
+  // Manager (login NoofitPro). Usamos getRoundIdentity (de configApi) en
+  // vez de `user.manager ?? user.id` directo, porque NoofitPro a veces
+  // devuelve user.manager como boolean true (no es el id real); pickId
+  // descarta esos casos y elige el id correcto.
+  const identity = getRoundIdentity(user)
   return {
     'Content-Type': 'application/json',
     'X-Round-Token': CONFIG_API_TOKEN,
-    'X-Round-Manager-Id': String(user?.manager ?? user?.id ?? ''),
-    ...(user?.id_trainer ? { 'X-Round-Trainer-Id': String(user.id_trainer) } : {}),
+    'X-Round-Manager-Id': identity.managerId || '',
+    ...(identity.trainerId ? { 'X-Round-Trainer-Id': String(identity.trainerId) } : {}),
   }
 }
 
