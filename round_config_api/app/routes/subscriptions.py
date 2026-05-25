@@ -157,9 +157,39 @@ def create_subscription():
         # Resolver partner
         partner_ids = o._call('res.partner', 'search',
             [('id_noofit', '=', str(cliente_idnoofit))], limit=1)
-        if not partner_ids:
-            return jsonify({'ok': False, 'error': 'partner_no_encontrado_en_odoo'}), 400
-        pid = partner_ids[0]
+        if partner_ids:
+            pid = partner_ids[0]
+        else:
+            # No existe en Odoo todavía — buscar en NoofitPro y crear el
+            # partner sobre la marcha. Si el cliente no aparece en NoofitPro,
+            # entonces sí es error real (404).
+            log.info(f'subscription create: partner {cliente_idnoofit} no existe en Odoo, creando...')
+            try:
+                from .. import noofit_client as nc
+                from ..odoo_alta import OdooAlta
+                clis = nc.get_clientes() or []
+                cli = next((c for c in clis if str(c.get('id')) == str(cliente_idnoofit)), None)
+                if not cli:
+                    return jsonify({'ok': False, 'error': 'cliente_no_encontrado_en_noofit',
+                                    'detail': 'No se pudo crear el partner: el cliente no existe en NoofitPro.'}), 400
+                oa = OdooAlta()
+                oa._connect()
+                pid = oa.upsert_partner({
+                    'idnoofit': str(cliente_idnoofit),
+                    'nombre':   cli.get('name'),
+                    'apellidos': cli.get('surname'),
+                    'dni':      cli.get('dni') or cli.get('nif'),
+                    'email':    cli.get('email'),
+                    'movil':    cli.get('cellPhone') or cli.get('telefono'),
+                    'direccion': cli.get('address'),
+                    'localidad': cli.get('town'),
+                    'cp':       cli.get('zip'),
+                })
+                log.info(f'subscription create: partner Odoo creado id={pid} para idnoofit={cliente_idnoofit}')
+            except Exception as e:
+                log.exception(f'auto-crear partner Odoo idnoofit={cliente_idnoofit}: {e}')
+                return jsonify({'ok': False, 'error': 'partner_no_encontrado_en_odoo',
+                                'detail': f'No se pudo crear el partner automáticamente: {e}'}), 400
 
         vals = {
             'partner_id': pid,
