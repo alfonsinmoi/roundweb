@@ -136,8 +136,9 @@ def get_recibo(rid):
 @auth_required
 def create_recibo():
     d = request.get_json() or {}
-    # Validaciones
-    cliente = (d.get('cliente_idnoofit') or '').strip()
+    # Validaciones — cliente_idnoofit puede llegar como int o string.
+    _raw = d.get('cliente_idnoofit')
+    cliente = str(_raw).strip() if _raw is not None else ''
     if not cliente:
         return jsonify({'ok': False, 'error': 'cliente_idnoofit_required'}), 400
     metodo = d.get('metodo_pago')
