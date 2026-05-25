@@ -1162,18 +1162,27 @@ def cobertura():
         for f in demanda:
             if f['dia_semana'] != dia_iso:
                 continue
-            # Puestos que cubren esta demanda: el propio + sus compatibles
-            puestos_validos = {f['puesto_id']} | compat.get(f['puesto_id'], set())
-            asignados = set()
+            # Separar asignados exactos (puesto=el pedido) vs compatibles.
+            # Los compatibles solo rellenan deficit; nunca generan exceso.
+            asignados_exactos = set()
+            compatibles_disp  = set()
+            puestos_compat    = compat.get(f['puesto_id'], set())
             for b in bloques_dia:
                 if b['fecha'] != fecha.isoformat(): continue
                 if b['tipo'] != 'trabajo': continue
-                if b['puesto_id'] not in puestos_validos: continue
-                if _solapa(f['hora_inicio'], f['hora_fin'], b['hora_inicio'], b['hora_fin']):
-                    asignados.add(b['trabajador_id'])
-            asignado = len(asignados)
-            deficit = max(0, f['requerido'] - asignado)
-            exceso  = max(0, asignado - f['requerido'])
+                if not _solapa(f['hora_inicio'], f['hora_fin'], b['hora_inicio'], b['hora_fin']): continue
+                if b['puesto_id'] == f['puesto_id']:
+                    asignados_exactos.add(b['trabajador_id'])
+                elif b['puesto_id'] in puestos_compat:
+                    compatibles_disp.add(b['trabajador_id'])
+            exactos  = len(asignados_exactos)
+            faltan   = max(0, f['requerido'] - exactos)
+            usados_compat = min(faltan, len(compatibles_disp))
+            asignado = exactos + usados_compat
+            deficit  = max(0, f['requerido'] - asignado)
+            exceso   = max(0, exactos - f['requerido'])  # solo los exactos
+            # ids visibles: los exactos + los compatibles realmente usados
+            asignados = set(asignados_exactos) | set(list(compatibles_disp)[:usados_compat])
             if deficit > 0: deficits += 1
             if exceso  > 0: excesos  += 1
             franjas.append({
