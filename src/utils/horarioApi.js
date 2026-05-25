@@ -206,6 +206,12 @@ export const coberturaSemana = (identity, fechaLunes, temporadaId = null) => {
   return _req('GET', `/cobertura?${qs.toString()}`, identity)
 }
 
+export const calendarioTrabajador = (identity, fechaLunes) =>
+  _req('GET', `/calendario-trabajador?fecha_lunes=${fechaLunes}`, identity)
+
+export const equilibrioSemana = (identity, fechaLunes) =>
+  _req('GET', `/equilibrio?fecha_lunes=${fechaLunes}`, identity)
+
 
 // ── Fichajes + correcciones + QR ────────────────────────────────────────────
 export const qrActual = (identity, idTrainer) =>

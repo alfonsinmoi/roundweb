@@ -1239,3 +1239,306 @@ def cobertura():
         },
         'resumen_trabajadores': resumen_trab,
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ║  CALENDARIO POR TRABAJADOR (vista expandible: dia x puestos)             ║
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _bloques_semana(cur, id_manager, lunes, domingo):
+    """Devuelve los bloques expandidos de la semana (con datos del trabajador)."""
+    cur.execute("""
+        SELECT a.trabajador_id, a.fecha, a.turno_plantilla_id,
+               b.hora_inicio, b.hora_fin, b.tipo, b.puesto_id,
+               COALESCE(t.nombre_completo, '') AS nombre, t.nif,
+               p.nombre AS puesto_nombre, p.color AS puesto_color, p.codigo
+          FROM turno_asignacion a
+          JOIN trabajador t ON t.id = a.trabajador_id
+          LEFT JOIN turno_plantilla_bloque b ON b.turno_plantilla_id = a.turno_plantilla_id
+          LEFT JOIN puesto_trabajo p ON p.id = b.puesto_id
+         WHERE a.id_manager = %s
+           AND a.fecha BETWEEN %s AND %s
+         ORDER BY a.trabajador_id, a.fecha, b.hora_inicio
+    """, (str(id_manager), lunes, domingo))
+    rows = []
+    for r in cur.fetchall():
+        if r['turno_plantilla_id'] is None or r['hora_inicio'] is None:
+            continue
+        rows.append({
+            'trabajador_id': r['trabajador_id'],
+            'trabajador_nombre': r['nombre'] or r['nif'] or f"#{r['trabajador_id']}",
+            'fecha': r['fecha'].isoformat(),
+            'hora_inicio': r['hora_inicio'].strftime('%H:%M'),
+            'hora_fin':    r['hora_fin'].strftime('%H:%M'),
+            'tipo': r['tipo'],
+            'puesto_id': r['puesto_id'],
+            'puesto_nombre': r['puesto_nombre'] or '',
+            'puesto_color':  r['puesto_color']  or 'gray',
+            'puesto_codigo': r['codigo'] or '',
+        })
+    return rows
+
+
+def _mins(hi, hf):
+    h1, m1 = int(hi[:2]), int(hi[3:])
+    h2, m2 = int(hf[:2]), int(hf[3:])
+    return max(0, (h2 * 60 + m2) - (h1 * 60 + m1))
+
+
+@bp.route('/calendario-trabajador', methods=['GET'])
+@auth_required
+@require_feature('control_horario')
+def calendario_trabajador():
+    """Vista por trabajador: dias de la semana con bloques agrupados por puesto.
+    Devuelve totales por dia y por semana."""
+    lunes = _parse_lunes(request.args.get('fecha_lunes'))
+    if not lunes:
+        return jsonify({'ok': False, 'error': 'fecha_lunes_invalida'}), 400
+    domingo = lunes + _dt.timedelta(days=6)
+
+    with get_conn() as conn, conn.cursor() as cur:
+        # Trabajadores activos
+        cur.execute("""
+            SELECT id, COALESCE(nombre_completo,'') AS nombre, nif, jornada_h_semana
+              FROM trabajador
+             WHERE id_manager = %s AND estado='activo'
+             ORDER BY nombre_completo, id
+        """, (str(g.id_manager),))
+        trab_meta = {r['id']: {
+            'id': r['id'],
+            'nombre': r['nombre'] or r['nif'] or f"#{r['id']}",
+            'nif': r['nif'] or '',
+            'jornada_h_semana': float(r['jornada_h_semana']) if r['jornada_h_semana'] is not None else None,
+        } for r in cur.fetchall()}
+
+        bloques = _bloques_semana(cur, g.id_manager, lunes, domingo)
+
+    # Estructura: {tid: {fecha: {puesto_id: {nombre, color, codigo, minutos, bloques:[(hi,hf)]}}}}
+    data = {tid: {} for tid in trab_meta}
+    for b in bloques:
+        if b['tipo'] != 'trabajo':
+            continue
+        tid = b['trabajador_id']
+        if tid not in data: continue
+        dia = data[tid].setdefault(b['fecha'], {})
+        slot = dia.setdefault(b['puesto_id'] or 0, {
+            'puesto_id': b['puesto_id'],
+            'puesto_nombre': b['puesto_nombre'] or 'Sin puesto',
+            'puesto_color':  b['puesto_color'],
+            'puesto_codigo': b['puesto_codigo'],
+            'minutos': 0,
+            'bloques': [],
+        })
+        slot['minutos'] += _mins(b['hora_inicio'], b['hora_fin'])
+        slot['bloques'].append([b['hora_inicio'], b['hora_fin']])
+
+    # Construir respuesta
+    out = []
+    for tid, meta in trab_meta.items():
+        dias_out = []
+        min_semana = 0
+        puestos_semana = {}
+        for off in range(7):
+            fecha = (lunes + _dt.timedelta(days=off)).isoformat()
+            por_puesto = data.get(tid, {}).get(fecha, {})
+            puestos_lst = []
+            min_dia = 0
+            for p in sorted(por_puesto.values(), key=lambda x: -x['minutos']):
+                puestos_lst.append({
+                    'puesto_id': p['puesto_id'],
+                    'puesto_nombre': p['puesto_nombre'],
+                    'puesto_color':  p['puesto_color'],
+                    'puesto_codigo': p['puesto_codigo'],
+                    'horas': round(p['minutos'] / 60.0, 2),
+                    'bloques': p['bloques'],
+                })
+                min_dia += p['minutos']
+                puestos_semana[p['puesto_id']] = puestos_semana.get(p['puesto_id'], {
+                    'puesto_id': p['puesto_id'],
+                    'puesto_nombre': p['puesto_nombre'],
+                    'puesto_color':  p['puesto_color'],
+                    'puesto_codigo': p['puesto_codigo'],
+                    'minutos': 0,
+                })
+                puestos_semana[p['puesto_id']]['minutos'] += p['minutos']
+            min_semana += min_dia
+            dias_out.append({
+                'fecha': fecha,
+                'dia_semana': off + 1,
+                'horas': round(min_dia / 60.0, 2),
+                'puestos': puestos_lst,
+            })
+        out.append({
+            **meta,
+            'horas_semana': round(min_semana / 60.0, 2),
+            'horas_por_puesto': [{
+                'puesto_id': v['puesto_id'],
+                'puesto_nombre': v['puesto_nombre'],
+                'puesto_color':  v['puesto_color'],
+                'puesto_codigo': v['puesto_codigo'],
+                'horas': round(v['minutos'] / 60.0, 2),
+            } for v in sorted(puestos_semana.values(), key=lambda x: -x['minutos'])],
+            'dias': dias_out,
+        })
+
+    return jsonify({
+        'ok': True,
+        'fecha_lunes': lunes.isoformat(),
+        'fecha_domingo': domingo.isoformat(),
+        'trabajadores': out,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ║  EQUILIBRIO entre trabajadores (manana/tarde, partidos, fin de semana)   ║
+# ═══════════════════════════════════════════════════════════════════════════
+
+@bp.route('/equilibrio', methods=['GET'])
+@auth_required
+@require_feature('control_horario')
+def equilibrio():
+    """Compara la carga semanal entre trabajadores en varias dimensiones:
+    horas totales, manana/tarde, turnos partidos, fin de semana, por puesto."""
+    lunes = _parse_lunes(request.args.get('fecha_lunes'))
+    if not lunes:
+        return jsonify({'ok': False, 'error': 'fecha_lunes_invalida'}), 400
+    domingo = lunes + _dt.timedelta(days=6)
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, COALESCE(nombre_completo,'') AS nombre, nif, jornada_h_semana
+              FROM trabajador
+             WHERE id_manager = %s AND estado='activo'
+             ORDER BY nombre_completo, id
+        """, (str(g.id_manager),))
+        trab_meta = {r['id']: {
+            'id': r['id'],
+            'nombre': r['nombre'] or r['nif'] or f"#{r['id']}",
+            'jornada_h_semana': float(r['jornada_h_semana']) if r['jornada_h_semana'] is not None else None,
+        } for r in cur.fetchall()}
+
+        bloques = _bloques_semana(cur, g.id_manager, lunes, domingo)
+
+    # Agrupar bloques por trabajador y fecha
+    # tid -> fecha -> [(hi, hf, puesto_id, puesto_nombre, puesto_color)]
+    por_tf = {}
+    for b in bloques:
+        if b['tipo'] != 'trabajo': continue
+        por_tf.setdefault(b['trabajador_id'], {}).setdefault(b['fecha'], []).append(b)
+
+    UMBRAL_MANANA_FIN = 14 * 60   # <14:00 cuenta como manana, >=14:00 tarde
+
+    def minutos_manana(hi, hf):
+        h1 = int(hi[:2]) * 60 + int(hi[3:])
+        h2 = int(hf[:2]) * 60 + int(hf[3:])
+        if h2 <= UMBRAL_MANANA_FIN: return h2 - h1
+        if h1 >= UMBRAL_MANANA_FIN: return 0
+        return UMBRAL_MANANA_FIN - h1
+
+    out = []
+    promedios = {'horas_total': 0, 'horas_manana': 0, 'horas_tarde': 0,
+                 'horas_finde': 0, 'n_turnos': 0, 'dias_partidos': 0}
+    for tid, meta in trab_meta.items():
+        min_total = 0
+        min_manana = 0
+        min_finde = 0
+        n_turnos = 0          # cada bloque cuenta como turno
+        n_partidos = 0        # dias con >=2 bloques continuos separados por hueco >= 60min
+        dias_trabajados = 0
+        horas_por_puesto = {}
+        horas_por_dia = []    # array 7 con horas
+        for off in range(7):
+            fecha = (lunes + _dt.timedelta(days=off)).isoformat()
+            bls = sorted(por_tf.get(tid, {}).get(fecha, []), key=lambda x: x['hora_inicio'])
+            if bls: dias_trabajados += 1
+            # detectar partido: ordenar bloques y ver si hay hueco grande entre dos
+            bloques_ordenados = [(int(b['hora_inicio'][:2])*60+int(b['hora_inicio'][3:]),
+                                  int(b['hora_fin'][:2])*60+int(b['hora_fin'][3:]),
+                                  b) for b in bls]
+            es_partido = False
+            if len(bloques_ordenados) >= 2:
+                # fusionar adyacentes (hueco < 30 min) y luego ver si quedan >=2 grupos con hueco >=60
+                grupos = [list(bloques_ordenados[0])]  # [[ini, fin, b], ...]
+                for ini, fin, b in bloques_ordenados[1:]:
+                    if ini - grupos[-1][1] < 30:
+                        grupos[-1][1] = max(grupos[-1][1], fin)
+                    else:
+                        grupos.append([ini, fin, b])
+                for i in range(1, len(grupos)):
+                    if grupos[i][0] - grupos[i-1][1] >= 60:
+                        es_partido = True
+                        break
+            if es_partido: n_partidos += 1
+
+            min_dia = 0
+            for b in bls:
+                m = _mins(b['hora_inicio'], b['hora_fin'])
+                min_total += m
+                min_dia += m
+                min_manana += minutos_manana(b['hora_inicio'], b['hora_fin'])
+                if off + 1 >= 6:  # sabado o domingo
+                    min_finde += m
+                n_turnos += 1
+                horas_por_puesto[b['puesto_id']] = horas_por_puesto.get(b['puesto_id'], {
+                    'puesto_id': b['puesto_id'],
+                    'puesto_nombre': b['puesto_nombre'],
+                    'puesto_color':  b['puesto_color'],
+                    'puesto_codigo': b['puesto_codigo'],
+                    'minutos': 0,
+                })
+                horas_por_puesto[b['puesto_id']]['minutos'] += m
+            horas_por_dia.append(round(min_dia / 60.0, 2))
+
+        h_total  = round(min_total  / 60.0, 2)
+        h_manana = round(min_manana / 60.0, 2)
+        h_tarde  = round((min_total - min_manana) / 60.0, 2)
+        h_finde  = round(min_finde  / 60.0, 2)
+
+        promedios['horas_total']    += h_total
+        promedios['horas_manana']   += h_manana
+        promedios['horas_tarde']    += h_tarde
+        promedios['horas_finde']    += h_finde
+        promedios['n_turnos']       += n_turnos
+        promedios['dias_partidos']  += n_partidos
+
+        # cumplimiento jornada
+        jor = meta['jornada_h_semana']
+        cumple_pct = None
+        if jor and jor > 0:
+            cumple_pct = round(100.0 * h_total / jor, 1)
+
+        out.append({
+            **meta,
+            'horas_total':   h_total,
+            'horas_manana':  h_manana,
+            'horas_tarde':   h_tarde,
+            'horas_finde':   h_finde,
+            'horas_por_dia': horas_por_dia,
+            'n_turnos':      n_turnos,
+            'dias_partidos': n_partidos,
+            'dias_trabajados': dias_trabajados,
+            'cumple_jornada_pct': cumple_pct,
+            'horas_por_puesto': [{
+                'puesto_id': v['puesto_id'],
+                'puesto_nombre': v['puesto_nombre'],
+                'puesto_color':  v['puesto_color'],
+                'puesto_codigo': v['puesto_codigo'],
+                'horas': round(v['minutos'] / 60.0, 2),
+            } for v in sorted(horas_por_puesto.values(), key=lambda x: -x['minutos'])],
+        })
+
+    n = len(out) or 1
+    return jsonify({
+        'ok': True,
+        'fecha_lunes': lunes.isoformat(),
+        'fecha_domingo': domingo.isoformat(),
+        'trabajadores': out,
+        'promedio': {
+            'horas_total':   round(promedios['horas_total']   / n, 2),
+            'horas_manana':  round(promedios['horas_manana']  / n, 2),
+            'horas_tarde':   round(promedios['horas_tarde']   / n, 2),
+            'horas_finde':   round(promedios['horas_finde']   / n, 2),
+            'n_turnos':      round(promedios['n_turnos']      / n, 1),
+            'dias_partidos': round(promedios['dias_partidos'] / n, 1),
+        },
+    })

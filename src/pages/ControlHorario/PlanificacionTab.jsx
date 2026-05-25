@@ -1,18 +1,22 @@
 import { useState } from 'react'
-import { CalendarRange, Briefcase, LayoutTemplate, CalendarDays, BarChart3, Info } from 'lucide-react'
-import TemporadasPanel from './planif/TemporadasPanel'
-import PuestosPanel    from './planif/PuestosPanel'
-import PlantillasPanel from './planif/PlantillasPanel'
-import CalendarioPanel from './planif/CalendarioPanel'
-import CoberturaPanel  from './planif/CoberturaPanel'
+import { CalendarRange, Briefcase, LayoutTemplate, CalendarDays, BarChart3, Users, Scale, Info } from 'lucide-react'
+import TemporadasPanel           from './planif/TemporadasPanel'
+import PuestosPanel              from './planif/PuestosPanel'
+import PlantillasPanel           from './planif/PlantillasPanel'
+import CalendarioPanel           from './planif/CalendarioPanel'
+import CoberturaPanel            from './planif/CoberturaPanel'
+import CalendarioTrabajadorPanel from './planif/CalendarioTrabajadorPanel'
+import EquilibrioPanel           from './planif/EquilibrioPanel'
 
 
 const SUB_TABS = [
-  { id: 'temporadas', label: 'Temporadas y apertura', icon: CalendarRange,    comp: TemporadasPanel },
-  { id: 'puestos',    label: 'Puestos y demanda',     icon: Briefcase,        comp: PuestosPanel },
-  { id: 'plantillas', label: 'Plantillas de turno',   icon: LayoutTemplate,   comp: PlantillasPanel },
-  { id: 'calendario', label: 'Calendario semanal',    icon: CalendarDays,     comp: CalendarioPanel },
-  { id: 'cobertura',  label: 'Cobertura',             icon: BarChart3,        comp: CoberturaPanel },
+  { id: 'temporadas',  label: 'Temporadas y apertura',  icon: CalendarRange,    comp: TemporadasPanel },
+  { id: 'puestos',     label: 'Puestos y demanda',      icon: Briefcase,        comp: PuestosPanel },
+  { id: 'plantillas',  label: 'Plantillas de turno',    icon: LayoutTemplate,   comp: PlantillasPanel },
+  { id: 'calendario',  label: 'Calendario semanal',     icon: CalendarDays,     comp: CalendarioPanel },
+  { id: 'cal_trab',    label: 'Calendario trabajador',  icon: Users,            comp: CalendarioTrabajadorPanel },
+  { id: 'cobertura',   label: 'Cobertura',              icon: BarChart3,        comp: CoberturaPanel },
+  { id: 'equilibrio',  label: 'Equilibrio',             icon: Scale,            comp: EquilibrioPanel },
 ]
 
 
