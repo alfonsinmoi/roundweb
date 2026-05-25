@@ -143,7 +143,10 @@ def create_subscription():
     }
     """
     d = request.get_json() or {}
-    cliente_idnoofit = (d.get('cliente_idnoofit') or '').strip()
+    # cliente_idnoofit puede llegar como int (NoofitPro lo devuelve numérico)
+    # o como string. Normalizamos a string aquí para evitar AttributeError.
+    raw = d.get('cliente_idnoofit')
+    cliente_idnoofit = str(raw).strip() if raw is not None else ''
     cuota_id = d.get('cuota_id')
     if not cliente_idnoofit or not cuota_id:
         return jsonify({'ok': False, 'error': 'cliente_idnoofit y cuota_id requeridos'}), 400
