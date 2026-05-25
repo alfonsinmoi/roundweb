@@ -1110,6 +1110,19 @@ def cobertura():
         puestos = {r['id']: {'nombre': r['nombre'], 'color': r['color']}
                    for r in cur.fetchall()}
 
+        # 2b) Pares compatibles (un trabajador en puesto X cubre tambien Y)
+        cur.execute("""
+            SELECT pc.puesto_a_id, pc.puesto_b_id
+              FROM puesto_compatible pc
+              JOIN puesto_trabajo p ON p.id = pc.puesto_a_id
+             WHERE p.id_manager = %s
+        """, (str(g.id_manager),))
+        compat = {}
+        for r in cur.fetchall():
+            a, b = r['puesto_a_id'], r['puesto_b_id']
+            compat.setdefault(a, set()).add(b)
+            compat.setdefault(b, set()).add(a)
+
         # 3) Asignaciones de la semana con sus bloques expandidos
         cur.execute("""
             SELECT a.trabajador_id, a.fecha, a.turno_plantilla_id,
@@ -1149,11 +1162,13 @@ def cobertura():
         for f in demanda:
             if f['dia_semana'] != dia_iso:
                 continue
+            # Puestos que cubren esta demanda: el propio + sus compatibles
+            puestos_validos = {f['puesto_id']} | compat.get(f['puesto_id'], set())
             asignados = set()
             for b in bloques_dia:
                 if b['fecha'] != fecha.isoformat(): continue
                 if b['tipo'] != 'trabajo': continue
-                if b['puesto_id'] != f['puesto_id']: continue
+                if b['puesto_id'] not in puestos_validos: continue
                 if _solapa(f['hora_inicio'], f['hora_fin'], b['hora_inicio'], b['hora_fin']):
                     asignados.add(b['trabajador_id'])
             asignado = len(asignados)
