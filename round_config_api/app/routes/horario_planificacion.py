@@ -1551,3 +1551,218 @@ def equilibrio():
             'dias_partidos': round(promedios['dias_partidos'] / n, 1),
         },
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ║  REPLICACION DE ASIGNACIONES (copiar semana, replicar N, patron rotativo)║
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _copiar_asignaciones(cur, id_manager, lunes_origen, lunes_destino, replace):
+    """Copia las asignaciones de la semana lunes_origen a lunes_destino.
+    Si replace=True, borra antes lo que hubiera en destino.
+    Devuelve (n_copiadas, n_borradas)."""
+    domingo_destino = lunes_destino + _dt.timedelta(days=6)
+    n_borradas = 0
+    if replace:
+        cur.execute("""
+            DELETE FROM turno_asignacion
+             WHERE id_manager = %s
+               AND fecha BETWEEN %s AND %s
+        """, (str(id_manager), lunes_destino, domingo_destino))
+        n_borradas = cur.rowcount or 0
+    # Origen
+    domingo_origen = lunes_origen + _dt.timedelta(days=6)
+    cur.execute("""
+        SELECT trabajador_id, fecha, turno_plantilla_id, notas
+          FROM turno_asignacion
+         WHERE id_manager = %s
+           AND fecha BETWEEN %s AND %s
+    """, (str(id_manager), lunes_origen, domingo_origen))
+    rows = cur.fetchall()
+    delta = (lunes_destino - lunes_origen).days
+    n_copiadas = 0
+    for r in rows:
+        nueva_fecha = r['fecha'] + _dt.timedelta(days=delta)
+        cur.execute("""
+            INSERT INTO turno_asignacion
+              (id_manager, trabajador_id, fecha, turno_plantilla_id, notas)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (trabajador_id, fecha) DO UPDATE SET
+              turno_plantilla_id = EXCLUDED.turno_plantilla_id,
+              notas              = EXCLUDED.notas,
+              updated_at         = NOW()
+        """, (str(id_manager), r['trabajador_id'], nueva_fecha,
+              r['turno_plantilla_id'], r['notas']))
+        n_copiadas += 1
+    return n_copiadas, n_borradas
+
+
+@bp.route('/turno-asignaciones/copiar-semana', methods=['POST'])
+@auth_required
+@require_feature('control_horario')
+def copiar_semana():
+    """Copia las asignaciones de una semana origen a una semana destino.
+    Body: { desde_lunes: 'YYYY-MM-DD', hasta_lunes: 'YYYY-MM-DD', replace: true }"""
+    d = request.get_json() or {}
+    origen = _parse_lunes(d.get('desde_lunes'))
+    destino = _parse_lunes(d.get('hasta_lunes'))
+    if not origen or not destino:
+        return jsonify({'ok': False, 'error': 'fechas_invalidas'}), 400
+    if origen == destino:
+        return jsonify({'ok': False, 'error': 'mismo_origen_destino'}), 400
+    replace = bool(d.get('replace', True))
+    with get_conn() as conn, conn.cursor() as cur:
+        n_cop, n_del = _copiar_asignaciones(cur, g.id_manager, origen, destino, replace)
+    log_action(actor_from_request(), entidad='turno_asignacion',
+               accion='copiar_semana',
+               cambios={'origen': origen.isoformat(), 'destino': destino.isoformat(),
+                        'copiadas': n_cop, 'borradas': n_del, 'replace': replace})
+    return jsonify({'ok': True, 'copiadas': n_cop, 'borradas': n_del})
+
+
+@bp.route('/turno-asignaciones/replicar', methods=['POST'])
+@auth_required
+@require_feature('control_horario')
+def replicar_semana():
+    """Replica una semana origen en las N semanas SIGUIENTES.
+    Body: { desde_lunes, num_semanas: 4, replace: true }"""
+    d = request.get_json() or {}
+    origen = _parse_lunes(d.get('desde_lunes'))
+    try:
+        num = int(d.get('num_semanas', 1))
+        if num < 1 or num > 52: raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'num_semanas_invalido'}), 400
+    if not origen:
+        return jsonify({'ok': False, 'error': 'fecha_invalida'}), 400
+    replace = bool(d.get('replace', True))
+    total_cop = 0
+    total_del = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for i in range(1, num + 1):
+            destino = origen + _dt.timedelta(days=7 * i)
+            c, b = _copiar_asignaciones(cur, g.id_manager, origen, destino, replace)
+            total_cop += c
+            total_del += b
+    log_action(actor_from_request(), entidad='turno_asignacion',
+               accion='replicar_semana',
+               cambios={'origen': origen.isoformat(), 'num_semanas': num,
+                        'copiadas': total_cop, 'borradas': total_del})
+    return jsonify({'ok': True, 'semanas': num,
+                    'copiadas': total_cop, 'borradas': total_del})
+
+
+@bp.route('/turno-asignaciones/patron-rotativo', methods=['POST'])
+@auth_required
+@require_feature('control_horario')
+def patron_rotativo():
+    """Aplica un patron ciclico A,B,C,... de semanas origen durante N ciclos.
+    Body: { semanas_origen: ['YYYY-MM-DD', 'YYYY-MM-DD', ...],
+            desde_lunes: 'YYYY-MM-DD',  // primer destino
+            num_ciclos: 4, replace: true }"""
+    d = request.get_json() or {}
+    origenes_raw = d.get('semanas_origen') or []
+    if not isinstance(origenes_raw, list) or len(origenes_raw) < 2:
+        return jsonify({'ok': False, 'error': 'minimo_2_semanas_origen'}), 400
+    origenes = [_parse_lunes(s) for s in origenes_raw]
+    if any(o is None for o in origenes):
+        return jsonify({'ok': False, 'error': 'fecha_origen_invalida'}), 400
+    destino_inicial = _parse_lunes(d.get('desde_lunes'))
+    if not destino_inicial:
+        return jsonify({'ok': False, 'error': 'desde_lunes_invalida'}), 400
+    try:
+        ciclos = int(d.get('num_ciclos', 1))
+        if ciclos < 1 or ciclos > 52: raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'num_ciclos_invalido'}), 400
+    replace = bool(d.get('replace', True))
+    total_cop = 0
+    total_del = 0
+    total_semanas = ciclos * len(origenes)
+    with get_conn() as conn, conn.cursor() as cur:
+        for k in range(total_semanas):
+            origen = origenes[k % len(origenes)]
+            destino = destino_inicial + _dt.timedelta(days=7 * k)
+            if destino == origen:
+                continue
+            c, b = _copiar_asignaciones(cur, g.id_manager, origen, destino, replace)
+            total_cop += c
+            total_del += b
+    log_action(actor_from_request(), entidad='turno_asignacion',
+               accion='patron_rotativo',
+               cambios={'origenes': [o.isoformat() for o in origenes],
+                        'destino_inicial': destino_inicial.isoformat(),
+                        'ciclos': ciclos, 'copiadas': total_cop, 'borradas': total_del})
+    return jsonify({'ok': True, 'semanas_aplicadas': total_semanas,
+                    'copiadas': total_cop, 'borradas': total_del})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ║  VISTA MENSUAL (read-only, todo el mes en una sola llamada)              ║
+# ═══════════════════════════════════════════════════════════════════════════
+
+@bp.route('/turno-asignaciones-mes', methods=['GET'])
+@auth_required
+@require_feature('control_horario')
+def asignaciones_mes():
+    """Devuelve asignaciones de un mes natural (extendido a semanas completas).
+    Query: ?mes=YYYY-MM"""
+    mes_str = (request.args.get('mes') or '').strip()
+    try:
+        anio, mes = mes_str.split('-')
+        anio, mes = int(anio), int(mes)
+        primer_dia = _dt.date(anio, mes, 1)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'mes_invalido'}), 400
+    # Lunes de la primera semana (puede caer en mes anterior)
+    primer_lunes = primer_dia - _dt.timedelta(days=primer_dia.isoweekday() - 1)
+    # Ultimo dia del mes
+    if mes == 12:
+        ultimo_dia = _dt.date(anio, 12, 31)
+    else:
+        ultimo_dia = _dt.date(anio, mes + 1, 1) - _dt.timedelta(days=1)
+    # Domingo de la ultima semana (puede caer en mes siguiente)
+    ultimo_domingo = ultimo_dia + _dt.timedelta(days=7 - ultimo_dia.isoweekday())
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, COALESCE(nombre_completo,'') AS nombre, nif
+              FROM trabajador
+             WHERE id_manager = %s AND estado='activo'
+             ORDER BY nombre_completo, id
+        """, (str(g.id_manager),))
+        trabajadores = [{
+            'id': r['id'],
+            'nombre': r['nombre'] or r['nif'] or f"#{r['id']}",
+            'nif': r['nif'] or '',
+        } for r in cur.fetchall()]
+
+        cur.execute("""
+            SELECT a.trabajador_id, a.fecha, a.turno_plantilla_id,
+                   p.nombre AS plantilla_nombre, p.color AS plantilla_color
+              FROM turno_asignacion a
+              LEFT JOIN turno_plantilla p ON p.id = a.turno_plantilla_id
+             WHERE a.id_manager = %s
+               AND a.fecha BETWEEN %s AND %s
+             ORDER BY a.trabajador_id, a.fecha
+        """, (str(g.id_manager), primer_lunes, ultimo_domingo))
+        asign = [{
+            'trabajador_id': r['trabajador_id'],
+            'fecha': r['fecha'].isoformat(),
+            'turno_plantilla_id': r['turno_plantilla_id'],
+            'plantilla_nombre': r['plantilla_nombre'] or 'Libre',
+            'plantilla_color':  r['plantilla_color']  or 'gray',
+            'libre': r['turno_plantilla_id'] is None,
+        } for r in cur.fetchall()]
+
+    # Estructura por trabajador → fecha → asignacion
+    return jsonify({
+        'ok': True,
+        'mes': mes_str,
+        'primer_lunes': primer_lunes.isoformat(),
+        'ultimo_domingo': ultimo_domingo.isoformat(),
+        'primer_dia_mes': primer_dia.isoformat(),
+        'ultimo_dia_mes': ultimo_dia.isoformat(),
+        'trabajadores': trabajadores,
+        'asignaciones': asign,
+    })

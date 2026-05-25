@@ -212,6 +212,16 @@ export const calendarioTrabajador = (identity, fechaLunes) =>
 export const equilibrioSemana = (identity, fechaLunes) =>
   _req('GET', `/equilibrio?fecha_lunes=${fechaLunes}`, identity)
 
+export const copiarSemana = (identity, body) =>
+  _req('POST', '/turno-asignaciones/copiar-semana', identity, body)
+export const replicarSemana = (identity, body) =>
+  _req('POST', '/turno-asignaciones/replicar', identity, body)
+export const aplicarPatronRotativo = (identity, body) =>
+  _req('POST', '/turno-asignaciones/patron-rotativo', identity, body)
+
+export const asignacionesMes = (identity, mes) =>
+  _req('GET', `/turno-asignaciones-mes?mes=${mes}`, identity)
+
 
 // ── Fichajes + correcciones + QR ────────────────────────────────────────────
 export const qrActual = (identity, idTrainer) =>

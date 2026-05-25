@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { ChevronLeft, ChevronRight, Save, Calendar, RotateCcw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Save, Calendar, RotateCcw, Copy, Repeat, Shuffle, X } from 'lucide-react'
 import { Card, Btn, Badge } from '../../../components/UI'
 import { useToast } from '../../../components/Toast'
 import {
   asignacionesSemana, asignacionesBulk, plantillasList,
+  copiarSemana, replicarSemana, aplicarPatronRotativo,
 } from '../../../utils/horarioApi'
 
 
@@ -101,6 +102,25 @@ export default function CalendarioPanel({ identity }) {
 
   const dirty = Object.keys(pending).length > 0
 
+  const [busy, setBusy] = useState(false)
+  const [modal, setModal] = useState(null)  // 'replicar' | 'rotativo'
+
+  async function handleCopiarAnterior() {
+    if (!confirm('Copiar las asignaciones de la semana anterior aquí (reemplaza lo actual)?')) return
+    setBusy(true)
+    try {
+      const ant = addDays(lunes, -7)
+      const r = await copiarSemana(identity, {
+        desde_lunes: isoDate(ant),
+        hasta_lunes: isoDate(lunes),
+        replace: true,
+      })
+      toast.success(`Copiadas ${r.copiadas} asignaciones (${r.borradas} reemplazadas)`)
+      reload()
+    } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
+    finally { setBusy(false) }
+  }
+
   async function handleGuardar() {
     setSaving(true)
     const ops = Object.entries(pending).map(([k, v]) => {
@@ -135,6 +155,21 @@ export default function CalendarioPanel({ identity }) {
         <button onClick={() => setLunes(lunesDe(new Date()))} style={navBtn} title="Esta semana">
           <Calendar size={14} /> Hoy
         </button>
+
+        <div style={{ marginLeft: 8, display: 'flex', gap: 6 }}>
+          <Btn size="sm" variant="ghost" onClick={handleCopiarAnterior} disabled={busy || dirty}
+               title="Copia asignaciones de la semana anterior aquí">
+            <Copy size={13} /> Copiar anterior
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={() => setModal('replicar')} disabled={busy || dirty}
+               title="Replica esta semana N semanas siguientes">
+            <Repeat size={13} /> Replicar…
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={() => setModal('rotativo')} disabled={busy || dirty}
+               title="Aplica un patrón rotativo A/B durante varias semanas">
+            <Shuffle size={13} /> Patrón…
+          </Btn>
+        </div>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           {dirty && (
@@ -208,7 +243,191 @@ export default function CalendarioPanel({ identity }) {
           </table>
         </div>
       )}
+
+      {modal === 'replicar' && (
+        <ModalReplicar
+          lunes={lunes}
+          identity={identity}
+          onClose={() => setModal(null)}
+          onDone={() => { setModal(null); reload() }} />
+      )}
+      {modal === 'rotativo' && (
+        <ModalPatron
+          lunes={lunes}
+          identity={identity}
+          onClose={() => setModal(null)}
+          onDone={() => { setModal(null); reload() }} />
+      )}
     </Card>
+  )
+}
+
+
+function ModalReplicar({ lunes, identity, onClose, onDone }) {
+  const toast = useToast()
+  const [num, setNum] = useState(4)
+  const [replace, setReplace] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  async function aplicar() {
+    if (num < 1 || num > 52) return
+    setBusy(true)
+    try {
+      const r = await replicarSemana(identity, {
+        desde_lunes: isoDate(lunes),
+        num_semanas: num,
+        replace,
+      })
+      toast.success(`Replicada en ${r.semanas} semanas (${r.copiadas} asignaciones)`)
+      onDone()
+    } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <Overlay onClose={onClose} titulo="Replicar esta semana">
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-2)' }}>
+        Copia las asignaciones de la semana del <strong>{lunes.toLocaleDateString('es-ES', { day: '2-digit', month: 'long' })}</strong> a las <strong>{num}</strong> semanas siguientes.
+      </p>
+      <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <label style={lbl}>
+          Número de semanas siguientes
+          <input type="number" min={1} max={52} value={num}
+                 onChange={e => setNum(Number(e.target.value) || 1)}
+                 style={inp} />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-2)' }}>
+          <input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} />
+          Reemplazar lo que haya en las semanas destino
+        </label>
+      </div>
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <Btn size="sm" variant="ghost" onClick={onClose} disabled={busy}>Cancelar</Btn>
+        <Btn size="sm" onClick={aplicar} disabled={busy}>
+          <Repeat size={13} /> {busy ? 'Replicando…' : 'Replicar'}
+        </Btn>
+      </div>
+    </Overlay>
+  )
+}
+
+
+function ModalPatron({ lunes, identity, onClose, onDone }) {
+  const toast = useToast()
+  const [origenes, setOrigenes] = useState([
+    isoDate(addDays(lunes, -7)),
+    isoDate(lunes),
+  ])
+  const [ciclos, setCiclos] = useState(2)
+  const [destinoInicial, setDestinoInicial] = useState(isoDate(addDays(lunes, 7)))
+  const [replace, setReplace] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  function addOrigen() {
+    if (origenes.length >= 6) return
+    setOrigenes(o => [...o, isoDate(addDays(lunes, 7 * (o.length)))])
+  }
+  function setOrigen(i, v) { setOrigenes(o => o.map((x, k) => k === i ? v : x)) }
+  function removeOrigen(i) { setOrigenes(o => o.filter((_, k) => k !== i)) }
+
+  async function aplicar() {
+    if (origenes.length < 2) {
+      toast.error('Necesitas al menos 2 semanas para alternar'); return
+    }
+    setBusy(true)
+    try {
+      const r = await aplicarPatronRotativo(identity, {
+        semanas_origen: origenes,
+        desde_lunes: destinoInicial,
+        num_ciclos: ciclos,
+        replace,
+      })
+      toast.success(`Aplicado: ${r.semanas_aplicadas} semanas (${r.copiadas} asignaciones)`)
+      onDone()
+    } catch (e) { toast.error('Error: ' + (e.body?.error || e.message)) }
+    finally { setBusy(false) }
+  }
+
+  const total = ciclos * origenes.length
+  return (
+    <Overlay onClose={onClose} titulo="Patrón rotativo de semanas">
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-2)' }}>
+        Define 2-6 semanas <em>plantilla</em> y se alternarán cíclicamente
+        durante <strong>{ciclos}</strong> ciclos = <strong>{total}</strong> semanas
+        a partir de la fecha destino.
+      </p>
+      <div style={{ marginTop: 12 }}>
+        <strong style={{ fontSize: 12, color: 'var(--text-1)' }}>Semanas plantilla (lunes):</strong>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+          {origenes.map((o, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, width: 60, color: 'var(--text-3)' }}>
+                Semana {'ABCDEF'[i]}
+              </span>
+              <input type="date" value={o}
+                     onChange={e => setOrigen(i, e.target.value)}
+                     style={{ ...inp, flex: 1 }} />
+              {origenes.length > 2 && (
+                <button onClick={() => removeOrigen(i)} type="button"
+                        style={{ padding: 4, border: 'none', background: 'transparent', color: 'var(--red, #f87171)', cursor: 'pointer' }}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+          {origenes.length < 6 && (
+            <Btn size="sm" variant="ghost" onClick={addOrigen}>+ Añadir semana plantilla</Btn>
+          )}
+        </div>
+      </div>
+      <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <label style={lbl}>
+          Empezar el lunes
+          <input type="date" value={destinoInicial}
+                 onChange={e => setDestinoInicial(e.target.value)} style={inp} />
+        </label>
+        <label style={lbl}>
+          Ciclos
+          <input type="number" min={1} max={12} value={ciclos}
+                 onChange={e => setCiclos(Number(e.target.value) || 1)} style={inp} />
+        </label>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-2)', marginTop: 8 }}>
+        <input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} />
+        Reemplazar lo que haya en las semanas destino
+      </label>
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <Btn size="sm" variant="ghost" onClick={onClose} disabled={busy}>Cancelar</Btn>
+        <Btn size="sm" onClick={aplicar} disabled={busy}>
+          <Shuffle size={13} /> {busy ? 'Aplicando…' : `Aplicar (${total} sem.)`}
+        </Btn>
+      </div>
+    </Overlay>
+  )
+}
+
+
+function Overlay({ titulo, children, onClose }) {
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg-0)', borderRadius: 12, padding: 20,
+        width: '90%', maxWidth: 480,
+        border: '1px solid var(--line)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <strong style={{ fontSize: 15, color: 'var(--text-0)' }}>{titulo}</strong>
+          <button onClick={onClose} type="button"
+                  style={{ padding: 4, border: 'none', background: 'transparent', color: 'var(--text-3)', cursor: 'pointer' }}>
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
   )
 }
 
@@ -264,3 +483,8 @@ const th = {
   textTransform: 'uppercase', letterSpacing: '0.05em',
 }
 const td = { padding: '8px 10px' }
+const lbl = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }
+const inp = {
+  padding: '6px 8px', borderRadius: 6, border: '1px solid var(--line)',
+  background: 'var(--bg-1)', color: 'var(--text-0)', fontSize: 13,
+}
