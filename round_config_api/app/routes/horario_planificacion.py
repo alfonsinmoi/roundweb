@@ -1061,6 +1061,43 @@ def _solapa(hi1, hf1, hi2, hf2):
     return hi1 < hf2 and hi2 < hf1
 
 
+def _hm_a_min(s):
+    """'14:30' -> 870."""
+    return int(s[:2]) * 60 + int(s[3:])
+
+
+def _pico_simultaneo(bloques):
+    """Dada una lista [(ini_min, fin_min, trab_id)], devuelve el numero
+    maximo de bloques activos a la vez (pico simultaneo). Si dos bloques
+    son del MISMO trabajador, se considera un unico bloque (se fusionan)."""
+    if not bloques: return 0
+    # Fusionar bloques del mismo trabajador (por si tiene varios bloques contiguos)
+    por_trab = {}
+    for ini, fin, tid in bloques:
+        por_trab.setdefault(tid, []).append((ini, fin))
+    eventos = []
+    for tid, intervalos in por_trab.items():
+        # Fusionar intervalos solapantes/contiguos del mismo trabajador
+        intervalos.sort()
+        merged = [intervalos[0]]
+        for ini, fin in intervalos[1:]:
+            if ini <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], fin))
+            else:
+                merged.append((ini, fin))
+        for ini, fin in merged:
+            eventos.append((ini, +1))
+            eventos.append((fin, -1))
+    # Sweep line: orden ascendente; en empate, primero -1 (salidas)
+    eventos.sort(key=lambda e: (e[0], e[1]))
+    pico = 0
+    actual = 0
+    for _, delta in eventos:
+        actual += delta
+        if actual > pico: pico = actual
+    return pico
+
+
 @bp.route('/cobertura', methods=['GET'])
 @auth_required
 @require_feature('control_horario')
@@ -1162,27 +1199,33 @@ def cobertura():
         for f in demanda:
             if f['dia_semana'] != dia_iso:
                 continue
-            # Separar asignados exactos (puesto=el pedido) vs compatibles.
-            # Los compatibles solo rellenan deficit; nunca generan exceso.
-            asignados_exactos = set()
-            compatibles_disp  = set()
+            # Recopilar bloques que solapan: exactos (mismo puesto) y compatibles
             puestos_compat    = compat.get(f['puesto_id'], set())
+            bls_exactos = []     # [(ini_min, fin_min, trab_id), ...]
+            bls_compat  = []
             for b in bloques_dia:
                 if b['fecha'] != fecha.isoformat(): continue
                 if b['tipo'] != 'trabajo': continue
                 if not _solapa(f['hora_inicio'], f['hora_fin'], b['hora_inicio'], b['hora_fin']): continue
+                ini = max(_hm_a_min(f['hora_inicio']), _hm_a_min(b['hora_inicio']))
+                fin = min(_hm_a_min(f['hora_fin']),    _hm_a_min(b['hora_fin']))
+                if fin <= ini: continue
                 if b['puesto_id'] == f['puesto_id']:
-                    asignados_exactos.add(b['trabajador_id'])
+                    bls_exactos.append((ini, fin, b['trabajador_id']))
                 elif b['puesto_id'] in puestos_compat:
-                    compatibles_disp.add(b['trabajador_id'])
-            exactos  = len(asignados_exactos)
-            faltan   = max(0, f['requerido'] - exactos)
-            usados_compat = min(faltan, len(compatibles_disp))
-            asignado = exactos + usados_compat
+                    bls_compat.append((ini, fin, b['trabajador_id']))
+
+            # Pico simultaneo (= en el instante de mayor concurrencia, cuantos hay a la vez)
+            pico_exactos = _pico_simultaneo(bls_exactos)
+            pico_compat  = _pico_simultaneo(bls_compat)
+            # Compatibles solo cubren deficit (no generan exceso)
+            faltan = max(0, f['requerido'] - pico_exactos)
+            usados_compat = min(faltan, pico_compat)
+            asignado = pico_exactos + usados_compat
             deficit  = max(0, f['requerido'] - asignado)
-            exceso   = max(0, exactos - f['requerido'])  # solo los exactos
-            # ids visibles: los exactos + los compatibles realmente usados
-            asignados = set(asignados_exactos) | set(list(compatibles_disp)[:usados_compat])
+            exceso   = max(0, pico_exactos - f['requerido'])
+            # ids visibles: unión de trabajadores presentes
+            asignados = set(b[2] for b in bls_exactos) | set(b[2] for b in bls_compat[:usados_compat])
             if deficit > 0: deficits += 1
             if exceso  > 0: excesos  += 1
             franjas.append({
