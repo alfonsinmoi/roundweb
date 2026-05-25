@@ -55,7 +55,21 @@ def create():
     if not d.get('fecha_desde'):
         return jsonify({'ok': False, 'error': 'fecha_desde_obligatoria'}), 400
     # Modificación siempre tiene id_trainer (es una instancia para alguien concreto)
+    # Fallback: si no llega y no hay g.id_trainer (manager logueado sin
+    # impersonar), deducirlo del trainer del cliente en cliente_cache.
     id_trainer = d.get('id_trainer') or g.id_trainer
+    if not id_trainer and d.get('cliente_idnoofit'):
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id_trainer FROM cliente_cache
+                     WHERE id_manager=%s AND id=%s LIMIT 1
+                """, (str(g.id_manager), int(d['cliente_idnoofit'])))
+                row = cur.fetchone()
+            if row and row.get('id_trainer'):
+                id_trainer = str(row['id_trainer'])
+        except Exception:
+            pass
     if not id_trainer:
         return jsonify({'ok': False, 'error': 'id_trainer_obligatorio'}), 400
     with get_conn() as conn, conn.cursor() as cur:
