@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Building2, ListChecks, Save, Trash2, Plus, Info } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Building2, ListChecks, Save, Trash2, Plus, Info, Check, Copy, Crown, X } from 'lucide-react'
 import { Card, Btn, Badge, Input, Select } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import {
@@ -38,40 +38,113 @@ function EmpresaSection({ identity }) {
       setConvs(cs || [])
       setEmpresas(es || [])
       setTrainers(ts || [])
-      if (ts?.length && !trainerId) setTrainerId(String(ts[0].id))
     } catch (e) { toast.error('Error: ' + e.message) }
-  }, [identity, toast, trainerId])
+  }, [identity, toast])
 
   useEffect(() => { reload() }, []) // eslint-disable-line
 
+  // Ordenar trainers: manager primero, resto por nombre
+  const managerId = identity?.managerId ? String(identity.managerId) : ''
+  const trainersOrdenados = useMemo(() => {
+    const arr = [...trainers]
+    arr.sort((a, b) => {
+      const aMgr = String(a.id) === managerId
+      const bMgr = String(b.id) === managerId
+      if (aMgr && !bMgr) return -1
+      if (!aMgr && bMgr) return 1
+      const na = (a.nombre || a.name || '').toLowerCase()
+      const nb = (b.nombre || b.name || '').toLowerCase()
+      return na.localeCompare(nb)
+    })
+    return arr
+  }, [trainers, managerId])
+
+  // Auto-seleccionar manager al cargar
+  useEffect(() => {
+    if (!trainerId && trainersOrdenados.length) {
+      setTrainerId(String(trainersOrdenados[0].id))
+    }
+  }, [trainersOrdenados, trainerId])
+
   const empresa = empresas.find(e => String(e.id_trainer) === String(trainerId)) || null
+  const empresasById = useMemo(() => {
+    const m = {}
+    for (const e of empresas) m[String(e.id_trainer)] = e
+    return m
+  }, [empresas])
+
+  function isConfigured(t) {
+    const e = empresasById[String(t.id)]
+    if (!e) return false
+    // Considerar configurado si tiene al menos razón social O CIF
+    return !!(e.razon_social || e.cif)
+  }
 
   return (
     <Card style={{ padding: 18 }}>
-      <SectionHeader icon={Building2} title="Datos de empresa por trainer"
-        subtitle="El trainer es la entidad jurídica empleadora del trabajador (art. 34.9 ET). Estos datos heredan a los trabajadores adscritos." />
-      <Select label="Trainer / centro" value={trainerId}
-              onChange={e => setTrainerId(e.target.value)}>
-        {trainers.map(t => (
-          <option key={t.id} value={t.id}>
-            {`${t.nombre || t.name || ''} ${t.apellidos || t.surname || ''}`.trim() || t.email}
-          </option>
-        ))}
-      </Select>
-      {trainerId && (
-        <EmpresaForm key={trainerId}
-                     identity={identity}
-                     idTrainer={trainerId}
-                     empresa={empresa}
-                     convenios={convs}
-                     onSaved={reload} />
-      )}
+      <SectionHeader icon={Building2} title="Datos de empresa por trainer / centro"
+        subtitle="El trainer es la entidad jurídica empleadora del trabajador (art. 34.9 ET). El primero es el manager principal — desde su ficha puedes copiar los datos al resto." />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, marginTop: 8 }}>
+        {/* Lista de trainers */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {trainersOrdenados.map(t => {
+            const isMgr = String(t.id) === managerId
+            const isSel = String(t.id) === trainerId
+            const cfg = isConfigured(t)
+            return (
+              <button key={t.id} type="button"
+                      onClick={() => setTrainerId(String(t.id))}
+                      style={{
+                        textAlign: 'left', padding: '10px 12px', borderRadius: 8,
+                        background: isSel ? 'var(--green-bg, rgba(16,185,129,0.10))' : 'transparent',
+                        border: isSel ? '1px solid var(--green, #10b981)' : '1px solid var(--line)',
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+                      }}>
+                {isMgr && <Crown size={14} style={{ color: '#f59e0b', flexShrink: 0 }} title="Manager" />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-0)',
+                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {(`${t.nombre || t.name || ''} ${t.apellidos || t.surname || ''}`).trim() || t.email}
+                  </div>
+                  {isMgr && (
+                    <div style={{ fontSize: 10, color: '#f59e0b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Manager
+                    </div>
+                  )}
+                </div>
+                {cfg ? (
+                  <Badge color="green">
+                    <Check size={10} style={{ verticalAlign: '-1px' }} /> Configurado
+                  </Badge>
+                ) : (
+                  <Badge color="gray">Sin datos</Badge>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Form */}
+        {trainerId && (
+          <EmpresaForm key={trainerId}
+                       identity={identity}
+                       idTrainer={trainerId}
+                       isManager={trainerId === managerId}
+                       trainers={trainersOrdenados}
+                       managerId={managerId}
+                       empresa={empresa}
+                       empresasById={empresasById}
+                       convenios={convs}
+                       onSaved={reload} />
+        )}
+      </div>
     </Card>
   )
 }
 
 
-function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
+function EmpresaForm({ identity, idTrainer, isManager, trainers, managerId, empresa, empresasById, convenios, onSaved }) {
   const toast = useToast()
   const [form, setForm] = useState(() => ({
     razon_social: empresa?.razon_social || '',
@@ -88,6 +161,7 @@ function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
     notas: empresa?.notas || '',
   }))
   const [saving, setSaving] = useState(false)
+  const [showCopyModal, setShowCopyModal] = useState(false)
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const conv = convenios.find(c => c.id === Number(form.convenio_id))
@@ -168,12 +242,146 @@ function EmpresaForm({ identity, idTrainer, empresa, convenios, onSaved }) {
       </div>
       <Input label="Notas" value={form.notas}
              onChange={e => set('notas', e.target.value)} />
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        {isManager && empresa && (form.razon_social || form.cif) ? (
+          <Btn type="button" variant="ghost" onClick={() => setShowCopyModal(true)}>
+            <Copy size={13} /> Copiar a otros trainers…
+          </Btn>
+        ) : (
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            {isManager
+              ? 'Guarda los datos del manager para poder copiarlos al resto.'
+              : ''}
+          </span>
+        )}
         <Btn type="submit" disabled={saving}>
           <Save size={14} /> {saving ? 'Guardando…' : 'Guardar'}
         </Btn>
       </div>
+      {showCopyModal && (
+        <CopiarEmpresaModal
+          identity={identity}
+          form={form}
+          trainers={trainers}
+          managerId={managerId}
+          empresasById={empresasById}
+          onClose={() => setShowCopyModal(false)}
+          onDone={() => { setShowCopyModal(false); onSaved() }} />
+      )}
     </form>
+  )
+}
+
+
+function CopiarEmpresaModal({ identity, form, trainers, managerId, empresasById, onClose, onDone }) {
+  const toast = useToast()
+  const destinos = trainers.filter(t => String(t.id) !== managerId)
+  const [seleccion, setSeleccion] = useState(new Set())
+  const [saving, setSaving] = useState(false)
+
+  function toggle(id) {
+    setSeleccion(s => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  function todos() {
+    if (seleccion.size === destinos.length) setSeleccion(new Set())
+    else setSeleccion(new Set(destinos.map(t => String(t.id))))
+  }
+
+  async function aplicar() {
+    if (seleccion.size === 0) {
+      toast.error('Selecciona al menos un trainer'); return
+    }
+    setSaving(true)
+    const body = { ...form }
+    ;['convenio_id','horas_anuales_override','horas_semana_override',
+      'vacaciones_dias_override','vacaciones_tipo_override',
+      'asuntos_propios_dias_override',
+      'fecha_acuerdo_representantes'].forEach(k => {
+      if (body[k] === '') body[k] = null
+    })
+    let ok = 0, ko = 0
+    for (const tid of seleccion) {
+      try {
+        await empresaUpsert(identity, tid, body)
+        ok++
+      } catch (e) { ko++ }
+    }
+    setSaving(false)
+    if (ko === 0) toast.success(`Copiado a ${ok} trainer${ok === 1 ? '' : 's'}`)
+    else toast.error(`Copiados ${ok}, fallaron ${ko}`)
+    onDone()
+  }
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg-0)', borderRadius: 12, padding: 20,
+        width: '90%', maxWidth: 500, maxHeight: '80vh', overflow: 'auto',
+        border: '1px solid var(--line)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <strong style={{ fontSize: 15, color: 'var(--text-0)' }}>Copiar datos a trainers</strong>
+          <button onClick={onClose} type="button"
+                  style={{ padding: 4, border: 'none', background: 'transparent', color: 'var(--text-3)', cursor: 'pointer' }}>
+            <X size={16} />
+          </button>
+        </div>
+        <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--text-3)' }}>
+          Se copiará razón social, CIF, dirección, convenio y overrides a los trainers marcados.
+          Reemplaza cualquier dato previo.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            {seleccion.size} de {destinos.length} seleccionados
+          </span>
+          <Btn size="sm" variant="ghost" onClick={todos}>
+            {seleccion.size === destinos.length ? 'Quitar todos' : 'Seleccionar todos'}
+          </Btn>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 16 }}>
+          {destinos.map(t => {
+            const e = empresasById[String(t.id)]
+            const cfg = e && (e.razon_social || e.cif)
+            const checked = seleccion.has(String(t.id))
+            return (
+              <label key={t.id} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '8px 10px', borderRadius: 8,
+                background: checked ? 'var(--green-bg, rgba(16,185,129,0.08))' : 'transparent',
+                border: `1px solid ${checked ? 'var(--green, #10b981)' : 'var(--line)'}`,
+                cursor: 'pointer',
+              }}>
+                <input type="checkbox" checked={checked}
+                       onChange={() => toggle(String(t.id))}
+                       style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                <span style={{ flex: 1, fontSize: 13, color: 'var(--text-0)' }}>
+                  {(`${t.nombre || t.name || ''} ${t.apellidos || t.surname || ''}`).trim() || t.email}
+                </span>
+                {cfg && <Badge color="amber">⚠ se sobrescribe</Badge>}
+              </label>
+            )
+          })}
+          {destinos.length === 0 && (
+            <p style={{ color: 'var(--text-3)', fontSize: 12, fontStyle: 'italic' }}>
+              No hay otros trainers a los que copiar.
+            </p>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Btn size="sm" variant="ghost" onClick={onClose} disabled={saving}>Cancelar</Btn>
+          <Btn size="sm" onClick={aplicar} disabled={saving || seleccion.size === 0}>
+            <Copy size={13} /> {saving ? 'Copiando…' : `Copiar a ${seleccion.size}`}
+          </Btn>
+        </div>
+      </div>
+    </div>
   )
 }
 
