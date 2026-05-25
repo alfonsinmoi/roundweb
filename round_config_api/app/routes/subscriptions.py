@@ -160,18 +160,34 @@ def create_subscription():
         if partner_ids:
             pid = partner_ids[0]
         else:
-            # No existe en Odoo todavía — buscar en NoofitPro y crear el
-            # partner sobre la marcha. Si el cliente no aparece en NoofitPro,
-            # entonces sí es error real (404).
+            # No existe en Odoo todavía — leemos los datos del cliente desde
+            # `cliente_cache` (ya per-manager, mantenida por trainer_data/
+            # round_clientes_sync) y creamos el partner sobre la marcha.
             log.info(f'subscription create: partner {cliente_idnoofit} no existe en Odoo, creando...')
             try:
-                from .. import noofit_client as nc
+                import json as _json
+                from ..db import get_conn
                 from ..odoo_alta import OdooAlta
-                clis = nc.get_clientes() or []
-                cli = next((c for c in clis if str(c.get('id')) == str(cliente_idnoofit)), None)
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT raw_data FROM cliente_cache
+                         WHERE id_manager = %s AND id = %s
+                         LIMIT 1
+                    """, (str(g.id_manager), int(cliente_idnoofit)))
+                    row = cur.fetchone()
+                cli = None
+                if row:
+                    cli = row['raw_data']
+                    if isinstance(cli, str):
+                        try: cli = _json.loads(cli)
+                        except Exception: cli = None
                 if not cli:
-                    return jsonify({'ok': False, 'error': 'cliente_no_encontrado_en_noofit',
-                                    'detail': 'No se pudo crear el partner: el cliente no existe en NoofitPro.'}), 400
+                    return jsonify({
+                        'ok': False,
+                        'error': 'cliente_no_encontrado_en_noofit',
+                        'detail': ('El cliente no está en la cache local de NoofitPro. '
+                                   'Refresca el listado de clientes y vuelve a intentar.'),
+                    }), 400
                 oa = OdooAlta()
                 oa._connect()
                 pid = oa.upsert_partner({
