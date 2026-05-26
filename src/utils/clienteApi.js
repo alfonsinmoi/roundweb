@@ -93,3 +93,24 @@ export const fichajeCorreccion = (token, body) =>
 
 export const horarioMe = (token) =>
   _req('GET', '/api/horario/me', null, token)
+
+
+// ── Buzón: notificaciones + notas del cliente ──────────────────────────────
+export const listarNotificaciones = (token, soloNoLeidas = false) => {
+  const qs = soloNoLeidas ? '?solo_no_leidas=1' : ''
+  return _req('GET', `/api/cliente/notificaciones${qs}`, null, token)
+}
+export const leerNotificacion = (token, id) =>
+  _req('POST', `/api/cliente/notificaciones/${id}/leer`, null, token)
+export const marcarTodasNotifLeidas = (token) =>
+  _req('POST', '/api/cliente/notificaciones/marcar-todas-leidas', null, token)
+
+export const listarNotasCliente = (token) =>
+  _req('GET', '/api/cliente/notas', null, token)
+export const leerNota = (token, id) =>
+  _req('POST', `/api/cliente/notas/${id}/leer`, null, token)
+export const responderNota = (token, id, contenido) =>
+  _req('POST', `/api/cliente/notas/${id}/responder`, { contenido }, token)
+
+export const buzonResumen = (token) =>
+  _req('GET', '/api/cliente/buzon-resumen', null, token)

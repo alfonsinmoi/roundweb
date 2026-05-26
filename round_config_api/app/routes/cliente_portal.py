@@ -291,3 +291,246 @@ def me_cliente():
             } if trab else None,
         },
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ║  BUZÓN — Notificaciones + Notas dirigidas al cliente                     ║
+# ═══════════════════════════════════════════════════════════════════════════
+
+@bp.route('/notificaciones', methods=['GET'])
+@cliente_required
+def listar_notificaciones():
+    """Notificaciones recibidas por este cliente (vía notif_destinatario)."""
+    solo_no_leidas = (request.args.get('solo_no_leidas') or '').lower() in ('1', 'true', 'yes')
+    with get_conn() as conn, conn.cursor() as cur:
+        sql = """
+          SELECT d.id AS dest_id, d.leida, d.fecha_lectura,
+                 e.id AS envio_id, e.seccion, e.tipo, e.titulo, e.cuerpo,
+                 e.cuerpo_html, e.url, e.fecha_envio, e.created_at,
+                 e.fecha_desaparicion
+            FROM notif_destinatario d
+            JOIN notif_envio e ON e.id = d.envio_id
+           WHERE d.cliente_idnoofit = %s
+             AND d.id_manager = %s
+             AND e.estado = 'enviada'
+             AND (e.fecha_desaparicion IS NULL OR e.fecha_desaparicion > NOW())
+        """
+        params = [str(g.cliente_idnoofit), str(g.id_manager)]
+        if solo_no_leidas:
+            sql += " AND d.leida = FALSE"
+        sql += " ORDER BY COALESCE(e.fecha_envio, e.created_at) DESC LIMIT 100"
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        cur.execute("""
+          SELECT COUNT(*) AS n FROM notif_destinatario d
+            JOIN notif_envio e ON e.id = d.envio_id
+           WHERE d.cliente_idnoofit = %s AND d.id_manager = %s
+             AND d.leida = FALSE AND e.estado = 'enviada'
+             AND (e.fecha_desaparicion IS NULL OR e.fecha_desaparicion > NOW())
+        """, (str(g.cliente_idnoofit), str(g.id_manager)))
+        no_leidas = cur.fetchone()['n']
+
+    return jsonify({
+        'ok': True,
+        'no_leidas': no_leidas,
+        'notificaciones': [{
+            'id': r['dest_id'],
+            'envio_id': r['envio_id'],
+            'seccion': r['seccion'],
+            'tipo': r['tipo'],
+            'titulo': r['titulo'],
+            'cuerpo': r['cuerpo'] or '',
+            'cuerpo_html': r['cuerpo_html'] or '',
+            'url': r['url'] or '',
+            'leida': bool(r['leida']),
+            'fecha_lectura': r['fecha_lectura'].isoformat() if r['fecha_lectura'] else None,
+            'fecha': (r['fecha_envio'] or r['created_at']).isoformat() if (r['fecha_envio'] or r['created_at']) else None,
+        } for r in rows],
+    })
+
+
+@bp.route('/notificaciones/<int:dest_id>/leer', methods=['POST'])
+@cliente_required
+def marcar_notificacion_leida(dest_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+          UPDATE notif_destinatario
+             SET leida = TRUE,
+                 fecha_lectura = COALESCE(fecha_lectura, NOW())
+           WHERE id = %s AND cliente_idnoofit = %s AND id_manager = %s
+          RETURNING id, fecha_lectura
+        """, (dest_id, str(g.cliente_idnoofit), str(g.id_manager)))
+        r = cur.fetchone()
+    if not r:
+        return jsonify({'ok': False, 'error': 'no_encontrado'}), 404
+    return jsonify({'ok': True, 'fecha_lectura': r['fecha_lectura'].isoformat()})
+
+
+@bp.route('/notificaciones/marcar-todas-leidas', methods=['POST'])
+@cliente_required
+def marcar_todas_notif_leidas():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+          UPDATE notif_destinatario
+             SET leida = TRUE, fecha_lectura = COALESCE(fecha_lectura, NOW())
+           WHERE cliente_idnoofit = %s AND id_manager = %s AND leida = FALSE
+        """, (str(g.cliente_idnoofit), str(g.id_manager)))
+        n = cur.rowcount or 0
+    return jsonify({'ok': True, 'marcadas': n})
+
+
+@bp.route('/notas', methods=['GET'])
+@cliente_required
+def listar_notas_cliente():
+    """Notas dirigidas al cliente con sus respuestas en hilo (parent_id)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+          SELECT id, contenido, estado, created_at, created_by_label, created_by_email,
+                 leida_at_cliente, asignada_a_label
+            FROM cliente_nota
+           WHERE cliente_idnoofit = %s AND id_manager = %s
+             AND parent_id IS NULL
+             AND COALESCE(visible_cliente, TRUE) = TRUE
+             AND estado != 'archivada'
+           ORDER BY created_at DESC LIMIT 100
+        """, (str(g.cliente_idnoofit), str(g.id_manager)))
+        raices = cur.fetchall()
+
+        respuestas_por_padre = {}
+        if raices:
+            ids = [r['id'] for r in raices]
+            cur.execute("""
+              SELECT id, parent_id, contenido, created_at, created_by_label,
+                     created_by_kind, created_by_email
+                FROM cliente_nota
+               WHERE parent_id = ANY(%s) AND cliente_idnoofit = %s AND id_manager = %s
+               ORDER BY parent_id, created_at ASC
+            """, (ids, str(g.cliente_idnoofit), str(g.id_manager)))
+            for r in cur.fetchall():
+                respuestas_por_padre.setdefault(r['parent_id'], []).append({
+                    'id': r['id'],
+                    'contenido': r['contenido'],
+                    'created_at': r['created_at'].isoformat() if r['created_at'] else None,
+                    'autor_label': r['created_by_label'] or r['created_by_email'] or 'Manager',
+                    'autor_kind': r['created_by_kind'] or 'manager',
+                })
+
+        cur.execute("""
+          SELECT COUNT(*) AS n FROM cliente_nota
+           WHERE cliente_idnoofit = %s AND id_manager = %s
+             AND parent_id IS NULL AND leida_at_cliente IS NULL
+             AND COALESCE(visible_cliente, TRUE) = TRUE
+             AND estado != 'archivada'
+        """, (str(g.cliente_idnoofit), str(g.id_manager)))
+        no_leidas = cur.fetchone()['n']
+
+    return jsonify({
+        'ok': True,
+        'no_leidas': no_leidas,
+        'notas': [{
+            'id': r['id'],
+            'contenido': r['contenido'],
+            'estado': r['estado'],
+            'created_at': r['created_at'].isoformat() if r['created_at'] else None,
+            'autor_label': r['created_by_label'] or r['created_by_email'] or 'Manager',
+            'leida_at': r['leida_at_cliente'].isoformat() if r['leida_at_cliente'] else None,
+            'respuestas': respuestas_por_padre.get(r['id'], []),
+        } for r in raices],
+    })
+
+
+@bp.route('/notas/<int:nota_id>/leer', methods=['POST'])
+@cliente_required
+def marcar_nota_leida(nota_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+          UPDATE cliente_nota
+             SET leida_at_cliente = COALESCE(leida_at_cliente, NOW()),
+                 updated_at = NOW()
+           WHERE id = %s AND cliente_idnoofit = %s AND id_manager = %s
+             AND parent_id IS NULL
+          RETURNING id, leida_at_cliente
+        """, (nota_id, str(g.cliente_idnoofit), str(g.id_manager)))
+        r = cur.fetchone()
+    if not r:
+        return jsonify({'ok': False, 'error': 'no_encontrada'}), 404
+    return jsonify({'ok': True, 'leida_at': r['leida_at_cliente'].isoformat()})
+
+
+@bp.route('/notas/<int:nota_id>/responder', methods=['POST'])
+@cliente_required
+def responder_nota(nota_id):
+    d = request.get_json() or {}
+    contenido = (d.get('contenido') or '').strip()
+    if not contenido:
+        return jsonify({'ok': False, 'error': 'contenido_vacio'}), 400
+    if len(contenido) > 5000:
+        return jsonify({'ok': False, 'error': 'contenido_demasiado_largo'}), 400
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+          SELECT id, cliente_nombre, id_trainer
+            FROM cliente_nota
+           WHERE id = %s AND cliente_idnoofit = %s AND id_manager = %s
+             AND parent_id IS NULL
+        """, (nota_id, str(g.cliente_idnoofit), str(g.id_manager)))
+        padre = cur.fetchone()
+        if not padre:
+            return jsonify({'ok': False, 'error': 'no_encontrada'}), 404
+        cur.execute("""
+          INSERT INTO cliente_nota (
+            id_manager, id_trainer, cliente_idnoofit, cliente_nombre,
+            contenido, parent_id,
+            created_by_kind, created_by_email, created_by_label,
+            estado, visible_cliente
+          ) VALUES (%s, %s, %s, %s, %s, %s, 'cliente', %s, %s, 'abierta', TRUE)
+          RETURNING id, created_at
+        """, (str(g.id_manager), padre['id_trainer'],
+              str(g.cliente_idnoofit), padre['cliente_nombre'],
+              contenido, nota_id,
+              getattr(g, 'cliente_email', None),
+              getattr(g, 'cliente_nombre', None) or 'Cliente'))
+        nueva = cur.fetchone()
+        cur.execute("""
+          UPDATE cliente_nota
+             SET estado = 'contestada',
+                 leida_at_cliente = COALESCE(leida_at_cliente, NOW()),
+                 updated_at = NOW()
+           WHERE id = %s
+        """, (nota_id,))
+    return jsonify({
+        'ok': True,
+        'respuesta': {
+            'id': nueva['id'],
+            'contenido': contenido,
+            'created_at': nueva['created_at'].isoformat(),
+        },
+    })
+
+
+@bp.route('/buzon-resumen', methods=['GET'])
+@cliente_required
+def buzon_resumen():
+    """Conteo rápido de no-leídas para el badge del sidebar."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+          SELECT COUNT(*) AS n FROM notif_destinatario d
+            JOIN notif_envio e ON e.id = d.envio_id
+           WHERE d.cliente_idnoofit = %s AND d.id_manager = %s
+             AND d.leida = FALSE AND e.estado = 'enviada'
+             AND (e.fecha_desaparicion IS NULL OR e.fecha_desaparicion > NOW())
+        """, (str(g.cliente_idnoofit), str(g.id_manager)))
+        n_notif = cur.fetchone()['n']
+        cur.execute("""
+          SELECT COUNT(*) AS n FROM cliente_nota
+           WHERE cliente_idnoofit = %s AND id_manager = %s
+             AND parent_id IS NULL AND leida_at_cliente IS NULL
+             AND COALESCE(visible_cliente, TRUE) = TRUE
+             AND estado != 'archivada'
+        """, (str(g.cliente_idnoofit), str(g.id_manager)))
+        n_notas = cur.fetchone()['n']
+    return jsonify({
+        'ok': True,
+        'notificaciones_no_leidas': n_notif,
+        'notas_no_leidas': n_notas,
+        'total_no_leidas': n_notif + n_notas,
+    })

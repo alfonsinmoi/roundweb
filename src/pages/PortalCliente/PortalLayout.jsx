@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Clock, User, Calendar, Trophy, Award, Dumbbell, BarChart3,
-  LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, Zap,
+  LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, Zap, Inbox,
 } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
+import { buzonResumen } from '../../utils/clienteApi'
 import ThemeToggle from '../../components/ThemeToggle'
 
 
@@ -37,6 +38,23 @@ export default function PortalLayout() {
     return () => { document.title = prev }
   }, [])
 
+  // Resumen buzón (cuántas notif + notas sin leer) — para badge en sidebar
+  const [buzon, setBuzon] = useState({ total_no_leidas: 0 })
+  const { token } = usePortalAuth()
+  useEffect(() => {
+    if (!isAuthed || !token) return
+    let cancel = false
+    async function refresh() {
+      try {
+        const r = await buzonResumen(token)
+        if (!cancel) setBuzon(r)
+      } catch { /* silencio */ }
+    }
+    refresh()
+    const t = setInterval(refresh, 60_000)  // refresca cada minuto
+    return () => { cancel = true; clearInterval(t) }
+  }, [isAuthed, token, pathname])
+
   if (!isAuthed) return <Navigate to="/portal/login" replace />
 
   const esTrabajador = !!cliente?.es_trabajador
@@ -46,6 +64,8 @@ export default function PortalLayout() {
     esTrabajador && { to: '/portal/fichar',         icon: Clock,     label: 'Fichar' },
     esTrabajador && { to: '/portal/mis-jornadas',   icon: BarChart3, label: 'Mis jornadas' },
     esTrabajador && { to: '/portal/ausencias',      icon: Calendar,  label: 'Ausencias' },
+                    { to: '/portal/buzon',          icon: Inbox,     label: 'Buzón',
+                      badge: buzon.total_no_leidas || 0 },
                     { to: '/portal/entrenamientos', icon: Dumbbell,  label: 'Entrenamientos' },
                     { to: '/portal/reservas',       icon: Calendar,  label: 'Reservas' },
                     { to: '/portal/retos',          icon: Trophy,    label: 'Retos' },
@@ -296,10 +316,10 @@ function PortalSidebar({
 }
 
 
-function SidebarItem({ to, icon: Icon, label, collapsed }) {
+function SidebarItem({ to, icon: Icon, label, collapsed, badge }) {
   return (
     <NavLink to={to}
-             title={collapsed ? label : undefined}
+             title={collapsed ? (badge ? `${label} (${badge})` : label) : undefined}
              style={({ isActive }) => ({
                display: 'flex', alignItems: 'center',
                gap: collapsed ? 0 : 14,
@@ -311,11 +331,39 @@ function SidebarItem({ to, icon: Icon, label, collapsed }) {
                color: isActive ? 'var(--green, #10b981)' : 'var(--text-2)',
                background: isActive ? 'var(--green-bg, rgba(16,185,129,0.10))' : 'transparent',
                transition: 'background 0.1s, color 0.1s',
+               position: 'relative',
              })}>
       {({ isActive }) => (
         <>
-          <Icon size={18} strokeWidth={isActive ? 2.2 : 1.7} aria-hidden="true" />
-          {!collapsed && label}
+          <div style={{ position: 'relative', display: 'inline-flex' }}>
+            <Icon size={18} strokeWidth={isActive ? 2.2 : 1.7} aria-hidden="true" />
+            {badge > 0 && collapsed && (
+              <span style={{
+                position: 'absolute', top: -4, right: -6,
+                minWidth: 14, height: 14, padding: '0 4px', borderRadius: 7,
+                background: '#f87171', color: '#fff',
+                fontSize: 9, fontWeight: 700, display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+              }}>
+                {badge > 9 ? '9+' : badge}
+              </span>
+            )}
+          </div>
+          {!collapsed && (
+            <>
+              <span style={{ flex: 1 }}>{label}</span>
+              {badge > 0 && (
+                <span style={{
+                  minWidth: 18, height: 18, padding: '0 6px', borderRadius: 9,
+                  background: '#f87171', color: '#fff',
+                  fontSize: 10, fontWeight: 700, display: 'inline-flex',
+                  alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {badge > 99 ? '99+' : badge}
+                </span>
+              )}
+            </>
+          )}
         </>
       )}
     </NavLink>

@@ -25,6 +25,7 @@ const Ejercicios = lazy(() => import('./pages/Ejercicios'))
 const Dispositivos = lazy(() => import('./pages/Dispositivos'))
 const Listados = lazy(() => import('./pages/Listados'))
 const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
+const InformeClientes = lazy(() => import('./pages/InformeClientes'))
 const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
 const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
@@ -40,6 +41,7 @@ const FicharTab     = lazy(() => import('./pages/PortalCliente/FicharTab'))
 const MisJornadasTab = lazy(() => import('./pages/PortalCliente/MisJornadasTab'))
 const AusenciasTabPortal = lazy(() => import('./pages/PortalCliente/AusenciasTab'))
 const PerfilTab     = lazy(() => import('./pages/PortalCliente/PerfilTab'))
+const BuzonTab      = lazy(() => import('./pages/PortalCliente/BuzonTab'))
 const ReservasTab   = lazy(() => import('./pages/PortalCliente/ReservasTab'))
 const RetosTab      = lazy(() => import('./pages/PortalCliente/RetosTab'))
 const EntrenamientosTab    = lazy(() => import('./pages/PortalCliente/EntrenamientosTab'))
@@ -91,6 +93,7 @@ function AppRoutes() {
           <Route path="fichar"     element={<FicharTab />} />
           <Route path="mis-jornadas"       element={<MisJornadasTab />} />
           <Route path="ausencias"          element={<AusenciasTabPortal />} />
+          <Route path="buzon"              element={<BuzonTab />} />
           <Route path="entrenamientos"     element={<EntrenamientosTab />} />
           <Route path="entrenamientos/:id" element={<EntrenamientoDetalle />} />
           <Route path="perfil"     element={<PerfilTab />} />
@@ -115,6 +118,7 @@ function AppRoutes() {
           <Route path="/listados"       element={<Listados />} />
           <Route path="/informe-asistencia"          element={<InformeAsistencia />} />
           <Route path="/informe-asistencia/:tab"     element={<InformeAsistencia />} />
+          <Route path="/informe-clientes"            element={<InformeClientes />} />
           <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
           <Route path="/configuracion"       element={<Configuracion />} />

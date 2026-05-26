@@ -372,6 +372,14 @@ CREATE TABLE IF NOT EXISTS descuento_asignacion (
   fecha_hasta              DATE,
   estado                   VARCHAR(20) NOT NULL DEFAULT 'activa'
                                        CHECK (estado IN ('activa','pausada','cancelada')),
+  -- origen (mayo 2026): 'manual' = el manager lo asignó desde la UI;
+  -- 'auto_varias_cuotas' / 'auto_familiares' = el cron lo creó porque el
+  -- cliente cumple condiciones automáticas. La UI marca estas filas como
+  -- "🤖 Auto" y NO las deja editar/cancelar manualmente (el cron las
+  -- gestiona). auto_motivo guarda el por qué textual.
+  origen                   VARCHAR(40) NOT NULL DEFAULT 'manual',
+  auto_motivo              TEXT,
+  auto_evaluado_at         TIMESTAMPTZ,
   odoo_id                  INTEGER,
   created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -380,6 +388,8 @@ CREATE TABLE IF NOT EXISTS descuento_asignacion (
 CREATE INDEX IF NOT EXISTS idx_desc_asig_cliente  ON descuento_asignacion(cliente_idnoofit);
 CREATE INDEX IF NOT EXISTS idx_desc_asig_descuento ON descuento_asignacion(descuento_id);
 CREATE INDEX IF NOT EXISTS idx_desc_asig_trainer  ON descuento_asignacion(id_trainer);
+CREATE INDEX IF NOT EXISTS idx_desc_asig_origen   ON descuento_asignacion(origen)
+       WHERE origen <> 'manual';
 
 
 -- ─── PLANTILLAS DE EMAIL DEL FUNNEL CRM ────────────────────────────────────
@@ -1325,6 +1335,25 @@ CREATE INDEX IF NOT EXISTS idx_usrweb_manager ON usuario_web(id_manager);
 CREATE INDEX IF NOT EXISTS idx_usrweb_perfil  ON usuario_web(perfil_id);
 CREATE INDEX IF NOT EXISTS idx_usrweb_email   ON usuario_web(LOWER(email));
 
+-- Mayo 2026: fecha_vencimiento en cliente_nota — fecha tope OPTIONAL para
+-- mostrar como deadline en el banner del receptor. No silencia (eso lo hace
+-- recordatorio_hasta); solo es info visible "vence el …".
+ALTER TABLE cliente_nota ADD COLUMN IF NOT EXISTS fecha_vencimiento DATE;
+
+-- ─── PIVOTE usuario_web ⇄ trainer (N:M) ──────────────────────────────────────
+-- Un usuario_web puede tener acceso a varios trainers (centros) dentro del
+-- mismo manager. La columna `usuario_web.id_trainer` se conserva por compat
+-- retro como "trainer por defecto"; la lista completa de centros accesibles
+-- vive aquí. Al hacer login, si el usuario tiene >1 trainer asignado, el
+-- frontend le pide que elija cuál — el JWT se emite con el `trn` elegido.
+CREATE TABLE IF NOT EXISTS usuario_web_trainer (
+  usuario_id  INTEGER NOT NULL REFERENCES usuario_web(id) ON DELETE CASCADE,
+  id_trainer  VARCHAR(64) NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (usuario_id, id_trainer)
+);
+CREATE INDEX IF NOT EXISTS idx_uwt_trainer ON usuario_web_trainer(id_trainer);
+
 CREATE TABLE IF NOT EXISTS usuario_web_audit (
   id           SERIAL PRIMARY KEY,
   usuario_id   INTEGER REFERENCES usuario_web(id) ON DELETE CASCADE,
@@ -1407,6 +1436,11 @@ CREATE INDEX IF NOT EXISTS idx_nota_cliente  ON cliente_nota(cliente_idnoofit);
 CREATE INDEX IF NOT EXISTS idx_nota_asignada ON cliente_nota(asignada_a_usuario_id, estado);
 CREATE INDEX IF NOT EXISTS idx_nota_estado   ON cliente_nota(estado, recordatorio_hasta);
 CREATE INDEX IF NOT EXISTS idx_nota_parent   ON cliente_nota(parent_id);
+
+-- Acuse de lectura desde el portal del cliente
+ALTER TABLE cliente_nota
+  ADD COLUMN IF NOT EXISTS leida_at_cliente TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS visible_cliente   BOOLEAN NOT NULL DEFAULT TRUE;
 
 
 -- ─── CREDENCIALES NOOFIT POR TRAINER ────────────────────────────────────────
