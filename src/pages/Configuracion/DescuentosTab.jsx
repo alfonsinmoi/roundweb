@@ -96,10 +96,10 @@ export default function DescuentosTab({ identity }) {
         </Section>
       )}
 
-      {isTrainer && propios.length > 0 && (
-        <Section titulo="Mis descuentos">
+      {propios.length > 0 && (
+        <Section titulo={isTrainer ? 'Mis descuentos' : 'Descuentos por centro'}>
           {propios.map(d => (
-            <DescRow key={d.id} d={d} isTrainer
+            <DescRow key={d.id} d={d} isTrainer={isTrainer}
                      onEdit={() => setEditing(d)}
                      onDelete={canBorrar ? () => onDelete(d) : null}
                      onAsignar={canAsignar ? () => setAsignandoDesc(d) : null} />
