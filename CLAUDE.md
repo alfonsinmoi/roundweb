@@ -576,6 +576,11 @@ Tras la prueba, el trainer da de alta al cliente:
   endpoint nuevo**. Reglas clave: NoofitPro decide la jerarquía, manager
   habilita módulos para sus trainers, datos cliente/cuotas nunca cruzan
   manager, datos manager se comparten entre sus trainers.
+- **Importar clientes desde otros softwares** (GestPlus, Excel, sistema
+  legacy): `docs/IMPORTAR_CLIENTES.md` — **LEER antes de tocar import
+  masivo**. Documenta 10 pitfalls reales (NoofitPro devuelve id incorrecto,
+  emails con acentos, IBAN sin formato, partners Odoo duplicados…) y la
+  receta paso a paso. Plantilla en `docs/imports/template_import_clientes.py`.
 - Manual operativo (manager + trainers): `docs/Manual_CRM_Round.docx`
 - Arquitectura técnica + infografía: `docs/Arquitectura_round_noofit.docx`
 - Flujo dual-PC + setup nuevo PC: `docs/FLUJO_DUAL_PC.md`
