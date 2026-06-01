@@ -159,6 +159,16 @@ BEGIN
         ADD COLUMN control_horario_activated_at TIMESTAMPTZ,
         ADD COLUMN control_horario_qr_secret    TEXT;
     END IF;
+
+    -- ─── Webhook de leads externos (Tally, Typeform, etc.) ────────────
+    -- Token secreto por manager para autenticar el webhook entrante en
+    -- /api/crm/lead/tally?k=<token>. Identifica el manager destino sin
+    -- exponer el id. Se genera bajo demanda (endpoint admin / a mano).
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='manager_config'
+                      AND column_name='lead_webhook_token') THEN
+      ALTER TABLE manager_config ADD COLUMN lead_webhook_token TEXT;
+    END IF;
   END IF;
 
   -- email_proveedor: añadir id_trainer y eliminar unique antiguo (sólo manager)
@@ -593,6 +603,31 @@ CREATE TABLE IF NOT EXISTS lead_asignacion (
 );
 CREATE INDEX IF NOT EXISTS idx_lead_manager ON lead_asignacion(id_manager);
 CREATE INDEX IF NOT EXISTS idx_lead_trainer ON lead_asignacion(id_trainer);
+
+
+-- ─── FORMULARIOS DE CAPTACIÓN (form builder embebible) ─────────────────────
+-- Cada manager crea formularios que incrusta en su web vía <iframe> a
+-- /f/<public_id>. El submit (público) reutiliza el flujo de leads
+-- (_procesar_lead) o el de reserva de prueba (crear_reserva_core) según `tipo`.
+--   campos: lista JSON de {key,label,type,required,options[],placeholder}
+--           type ∈ texto|email|telefono|textarea|select|dni|consentimiento|oculto
+--   config: {titulo, subtitulo, gracias_msg, redirect_url, color,
+--            consent_text, centro_slug, max_slots}
+CREATE TABLE IF NOT EXISTS lead_form (
+  id              SERIAL PRIMARY KEY,
+  id_manager      VARCHAR(64) NOT NULL,
+  id_trainer      VARCHAR(64),                 -- centro destino (NULL = round-robin)
+  public_id       VARCHAR(32) NOT NULL,        -- slug aleatorio para la URL pública
+  nombre          VARCHAR(160) NOT NULL,       -- nombre interno del form
+  tipo            VARCHAR(20) NOT NULL DEFAULT 'lead',   -- 'lead' | 'prueba'
+  campos          JSONB NOT NULL DEFAULT '[]'::jsonb,
+  config          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  activo          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT lead_form_public_id_unique UNIQUE (public_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lead_form_manager ON lead_form(id_manager);
 
 
 -- ─── PASARELAS DE PAGO POR TRAINER (PayComet, Redsys, Stripe...) ───────────

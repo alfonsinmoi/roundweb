@@ -57,6 +57,7 @@ const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
 const NotificacionesPage = lazy(() => import('./pages/Notificaciones/NotificacionesPage'))
 const ContabilidadPage = lazy(() => import('./pages/Contabilidad/ContabilidadPage'))
 const Incidencias = lazy(() => import('./pages/Incidencias/Incidencias'))
+const PublicForm = lazy(() => import('./pages/PublicForm/PublicForm'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -91,6 +92,10 @@ function AppRoutes() {
         <Route path="/login" element={user ? <Navigate to="/clientes" replace /> : <Login />} />
         <Route path="/verificar" element={<VerifyAccount mode="verify" />} />
         <Route path="/reset"     element={<VerifyAccount mode="reset" />} />
+
+        {/* Formulario público embebible (iframe en webs de los managers).
+            Sin auth, sin Layout — documento autónomo. */}
+        <Route path="/f/:publicId" element={<PublicForm />} />
 
         {/* Portal del cliente NoofitPro (auth aislada del admin) */}
         <Route path="/portal/login" element={<PortalLogin />} />

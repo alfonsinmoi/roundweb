@@ -23,6 +23,7 @@ import PerfilesTab        from './PerfilesTab'
 import UsuariosWebTab     from './UsuariosWebTab'
 import SuscripcionesTab   from './SuscripcionesTab'
 import CanalesCaptacionTab from './CanalesCaptacionTab'
+import FormulariosTab       from './FormulariosTab'
 import ChecklistTab        from './ChecklistTab'
 import AltaClienteTab      from './AltaClienteTab'
 import TerminalCajaTab     from './TerminalCajaTab'
@@ -63,6 +64,7 @@ const TAB_META      = { id: 'meta',      label: 'Cuentas Meta',           comp: 
 const TAB_PERFILES  = { id: 'perfiles',  label: 'Perfiles',               comp: PerfilesTab,       managerOnly: true, perm: 'configuracion.perfiles' }
 const TAB_USUARIOS  = { id: 'usuarios',  label: 'Usuarios web',           comp: UsuariosWebTab,    managerOnly: true, perm: 'configuracion.usuarios_web' }
 const TAB_CANALES   = { id: 'canales',   label: 'Canales captación',      comp: CanalesCaptacionTab, managerOnly: true, perm: 'configuracion.canales_captacion' }
+const TAB_FORMULARIOS = { id: 'formularios', label: 'Formularios',          comp: FormulariosTab,      managerOnly: true, featureFlag: 'crm', perm: 'configuracion.formularios' }
 const TAB_POS       = { id: 'pos',       label: 'Terminal de Caja',       comp: TerminalCajaTab,     managerOnly: true, perm: 'configuracion.pos' }
 // Checklist por módulo. Solo visible si el módulo está activo (featureFlag).
 const TAB_CHECK_CRM    = { id: 'check_crm',    label: 'Checklist CRM',          comp: (p) => <ChecklistTab {...p} modulo="crm" />,          managerOnly: true, featureFlag: 'crm',          perm: 'configuracion.checklist' }
@@ -96,7 +98,7 @@ export default function Configuracion() {
   // Odoo por primera vez), seguido de los catálogos (Cuotas/Descuentos/etc.).
   const TABS_ALL = isImpersonating
     ? TABS_BASE
-    : [TAB_SUSCRIP, TAB_CHECK_CRM, TAB_CHECK_CUOTAS, TAB_CHECK_CONTAB, ...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_ALTA_CLI, TAB_PASARELAS, TAB_POS, TAB_CANALES, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS]
+    : [TAB_SUSCRIP, TAB_CHECK_CRM, TAB_CHECK_CUOTAS, TAB_CHECK_CONTAB, ...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_ALTA_CLI, TAB_PASARELAS, TAB_POS, TAB_CANALES, TAB_FORMULARIOS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS]
   // Filtrar por features: pestañas con featureFlag se ocultan si la
   // feature está false (Odoo no desplegado).
   // Filtrar también por `perm`: si el usuario es usuario_web y su perfil no

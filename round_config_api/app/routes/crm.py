@@ -101,6 +101,22 @@ def crear_lead_publico():
         log.warning(f'Lead bloqueado por honeypot, ip={ip}')
         return jsonify({'ok': True, 'skipped': True}), 200  # respuesta OK para no dar pistas
 
+    # id_manager fijo (Round Málaga). El webhook multi-tenant (Tally) usa
+    # /api/crm/lead/tally?k=<token>; este endpoint legacy sigue mono-manager.
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
+    return _procesar_lead(id_manager, d, origen='web_form',
+                          company_id=cfg.ODOO_COMPANY, origen_label='Formulario web')
+
+
+def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
+                   origen_label='Formulario web'):
+    """Núcleo de creación de lead, reutilizable por el form web (mono-manager)
+    y por el webhook Tally (multi-tenant). Recibe el dict plano `d` con los
+    campos ya normalizados. Crea el crm.lead en `company_id` (la company del
+    manager destino), guarda lead_asignacion y dispara emails.
+
+    Devuelve (jsonify_response, status).
+    """
     nombre = (d.get('nombre') or d.get('name') or '').strip()
     apellidos = (d.get('apellidos') or d.get('surname') or '').strip()
     email = (d.get('email') or '').strip()
@@ -119,10 +135,10 @@ def crear_lead_publico():
     if email and not _email_valid(email):
         return jsonify({'ok': False, 'error': 'email_invalido'}), 400
 
-    # id_manager fijo (Round Málaga / único manager por ahora). Multi-tenant en el futuro.
-    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
+    if company_id is None:
+        company_id = cfg.ODOO_COMPANY
 
-    # 1) Determinar centro
+    # 1) Determinar centro (del manager destino)
     centro = None
     if centro_slug:
         centro = buscar_centro(id_manager, slug=centro_slug)
@@ -133,8 +149,8 @@ def crear_lead_publico():
 
     full_name = (f'{nombre} {apellidos}'.strip()) or email or telefono
 
-    # 2) Crear lead en Odoo
-    description_lines = [f'<b>Origen:</b> Formulario web roundtrainingcenter.com']
+    # 2) Crear lead en Odoo (en la company del manager)
+    description_lines = [f'<b>Origen:</b> {origen_label}']
     if cuota_interes: description_lines.append(f'<b>Cuota interés:</b> {cuota_interes}')
     if objetivo:      description_lines.append(f'<b>Objetivo:</b> {objetivo}')
     if presupuesto:   description_lines.append(f'<b>Presupuesto:</b> {presupuesto}')
@@ -158,10 +174,11 @@ def crear_lead_publico():
             'description': '<br/>'.join(description_lines),
             'type': 'opportunity',
             'priority': '0',
-            'company_id': cfg.ODOO_COMPANY,
+            'company_id': company_id,
         }
         odoo_lead_id = oc._call('crm.lead', 'create', vals)
-        log.info(f'Lead Odoo creado id={odoo_lead_id} centro={centro["nombre_centro"]}')
+        log.info(f'Lead Odoo creado id={odoo_lead_id} mgr={id_manager} '
+                 f'company={company_id} centro={centro["nombre_centro"]}')
     except Exception as e:
         log.exception('crm.lead create')
         # NO devolvemos error al cliente — guardamos en BD nuestra y seguimos
@@ -178,8 +195,6 @@ def crear_lead_publico():
     }
     qualification = {k: v for k, v in qualification.items() if v}
 
-    # Mapear utm_source → canal_id si el manager tiene canales configurados.
-    # Si no hay match (o el manager no configuró canales), canal_id queda NULL.
     try:
         from .canales_captacion import resolver_canal_id
         canal_id = resolver_canal_id(id_manager, d.get('utm_source'))
@@ -196,7 +211,7 @@ def crear_lead_publico():
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (odoo_lead_id) DO NOTHING
                 RETURNING *
-            """, (id_manager, centro['id_trainer'], odoo_lead_id or 0, 'web_form',
+            """, (id_manager, centro['id_trainer'], odoo_lead_id or 0, origen,
                   d.get('utm_source'), d.get('utm_medium'), d.get('utm_campaign'),
                   json.dumps(d, ensure_ascii=False),
                   json.dumps(qualification, ensure_ascii=False),
@@ -204,7 +219,6 @@ def crear_lead_publico():
                   json.dumps([{'stage': 'Nuevo', 'at': datetime.now(timezone.utc).isoformat()}], ensure_ascii=False),
                   canal_id))
             row = cur.fetchone()
-            # Score inicial
             if row:
                 score = calcular_score(row, lead_odoo={'stage_id': [0, 'Nuevo']})
                 cur.execute("UPDATE lead_asignacion SET score=%s WHERE id=%s", (score, row['id']))
@@ -219,9 +233,7 @@ def crear_lead_publico():
         results += trigger_email('lead_creado_trainer', id_manager, ctx)
         results += trigger_email('lead_creado_manager', id_manager, ctx)
 
-        # Fallback: si NO hay ninguna plantilla activa para "lead_creado_trainer",
-        # mandamos el email hardcoded de toda la vida para no perder el aviso.
-        sent_trainer = any(d == 'trainer' and ok for d, ok in results)
+        sent_trainer = any(dst == 'trainer' and ok for dst, ok in results)
         if not sent_trainer:
             cc_list = []
             if centro.get('email_cc'):
@@ -250,6 +262,143 @@ def crear_lead_publico():
         'lead_id': odoo_lead_id,
         'centro': centro['nombre_centro'],
     }), 200
+
+
+# ── Webhook Tally (multi-tenant por token) ─────────────────────────────────
+# Tally envía un POST JSON con envelope anidado {data:{fields:[{label,type,
+# value,options}]}}. Lo aplanamos a campos planos y reutilizamos _procesar_lead.
+# Auth: ?k=<lead_webhook_token> identifica el manager destino sin exponer su id.
+
+def _tally_norm(s):
+    import unicodedata
+    s = (s or '').lower().strip()
+    return ''.join(c for c in unicodedata.normalize('NFD', s)
+                   if unicodedata.category(c) != 'Mn')
+
+
+def _tally_field_value(f):
+    """Resuelve el valor de un campo Tally a string (resuelve choices por id)."""
+    v = f.get('value')
+    if v is None:
+        return ''
+    opts = f.get('options') or []
+    if opts and isinstance(v, list):
+        id2txt = {o.get('id'): o.get('text') for o in opts}
+        return ', '.join(str(id2txt.get(x, x)) for x in v)
+    if isinstance(v, list):
+        return ', '.join(str(x) for x in v)
+    if isinstance(v, bool):
+        return 'Sí' if v else 'No'
+    return str(v)
+
+
+def _parse_tally(payload):
+    """Aplana el FORM_RESPONSE de Tally a un dict plano compatible con
+    _procesar_lead. Mapea por tipo de campo y por keywords en la etiqueta;
+    lo no reconocido se acumula en `mensaje` para no perder información."""
+    data = payload.get('data') or {}
+    fields = data.get('fields') or []
+    d = {}
+    extras = []
+    for f in fields:
+        label = f.get('label') or f.get('key') or ''
+        ftype = f.get('type') or ''
+        val = _tally_field_value(f).strip()
+        if not val:
+            continue
+        nlabel = _tally_norm(label)
+        nkey = _tally_norm(f.get('key') or '')
+
+        # Campos meta (utm_*, centro) por key o label exactos
+        meta_hit = next((m for m in ('utm_source', 'utm_medium', 'utm_campaign', 'centro')
+                         if m in (nkey, nlabel)), None)
+        if meta_hit:
+            d[meta_hit] = val
+            continue
+
+        if 'apellido' in nlabel and 'nombre' in nlabel:
+            target = 'nombre'                      # campo combinado nombre+apellidos
+        elif ftype == 'INPUT_EMAIL' or any(k in nlabel for k in ('email', 'correo', 'e-mail')):
+            target = 'email'
+        elif ftype == 'INPUT_PHONE_NUMBER' or any(k in nlabel for k in ('telefono', 'movil', 'celular', 'whatsapp', 'phone')):
+            target = 'telefono'
+        elif 'apellido' in nlabel:
+            target = 'apellidos'
+        elif 'nombre' in nlabel:
+            target = 'nombre'
+        elif any(k in nlabel for k in ('ciudad', 'localidad', 'poblacion', 'municipio')):
+            target = 'ciudad'
+        elif 'edad' in nlabel:
+            target = 'edad'
+        elif any(k in nlabel for k in ('objetivo', 'meta')):
+            target = 'objetivo'
+        elif 'presupuesto' in nlabel:
+            target = 'presupuesto'
+        elif any(k in nlabel for k in ('cuota', 'plan', 'tarifa', 'servicio')):
+            target = 'cuota'
+        elif any(k in nlabel for k in ('mensaje', 'comentario', 'consulta', 'cuentanos', 'observacion')):
+            target = 'mensaje'
+        else:
+            target = None
+
+        if target and not d.get(target):
+            d[target] = val
+        else:
+            extras.append(f'{label}: {val}')
+
+    if extras:
+        base = d.get('mensaje', '')
+        d['mensaje'] = (base + '\n' if base else '') + '\n'.join(extras)
+    return d
+
+
+@bp.route('/lead/tally', methods=['POST'])
+def lead_tally():
+    """Webhook de Tally. URL: /api/crm/lead/tally?k=<lead_webhook_token>.
+    El token identifica el manager destino y su company Odoo."""
+    k = (request.args.get('k') or '').strip()
+    if not k:
+        return jsonify({'ok': False, 'error': 'missing_token'}), 401
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id_manager, odoo_company_id, odoo_crm_enabled
+                         FROM manager_config WHERE lead_webhook_token = %s""", (k,))
+        mgr = cur.fetchone()
+    if not mgr:
+        return jsonify({'ok': False, 'error': 'invalid_token'}), 403
+    if not mgr.get('odoo_crm_enabled'):
+        return jsonify({'ok': False, 'error': 'crm_no_activado'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    data = payload.get('data') or {}
+    submission_id = data.get('submissionId') or data.get('responseId')
+
+    # Idempotencia: Tally reintenta webhooks. Si ya procesamos este submission,
+    # devolvemos OK sin duplicar.
+    if submission_id:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""SELECT 1 FROM lead_asignacion
+                                WHERE id_manager = %s
+                                  AND raw_payload->>'_tally_submission_id' = %s
+                                LIMIT 1""",
+                            (str(mgr['id_manager']), str(submission_id)))
+                if cur.fetchone():
+                    return jsonify({'ok': True, 'duplicate': True}), 200
+        except Exception:
+            pass   # si la columna no es jsonb o falla, seguimos (peor caso: dup)
+
+    d = _parse_tally(payload)
+    if not d.get('email') and not d.get('telefono'):
+        return jsonify({'ok': False, 'error': 'sin_email_ni_telefono',
+                        'detalle': 'El form Tally no trae email ni teléfono '
+                                   'reconocibles. Revisa las etiquetas de los campos.'}), 400
+    if submission_id:
+        d['_tally_submission_id'] = str(submission_id)
+
+    company_id = mgr.get('odoo_company_id') or cfg.ODOO_COMPANY
+    return _procesar_lead(str(mgr['id_manager']), d, origen='tally',
+                          company_id=company_id, origen_label='Formulario Tally')
 
 
 # ── Crear lead manualmente desde el ERP (autenticado) ──────────────────────

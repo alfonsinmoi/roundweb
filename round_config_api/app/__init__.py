@@ -26,6 +26,7 @@ from .routes.crm               import bp as bp_crm
 from .routes.email_config      import bp as bp_email_config
 from .routes.email_templates   import bp as bp_email_templates
 from .routes.slots             import bp as bp_slots
+from .routes.lead_forms        import bp as bp_lead_forms
 from .routes.clientes_log      import bp as bp_clientes_log
 from .routes.social            import bp as bp_social
 from .routes.auth_usuario      import bp as bp_auth_usuario
@@ -158,6 +159,10 @@ def create_app():
     # ── Reservas de prueba (rutas públicas, sin prefijo /api/config) ─────
     # Las rutas internas del blueprint ya empiezan con /api/crm o /reserva
     app.register_blueprint(bp_slots, name='slots_public', url_prefix='')
+
+    # ── Form builder embebible (rutas públicas /api/crm/form + CRUD
+    # /api/config/formularios; ya llevan path completo, sin prefijo). ──────
+    app.register_blueprint(bp_lead_forms, name='lead_forms', url_prefix='')
 
     # ── Clientes log (cambios de estado activo↔archivado) ─────────────────
     for prefix in ('/clientes', '/api/clientes'):

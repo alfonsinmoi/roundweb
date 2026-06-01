@@ -183,3 +183,27 @@ export async function usuarioWebDelete(identity, id, hard = false) {
   const r = await fetch(url, { method: 'DELETE', headers: configHeaders(identity) })
   return jsonOrThrow(r)
 }
+
+// ── Formularios de captación (form builder embebible) ──────────────────────
+export async function formulariosList(identity) {
+  const r = await fetch('/api/config/formularios', { headers: configHeaders(identity) })
+  return jsonOrThrow(r)
+}
+export async function formularioCreate(identity, payload) {
+  const r = await fetch('/api/config/formularios', {
+    method: 'POST', headers: configHeaders(identity), body: JSON.stringify(payload),
+  })
+  return jsonOrThrow(r)
+}
+export async function formularioUpdate(identity, id, payload) {
+  const r = await fetch(`/api/config/formularios/${id}`, {
+    method: 'PATCH', headers: configHeaders(identity), body: JSON.stringify(payload),
+  })
+  return jsonOrThrow(r)
+}
+export async function formularioDelete(identity, id) {
+  const r = await fetch(`/api/config/formularios/${id}`, {
+    method: 'DELETE', headers: configHeaders(identity),
+  })
+  return jsonOrThrow(r)
+}

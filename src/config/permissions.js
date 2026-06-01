@@ -397,6 +397,13 @@ export const PERMISSIONS = {
           editar: { label: 'Crear / editar canal', action: true },
         },
       },
+      formularios:         { label: 'Formularios de captación (embebibles)',
+        children: {
+          ver:    { label: 'Ver formularios', action: true },
+          editar: { label: 'Crear / editar formulario', action: true },
+          borrar: { label: '✗ Borrar formulario', action: true },
+        },
+      },
       pos:                 { label: 'Terminal de Caja (POS) — catálogo',
         children: {
           productos_ver:      { label: 'Ver productos / catálogo', action: true },

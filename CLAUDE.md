@@ -273,6 +273,18 @@ POST   /api/entradas-puntuales/detectar            → dispara detección a dema
 GET/PUT /api/config/centros|email|email-templates|pasarelas
 GET/PUT /api/social/cuentas|posts
 
+# Form builder embebible (lead capture, junio 2026)
+# Tabla lead_form (per manager): public_id, tipo(lead|prueba), campos JSONB,
+# config JSONB. El manager crea forms en Configuración → Formularios y los
+# incrusta vía <iframe src=".../f/<public_id>">. Submit reutiliza
+# _procesar_lead (crm.py, multi-tenant) o crear_reserva_core (slots.py).
+POST   /api/crm/form/<public_id>        → submit público (lead o reserva prueba)
+GET    /api/crm/form/<public_id>        → definición del form (público)
+GET    /api/crm/form/<public_id>/slots  → slots de prueba (tipo='prueba')
+GET/POST/PATCH/DELETE /api/config/formularios[/<id>]  → CRUD (perm configuracion.formularios.*)
+# Página pública React: /f/<public_id> (PublicForm.jsx, sin auth, framable).
+# Webhook Tally legacy (deshabilitado, requería Tally Pro): /api/crm/lead/tally?k=<token>
+
 # Despliegue Odoo per-manager (multimanager)
 POST   /api/auth/round-bootstrap        → auto-registro manager+trainer tras login NF
 GET    /api/manager/odoo-status         → estado granular (3 flags + sistemas_cobro)
