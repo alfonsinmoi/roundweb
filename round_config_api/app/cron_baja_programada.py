@@ -42,7 +42,8 @@ def main():
     total_fail = 0
     for m in managers:
         idm = str(m['id_manager'])
-        # Bajas pendientes con fecha <= hoy
+        # Bajas pendientes con fecha <= hoy (incluye las que ya han fallado:
+        # cada noche se reintentan — el ejecutada_error se sobrescribe).
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 SELECT id, cliente_idnoofit, fecha_baja, motivo,
@@ -58,26 +59,76 @@ def main():
             continue
         log.info(f'manager {idm}: {len(bajas)} bajas a ejecutar')
 
-        # Login NoofitPro como el manager
+        # Construir índice cliente_id → credenciales:
+        #   1) Para el manager parent: getClienteSimple con sus creds.
+        #   2) Para CADA trainer activo del manager: getClienteSimple como el
+        #      trainer (cada trainer en NoofitPro tiene un "espacio" propio
+        #      de clientes).
+        # Recorremos todos los managers+trainers que estén dados de alta en
+        # la web (manager_config + trainer_noofit_creds). Si un cliente
+        # aparece en más de un espacio (raro), priorizamos trainer.
+        cred_por_cliente = {}    # int cliente_id → ('manager'|'trainer:<id>', email, pwd)
+        # 1) Manager parent
         try:
-            nc._login_with_creds(m['noofit_email'], m['noofit_password'])
-        except AttributeError:
-            # Si no existe _login_with_creds, asumimos que `archivar_cliente`
-            # usa el manager por defecto. En multi-manager esto puede no
-            # bastar — pero ahora mismo solo hay 1 manager con bajas (17675).
-            pass
+            tok, mhdr = nc._login(m['noofit_email'], m['noofit_password'])
+            r = nc._request_as(tok, mhdr, 'GET', '/api/dispositivos/getClienteSimple')
+            r.raise_for_status()
+            for c in (((r.json() or {}).get('clientes')) or []):
+                cid = c.get('id')
+                if cid is None: continue
+                cred_por_cliente[int(cid)] = ('manager', m['noofit_email'], m['noofit_password'])
+            log.info(f'  manager {idm}: {len(cred_por_cliente)} clientes vistos')
+        except Exception as e:
+            log.warning(f'  manager {idm} getClienteSimple: {e}')
+
+        # 2) Trainers del manager
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT id_trainer, noofit_email, noofit_password
+                             FROM trainer_noofit_creds
+                            WHERE id_manager=%s AND activo=TRUE""", (idm,))
+            trainers = cur.fetchall()
+        for t in trainers:
+            try:
+                clis_t = nc.get_clientes_as_trainer(t['noofit_email'], t['noofit_password']) or []
+                added = 0
+                for c in clis_t:
+                    cid = c.get('id')
+                    if cid is None: continue
+                    # trainer prevalece sobre manager (el trainer "posee" al
+                    # cliente; archivar como trainer funciona aunque manager
+                    # también lo vea)
+                    cred_por_cliente[int(cid)] = (
+                        f'trainer:{t["id_trainer"]}',
+                        t['noofit_email'], t['noofit_password'])
+                    added += 1
+                log.info(f'  trainer {t["id_trainer"]}: {len(clis_t)} clientes')
+            except Exception as e:
+                log.warning(f'  trainer {t["id_trainer"]} getClienteSimple: {e}')
 
         for baja in bajas:
-            cli_id = baja['cliente_idnoofit']
+            cli_id = int(baja['cliente_idnoofit'])
             motivo = baja.get('motivo') or ''
-            try:
-                ok = nc.archivar_cliente(int(cli_id), motivo)
-            except Exception as e:
-                log.exception(f'baja {baja["id"]}: archivar_cliente {cli_id}')
-                ok = False
-                err = str(e)[:200]
+            ok = False
+            err = None
+            cred = cred_por_cliente.get(cli_id)
+            if cred:
+                src, email, pwd = cred
+                try:
+                    if src == 'manager':
+                        ok = nc.archivar_cliente(cli_id, motivo)
+                    else:
+                        ok = nc.archivar_cliente_as_trainer(cli_id, motivo, email, pwd)
+                except Exception as e:
+                    log.exception(f'baja {baja["id"]}: archivar via {src}')
+                    err = f'{src}:{e}'[:200]
+                if not ok and not err:
+                    err = f'archivar_returned_false (via {src})'
             else:
-                err = None if ok else 'archivar_returned_false'
+                # Cliente no encontrado en ningún espacio del manager ni de
+                # sus trainers. Probable que ya esté archivado en NoofitPro,
+                # que pertenezca a otro manager, o que no exista. NO marcamos
+                # como ejecutada para que admin pueda revisarlo.
+                err = 'cliente_no_encontrado_en_ningun_manager_ni_trainer'
 
             if ok:
                 with get_conn() as conn, conn.cursor() as cur:

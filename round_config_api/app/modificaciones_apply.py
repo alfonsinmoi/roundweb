@@ -2,20 +2,27 @@
 
 Las modificaciones son ajustes puntuales a recibos individuales (no plantillas
 recurrentes como los descuentos). Cada una tiene:
-  - tipo: descuento | cargo_extra | precio_alternativo
-  - valor: importe €
+  - tipo: descuento | cargo_extra | precio_alternativo  (sólo etiqueta /
+          categorización; la math se rige por el SIGNO de `valor`)
+  - valor: importe € CON SIGNO (positivo = suma, negativo = resta)
   - cuota_id: si está definido, aplica solo a esa cuota; si NULL aplica al total
   - fecha_desde / fecha_hasta: ventana de validez
   - estado: activa | aplicada | cancelada
 
 Comportamiento al emitir un recibo del mes M:
   - Se buscan modificaciones con estado='activa' cuya ventana solapa con M
-  - Las que tengan cuota_id se aplican durante el cálculo per-cuota:
-      · descuento:           precio_cuota -= valor (mín 0)
-      · cargo_extra:         precio_cuota += valor
-      · precio_alternativo:  precio_cuota  = valor
-  - Las que NO tengan cuota_id (modificaciones globales) se aplican al total.
+  - Para los tipos descuento / cargo_extra:
+      · precio = max(0, precio + valor)
+        (si valor>0 suma al recibo; si valor<0 reduce)
+  - Para precio_alternativo:
+      · precio = valor (sustituye el precio; valor se interpreta absoluto)
+  - Las modificaciones SIN cuota_id (globales) se aplican al total con la
+    misma regla.
   - Tras emitir, se marcan como estado='aplicada' (no vuelven a usarse).
+
+Migración histórica: los registros antiguos con tipo='descuento' guardaban
+`valor` positivo (significaba restar). Una migración idempotente al arranque
+los neg-a (ver db/__init__.py — bloque de migrations).
 
 Uso:
     from .modificaciones_apply import (
@@ -42,27 +49,40 @@ def _bounds_mes(mes_str):
 
 
 def get_modificaciones_activas_mes(id_manager, idnoofit, mes_str):
-    """Devuelve modificaciones del cliente vigentes en el mes `mes_str` (YYYY-MM).
+    """Devuelve modificaciones del cliente vigentes en el mes `mes_str`.
 
     Vigente = estado='activa' AND la ventana [fecha_desde, fecha_hasta] solapa
-    con el mes. Si fecha_hasta es NULL → abierta (aplica a partir de fecha_desde).
+    con el mes. JOIN con `cuota` para añadir `cuota_codigo` — necesario para
+    matchear contra subs Odoo (los IDs locales y los de Odoo no coinciden).
     """
     primer, ultimo = _bounds_mes(mes_str)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT id, cuota_id, tipo, valor, fecha_desde, fecha_hasta, razon, estado
-              FROM modificacion
-             WHERE id_manager=%s
-               AND cliente_idnoofit=%s
-               AND estado='activa'
-               AND fecha_desde <= %s
-               AND (fecha_hasta IS NULL OR fecha_hasta >= %s)
+            SELECT m.id, m.cuota_id, c.codigo AS cuota_codigo,
+                   m.tipo, m.valor, m.fecha_desde, m.fecha_hasta,
+                   m.razon, m.estado
+              FROM modificacion m
+              LEFT JOIN cuota c ON c.id = m.cuota_id
+             WHERE m.id_manager=%s
+               AND m.cliente_idnoofit=%s
+               AND m.estado='activa'
+               AND m.fecha_desde <= %s
+               AND (m.fecha_hasta IS NULL OR m.fecha_hasta >= %s)
         """, (str(id_manager), str(idnoofit), ultimo, primer))
         return cur.fetchall() or []
 
 
-def aplicar_modif_a_cuota(modificaciones, cuota_id, precio_actual):
+def aplicar_modif_a_cuota(modificaciones, cuota_id, precio_actual,
+                           cuota_codigo=None):
     """Aplica las modificaciones que apunten a `cuota_id` sobre `precio_actual`.
+
+    Match: si `cuota_codigo` viene dado y la modificación tiene `cuota_codigo`
+    (vía JOIN con cuota local), comparamos por código (estable entre BDs).
+    Fallback por `cuota_id` (compat con datos sin código).
+
+    Math: el SIGNO de `valor` rige (positivo suma, negativo resta) para los
+    tipos descuento / cargo_extra. `precio_alternativo` sustituye el precio
+    por el valor absoluto.
 
     Returns (nuevo_precio, info_aplicada, ids_consumidas)
     """
@@ -70,16 +90,19 @@ def aplicar_modif_a_cuota(modificaciones, cuota_id, precio_actual):
     ids = []
     precio = float(precio_actual or 0)
     for m in modificaciones:
-        if m.get('cuota_id') != cuota_id: continue
+        # Match preferente por código (estable Local↔Odoo); fallback por id.
+        m_cod = m.get('cuota_codigo')
+        if cuota_codigo and m_cod:
+            if m_cod != cuota_codigo: continue
+        elif m.get('cuota_id') != cuota_id:
+            continue
         tipo = m['tipo']
         original = precio
         v = float(m.get('valor') or 0)
-        if tipo == 'descuento':
-            precio = max(0.0, round(precio - v, 2))
-        elif tipo == 'cargo_extra':
-            precio = round(precio + v, 2)
+        if tipo in ('descuento', 'cargo_extra'):
+            precio = max(0.0, round(precio + v, 2))
         elif tipo == 'precio_alternativo':
-            precio = round(v, 2)
+            precio = max(0.0, round(abs(v), 2))
         else:
             continue
         info.append({
@@ -93,7 +116,8 @@ def aplicar_modif_a_cuota(modificaciones, cuota_id, precio_actual):
 
 
 def aplicar_modif_globales(modificaciones, total_actual):
-    """Aplica las modificaciones SIN cuota_id (globales) al total.
+    """Aplica las modificaciones SIN cuota_id (globales) al total. El signo
+    de `valor` rige la operación (positivo suma, negativo resta).
 
     Returns (nuevo_total, info_aplicada, ids_consumidas)
     """
@@ -105,12 +129,10 @@ def aplicar_modif_globales(modificaciones, total_actual):
         tipo = m['tipo']
         original = total
         v = float(m.get('valor') or 0)
-        if tipo == 'descuento':
-            total = max(0.0, round(total - v, 2))
-        elif tipo == 'cargo_extra':
-            total = round(total + v, 2)
+        if tipo in ('descuento', 'cargo_extra'):
+            total = max(0.0, round(total + v, 2))
         elif tipo == 'precio_alternativo':
-            total = round(v, 2)
+            total = max(0.0, round(abs(v), 2))
         else:
             continue
         info.append({
@@ -137,14 +159,18 @@ def marcar_modificaciones_aplicadas(ids, recibo_id=None):
 
 def resumen_aplicadas(info_por_cuota, info_global):
     """Devuelve un string corto para incluir en notas del recibo."""
+    def _sig(x):
+        if x['tipo'] == 'precio_alternativo': return '='
+        v = float(x.get('valor') or 0)
+        return '+' if v >= 0 else '−'
+    def _abs(x):
+        return abs(float(x.get('valor') or 0))
     partes = []
     for inf in info_por_cuota:
         for x in inf:
-            sig = '−' if x['tipo'] == 'descuento' else ('+' if x['tipo'] == 'cargo_extra' else '=')
-            partes.append(f"{sig}{x['valor']}€ ({x['tipo']})"
+            partes.append(f"{_sig(x)}{_abs(x)}€ ({x['tipo']})"
                           + (f": {x['razon']}" if x['razon'] else ''))
     for x in info_global:
-        sig = '−' if x['tipo'] == 'descuento' else ('+' if x['tipo'] == 'cargo_extra' else '=')
-        partes.append(f"global {sig}{x['valor']}€ ({x['tipo']})"
+        partes.append(f"global {_sig(x)}{_abs(x)}€ ({x['tipo']})"
                       + (f": {x['razon']}" if x['razon'] else ''))
     return ', '.join(partes)

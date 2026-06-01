@@ -3,10 +3,13 @@ import { Check, X, RefreshCcw } from 'lucide-react'
 import { Card, Btn, Badge, Table, EmptyState } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { correccionesList, correccionAprobar, correccionRechazar } from '../../utils/horarioApi'
+import { useCan } from '../../hooks/useCan'
 
 
 export default function CorreccionesTab({ identity }) {
   const toast = useToast()
+  const canAprobar = useCan('control_horario.correcciones.aprobar')
+  const canRechazar = useCan('control_horario.correcciones.rechazar')
   const [estado, setEstado] = useState('pendiente')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -78,12 +81,16 @@ export default function CorreccionesTab({ identity }) {
               )},
               { key: 'acciones', label: '', render: (_, r) => r.estado === 'pendiente' ? (
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                  <Btn size="sm" variant="ghost" onClick={() => handleRechazar(r)}>
-                    <X size={13} /> Rechazar
-                  </Btn>
-                  <Btn size="sm" onClick={() => handleAprobar(r)}>
-                    <Check size={13} /> Aprobar
-                  </Btn>
+                  {canRechazar && (
+                    <Btn size="sm" variant="ghost" onClick={() => handleRechazar(r)}>
+                      <X size={13} /> Rechazar
+                    </Btn>
+                  )}
+                  {canAprobar && (
+                    <Btn size="sm" onClick={() => handleAprobar(r)}>
+                      <Check size={13} /> Aprobar
+                    </Btn>
+                  )}
                 </div>
               ) : (
                 <span style={{ color: 'var(--text-3)', fontSize: 11 }}>

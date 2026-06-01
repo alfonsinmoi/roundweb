@@ -6,6 +6,7 @@ import {
   plantillasList, plantillaGet, plantillaCreate, plantillaUpdate,
   plantillaDelete, plantillaBloquesSave, puestosList,
 } from '../../../utils/horarioApi'
+import { useCan } from '../../../hooks/useCan'
 
 
 const TIPOS = [
@@ -18,6 +19,7 @@ const TIPOS = [
 
 export default function PlantillasPanel({ identity }) {
   const toast = useToast()
+  const canEditarPlantillas = useCan('control_horario.planificacion.editar_plantillas')
   const [items, setItems] = useState([])
   const [puestos, setPuestos] = useState([])
   const [loading, setLoading] = useState(true)
@@ -78,9 +80,11 @@ export default function PlantillasPanel({ identity }) {
       <Card style={{ padding: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>Plantillas</strong>
-          <Btn size="sm" onClick={() => setCreando(v => !v)}>
-            <Plus size={13} /> Nueva
-          </Btn>
+          {canEditarPlantillas && (
+            <Btn size="sm" onClick={() => setCreando(v => !v)}>
+              <Plus size={13} /> Nueva
+            </Btn>
+          )}
         </div>
         {creando && (
           <div style={{

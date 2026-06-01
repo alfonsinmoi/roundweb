@@ -130,17 +130,25 @@ def _categorias_cliente(id_manager: str, cliente_idnoofit: str):
 
 
 def _trabajador_de_cliente(id_manager: str, cliente_idnoofit: str):
-    """Devuelve la fila trabajador para este cliente (cualquier estado)."""
+    """Devuelve la fila trabajador para este cliente (cualquier estado).
+
+    JOIN con centro_contacto para devolver `nombre_trainer_empleador` —
+    así el portal puede mostrar el nombre del centro (no el ID crudo).
+    """
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT id, id_manager, cliente_idnoofit, id_trainer_empleador,
-                   nif, nombre_completo, email, jornada_h_semana,
-                   categoria_profesional, tipo_contrato,
-                   fecha_alta_laboral, fecha_baja_laboral,
-                   estado, solicitud_motivo, rechazo_motivo, resuelto_at,
-                   notas, created_at
-              FROM trabajador
-             WHERE id_manager = %s AND cliente_idnoofit = %s
+            SELECT t.id, t.id_manager, t.cliente_idnoofit, t.id_trainer_empleador,
+                   t.nif, t.nombre_completo, t.email, t.jornada_h_semana,
+                   t.categoria_profesional, t.tipo_contrato,
+                   t.fecha_alta_laboral, t.fecha_baja_laboral,
+                   t.estado, t.solicitud_motivo, t.rechazo_motivo, t.resuelto_at,
+                   t.notas, t.created_at,
+                   c.nombre_centro AS nombre_trainer_empleador
+              FROM trabajador t
+              LEFT JOIN centro_contacto c
+                ON c.id_manager = t.id_manager
+               AND c.id_trainer = t.id_trainer_empleador::text
+             WHERE t.id_manager = %s AND t.cliente_idnoofit = %s
         """, (str(id_manager), str(cliente_idnoofit)))
         return cur.fetchone()
 
@@ -152,6 +160,7 @@ def _trabajador_to_portal_dict(t):
         'id': t['id'],
         'estado': t['estado'],
         'id_trainer_empleador': t['id_trainer_empleador'],
+        'nombre_trainer_empleador': t.get('nombre_trainer_empleador') or '',
         'nif': t['nif'] or '',
         'jornada_h_semana': float(t['jornada_h_semana']) if t['jornada_h_semana'] is not None else None,
         'fecha_alta_laboral': t['fecha_alta_laboral'].isoformat() if t['fecha_alta_laboral'] else None,

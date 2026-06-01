@@ -11,10 +11,17 @@ import {
   trabajadorPreferenciasGet, trabajadorPreferenciasSave,
 } from '../../utils/horarioApi'
 import { getEntrenadores } from '../../utils/api'
+import { useCan } from '../../hooks/useCan'
 
 
 export default function TrabajadoresTab({ identity }) {
   const toast = useToast()
+  // Gates UI
+  const canCrear = useCan('control_horario.trabajadores.crear')
+  const canEditar = useCan('control_horario.trabajadores.editar')
+  const canAutorizar = useCan('control_horario.trabajadores.autorizar')
+  const canBaja = useCan('control_horario.trabajadores.baja')
+  const canReactivar = useCan('control_horario.trabajadores.reactivar')
   const [activos, setActivos] = useState([])
   const [pendientes, setPendientes] = useState([])
   const [bajas, setBajas] = useState([])
@@ -112,13 +119,18 @@ export default function TrabajadoresTab({ identity }) {
       {loading && <p style={{ color: 'var(--text-3)' }}>Cargando…</p>}
 
       {!loading && view === 'pendientes' && (
-        <PendientesView pendientes={pendientes} onAlta={(p) => setShowAlta(p)} />
+        <PendientesView pendientes={pendientes}
+                        onAlta={canCrear || canAutorizar ? (p) => setShowAlta(p) : null} />
       )}
       {!loading && view === 'activos' && (
-        <ListView trabajadores={activos} onBaja={handleBaja} onEditar={t => setShowEditar(t)} />
+        <ListView trabajadores={activos}
+                  onBaja={canBaja ? handleBaja : null}
+                  onEditar={canEditar ? t => setShowEditar(t) : null} />
       )}
       {!loading && view === 'bajas' && (
-        <ListView trabajadores={bajas} onReactivar={handleReactivar} onEditar={t => setShowEditar(t)} />
+        <ListView trabajadores={bajas}
+                  onReactivar={canReactivar ? handleReactivar : null}
+                  onEditar={canEditar ? t => setShowEditar(t) : null} />
       )}
 
       {showAlta && (
@@ -165,9 +177,11 @@ function PendientesView({ pendientes, onAlta }) {
           { key: 'email',   label: 'Email',     render: (_, r) => r.email || '—' },
           { key: 'cat',     label: 'Categoría', render: (_, r) => <Badge color="cyan">{r.categoria_nombre}</Badge> },
           { key: 'acciones', label: '', render: (_, r) => (
-            <Btn size="sm" onClick={() => onAlta(r)}>
-              <UserCheck size={13} /> Alta laboral
-            </Btn>
+            onAlta ? (
+              <Btn size="sm" onClick={() => onAlta(r)}>
+                <UserCheck size={13} /> Alta laboral
+              </Btn>
+            ) : null
           )},
         ]}
         data={pendientes}

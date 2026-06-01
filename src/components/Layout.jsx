@@ -6,8 +6,10 @@ import Breadcrumbs from './Breadcrumbs'
 import ErrorBoundary from './ErrorBoundary'
 import BannerNuevosClientes from './BannerNuevosClientes'
 import BannerNoRegistrado from './BannerNoRegistrado'
+import UpdateAvailableBanner from './UpdateAvailableBanner'
 import NotasBanner from './notas/NotasBanner'
 import BannerTrimestre from './BannerTrimestre'
+import EntradasPendientesBanner from './EntradasPendientesBanner'
 import { prefetchPopularRoutes } from '../utils/prefetch'
 import { useTrainerFilter } from '../contexts/TrainerFilterContext'
 import { invalidateCache } from '../utils/api'
@@ -66,10 +68,15 @@ export default function Layout() {
 
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <Header onMenuClick={() => setSidebarOpen(true)} />
+        {/* UpdateAvailableBanner va primero (zIndex más alto) — anuncia que
+            hay nueva build desplegada para que el usuario recargue.
+            Los otros banners pueden quedarse debajo. */}
+        <UpdateAvailableBanner />
         <BannerNoRegistrado />
         <BannerTrimestre />
         <NotasBanner />
         <BannerNuevosClientes />
+        <EntradasPendientesBanner />
         <main style={{
           flex: 1, overflowY: 'auto',
           // No top padding on the scroll container — content pages add their

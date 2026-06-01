@@ -28,8 +28,18 @@ export async function listSubsByCliente(identity, idnoofit) {
   return { subs: r.subscriptions || [], partner_id: r.partner_id }
 }
 
-export async function cuotasCatalogo(identity) {
-  const r = await _fetchJson(`/api/subscriptions/cuotas-catalogo`, { headers: headers(identity) })
+/**
+ * Lista cuotas del catálogo Odoo filtradas por trainer (centro).
+ *
+ * @param identity {Object} { managerId, trainerId, ... }
+ * @param trainerId {string|number} id NoofitPro del trainer cuyo catálogo
+ *   queremos (suele ser el `idTrainer` del cliente para el dropdown del perfil).
+ *   Si no se pasa, devuelve solo las cuotas legacy del manager (compat retro).
+ * @returns {Promise<Array>} lista de cuotas
+ */
+export async function cuotasCatalogo(identity, trainerId = null) {
+  const qs = trainerId ? `?trainer=${encodeURIComponent(String(trainerId))}` : ''
+  const r = await _fetchJson(`/api/subscriptions/cuotas-catalogo${qs}`, { headers: headers(identity) })
   return r.cuotas || []
 }
 

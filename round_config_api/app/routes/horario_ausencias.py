@@ -27,7 +27,7 @@ import datetime as dt
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..auth_trabajador import trabajador_required
 from ..db import get_conn
 from ..odoo_guard import require_feature
@@ -329,6 +329,7 @@ def _autor_admin_id():
 @bp.route('/ausencias', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.ausencias.insertar')
 def crear_ausencia_admin():
     """Crea una ausencia directamente desde admin (sin pasar por flujo de
     solicitud del trabajador). Queda con estado='aprobada' inmediato.
@@ -399,6 +400,7 @@ def crear_ausencia_admin():
 @bp.route('/ausencias/<int:sol_id>/aprobar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.ausencias.aprobar')
 def aprobar_ausencia(sol_id):
     d = request.get_json() or {}
     motivo = _opt_str(d.get('motivo'))
@@ -425,6 +427,7 @@ def aprobar_ausencia(sol_id):
 @bp.route('/ausencias/<int:sol_id>/rechazar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.ausencias.rechazar')
 def rechazar_ausencia(sol_id):
     d = request.get_json() or {}
     motivo = _opt_str(d.get('motivo'))

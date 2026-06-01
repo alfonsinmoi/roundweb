@@ -17,6 +17,11 @@ Tipos de incoherencia:
   - cliente_inactivo_noofit  → cliente NF enabled=false con sub activa
   - importe_inconsistente    → precio sub no coincide con catálogo
   - varias_subs_misma_cuota  → bug: 2 subs activas para misma cuota
+  - cliente_sin_sub          → cliente con categoría que tiene_cuota=true sin sub Odoo
+  - fp_sin_sub               → cliente con forma_pago activa pero sin sub Odoo
+                               (alta abortada — IBAN guardado pero cuota nunca creada)
+  - sub_sin_categoria        → sub Odoo activa pero cliente sin categoría en BD
+                               (cobra a oscuras — el banner de nuevos no lo marca)
 """
 import logging
 from io import BytesIO
@@ -28,6 +33,58 @@ from ..db import get_conn
 
 bp = Blueprint('preemision_validar', __name__)
 log = logging.getLogger(__name__)
+
+
+# Etiquetas amigables para los códigos de incoherencia. Se usan en el Excel
+# para que el gestor entienda cada caso sin tener que conocer el código
+# técnico. Si añades un nuevo tipo en la validación, añade su etiqueta aquí.
+TIPO_LABELS = {
+    'sub_no_toca_este_mes':
+        'Cuota no toca este mes (trimestral/anual fuera de ciclo)',
+    'baja_programada_efectiva':
+        'Baja programada en vigor (cliente dado de baja este mes)',
+    'fp_sin_sub':
+        'Forma de pago activa pero sin suscripción Odoo',
+    'cliente_inactivo_nf':
+        'Cliente archivado en NoofitPro (inactivo)',
+    'cliente_desvinculado':
+        'Cliente desvinculado del centro (no aparece en NoofitPro)',
+    'cliente_inactivo_odoo':
+        'Cliente Odoo desactivado',
+    'cliente_sin_sub':
+        'Cliente con categoría de pago pero sin suscripción activa',
+    'sub_sin_categoria':
+        'Suscripción sin categoría asignada al cliente',
+    'sub_sin_cuota':
+        'Suscripción sin cuota asignada',
+    'varias_subs_misma_cuota':
+        'Tiene varias suscripciones de la misma cuota (duplicado)',
+    'cat_sin_cuota_con_sub':
+        'Categoría no debería tener cuota pero tiene suscripción activa',
+    'ya_cubierto_post_mes':
+        'Ya tiene pago vigente hasta un mes posterior (no se le emite)',
+    'recibo_ya_existe_mes':
+        'Ya tiene un recibo emitido este mes (no se duplica)',
+    'sin_forma_pago':
+        'Sin forma de pago configurada',
+    'sepa_sin_iban':
+        'Forma de pago SEPA sin IBAN registrado',
+    'sepa_iban_invalido':
+        'IBAN del cliente matemáticamente inválido (banco rechazaría)',
+    'tarjeta_sin_token':
+        'Forma de pago tarjeta sin token registrado',
+    'fecha_fin_pasada_activa':
+        'Suscripción activa pero con fecha fin en el pasado',
+    'importe_invalido':
+        'Cuota sin precio configurado para la periodicidad',
+    'importe_inconsistente':
+        'Importe de la cuota inconsistente con la configuración',
+}
+
+
+def _label_tipo(t):
+    """Devuelve la etiqueta amigable, cayendo al código si no está mapeado."""
+    return TIPO_LABELS.get(t, t)
 
 
 def _odoo():
@@ -42,18 +99,35 @@ def _company_id():
 
 
 def _validar_emision(id_manager, mes):
+    # Antes de validar, recalculamos los descuentos automáticos del manager
+    # (familiares + varias_cuotas) para que la pre-emisión refleje el estado
+    # actualizado al instante (cualquier cliente que haya cambiado de cuota,
+    # entrado/salido de familia, etc. desde el último cron de las 03:15 será
+    # detectado AHORA). Se ejecuta antes del bloque real de validación.
+    try:
+        from ..cron_descuentos_auto import recalcular_descuentos_auto
+        recalcular_descuentos_auto(id_manager)
+    except Exception as _e:
+        log.warning(f'recalcular_descuentos_auto pre-validación: {_e}')
+    return _validar_emision_inner(id_manager, mes)
+
+
+def _validar_emision_inner(id_manager, mes):
     """Devuelve (coherentes, incoherencias). NO escribe nada.
 
     Casos detectados:
       - varias_subs_misma_cuota   2+ subs activas misma cuota
       - sin_forma_pago            sub activa pero sin forma_pago en BD
       - sepa_sin_iban             forma_pago=sepa pero IBAN vacío
+      - sepa_iban_invalido        IBAN no pasa mod97 o DC español (mayo 2026)
       - tarjeta_sin_token         forma_pago=tarjeta_token sin card_token
       - importe_invalido          cuota sin precio para periodicidad
       - sub_sin_cuota             sub sin cuota_id asignada
       - fecha_fin_pasada_activa   sub estado=activa con fecha_fin pasada
       - cliente_inactivo_odoo     partner.active=False con sub activa
       - cliente_sin_sub           cliente con categoría tiene_cuota=true sin sub Odoo
+      - fp_sin_sub                forma_pago activa pero sin sub Odoo (mayo 2026)
+      - sub_sin_categoria         sub Odoo pero sin categoría BD (mayo 2026)
     """
     import datetime as dt
     o = _odoo()
@@ -82,6 +156,62 @@ def _validar_emision(id_manager, mes):
              WHERE id_manager = %s AND estado = 'activa'
         """, (str(id_manager),))
         fp_by_idnoofit = {r['cliente_idnoofit']: r for r in cur.fetchall()}
+
+    # cliente_cache: estado real del cliente en NoofitPro (enabled) y trainer.
+    #   enabled=False → archivado/inactivo en NF
+    #   no aparece    → desvinculado del manager (NF ya no lo expone)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id::text AS id, id_trainer::text AS id_trainer, enabled,
+                   raw_data->>'name' AS nombre, raw_data->>'surname' AS apellido
+              FROM cliente_cache WHERE id_manager=%s
+        """, (str(id_manager),))
+        cache_rows = cur.fetchall()
+    cache_idnoofit_enabled = {r['id']: bool(r['enabled']) for r in cache_rows}
+    cache_idnoofit_trainer = {r['id']: r['id_trainer'] for r in cache_rows}
+    cache_idnoofit_nombre  = {r['id']: r.get('nombre') for r in cache_rows}
+    cache_idnoofit_apellido = {r['id']: r.get('apellido') for r in cache_rows}
+
+    # Bajas programadas con fecha_baja <= día 1 del mes que vamos a emitir.
+    # Un cliente con baja efectiva el día 1 (o antes) NO debería emitir recibo
+    # del mes — independientemente de si el cron diario ya las ejecutó o no.
+    target_y, target_m = map(int, mes.split('-'))
+    primer_dia_mes = dt.date(target_y, target_m, 1)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT cliente_idnoofit, fecha_baja, motivo
+              FROM cliente_baja_programada
+             WHERE id_manager=%s AND fecha_baja <= %s
+        """, (str(id_manager), primer_dia_mes))
+        bajas_pendientes_mes = {str(r['cliente_idnoofit']): r for r in cur.fetchall()}
+
+    # Idempotencia: clientes que ya tienen un recibo del MISMO mes en BD
+    # (de cualquier origen y estado no anulado). La emisión los salta — la
+    # validación los marca como aviso para no aparecer falsamente como OK.
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT cliente_idnoofit, id, origen, estado
+              FROM recibo
+             WHERE id_manager=%s AND periodo=%s
+               AND estado IN ('emitido','pagado','facturado','impagado')
+        """, (str(id_manager), mes))
+        ya_existen_mes = {str(r['cliente_idnoofit']): r for r in cur.fetchall()}
+
+    # Filtro `_toca_emitir`: mensual emite cada mes, trimestral cada 3, etc.
+    # Mirror exacto de preemision_v2._toca_emitir para evitar diferir.
+    def _toca_emitir_local(sub, mes_str):
+        fi = sub.get('fecha_inicio')
+        if not fi: return False
+        if isinstance(fi, str):
+            fi = dt.datetime.fromisoformat(fi[:10]).date()
+        fi_mes = fi.year * 12 + fi.month
+        ty, tm = map(int, mes_str.split('-'))
+        target_mes = ty * 12 + tm
+        if target_mes < fi_mes: return False
+        n = target_mes - fi_mes
+        per = sub.get('periodicidad', 'mensual')
+        step = {'mensual': 1, 'trimestral': 3, 'semestral': 6, 'anual': 12}.get(per, 1)
+        return n % step == 0
 
     # Categorías de cliente (para detectar Trabajador/Invitado/Wellhub con sub)
     cat_by_idnoofit = {}
@@ -140,16 +270,71 @@ def _validar_emision(id_manager, mes):
 
     coherentes = []
     incoherencias = []
-    subs_by_partner = defaultdict(list)
+    # Agrupamos subs por id_noofit (NO por partner_id) para evitar duplicados
+    # cuando un mismo cliente NoofitPro tiene 2+ partners en Odoo (caso real
+    # cuando un partner se dio de alta dos veces por error). Elegimos un
+    # partner "canónico" — el de menor id — para representar al cliente.
+    subs_by_partner = defaultdict(list)   # partner_id canónico → subs combinadas
+    canonico_por_idn = {}                 # idnoofit → partner_id canónico
+    duplicados_partners = []              # informativo
     for s in subs:
-        if s.get('partner_id'):
-            subs_by_partner[s['partner_id'][0]].append(s)
+        if not s.get('partner_id'): continue
+        pid = s['partner_id'][0]
+        partner = partners_by_id.get(pid, {})
+        idn = partner.get('id_noofit')
+        if idn:
+            existente = canonico_por_idn.get(idn)
+            if existente is None:
+                canonico_por_idn[idn] = pid
+                subs_by_partner[pid].append(s)
+            else:
+                # Mismo cliente con otro partner — sumar subs al canónico
+                # (con menor id) y registrar el duplicado para warning.
+                if pid < existente:
+                    # Cambiar canónico al nuevo pid (menor)
+                    subs_by_partner[pid] = subs_by_partner.pop(existente) + [s]
+                    canonico_por_idn[idn] = pid
+                    duplicados_partners.append((idn, existente, pid))
+                else:
+                    subs_by_partner[existente].append(s)
+                    duplicados_partners.append((idn, pid, existente))
+        else:
+            # Sin idnoofit — agrupar por partner_id directo
+            subs_by_partner[pid].append(s)
+    if duplicados_partners:
+        log.info(f'preemision_validar: detectados {len(duplicados_partners)} partners '
+                 f'Odoo duplicados con mismo id_noofit (consolidados al canónico)')
+
+    # Clientes con un recibo PAGADO/emitido cuya `fecha_hasta` se extiende
+    # MÁS ALLÁ del último día del mes que vamos a emitir. Si está cubierto
+    # no se debe emitir otro (típico de trimestral/anual ya cobrado).
+    target_y, target_m = map(int, mes.split('-'))
+    if target_m == 12:
+        ultimo_dia_mes = dt.date(target_y, 12, 31)
+    else:
+        ultimo_dia_mes = (dt.date(target_y, target_m + 1, 1)
+                          - dt.timedelta(days=1))
+    ya_cubiertos_post_mes = {}    # idnoofit → fecha_hasta (más lejana)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT cliente_idnoofit, MAX(fecha_hasta) AS hasta
+              FROM recibo
+             WHERE id_manager = %s
+               AND estado IN ('pagado','emitido','facturado')
+               AND fecha_hasta IS NOT NULL
+               AND fecha_hasta > %s
+             GROUP BY cliente_idnoofit
+        """, (str(id_manager), ultimo_dia_mes))
+        for r in cur.fetchall():
+            ya_cubiertos_post_mes[r['cliente_idnoofit']] = r['hasta']
 
     # Imports diferidos para aplicar descuentos + modificaciones del cliente,
     # en simetría con preemision_v2.generar.
     from ..descuentos_apply import (
         calcular_precio_con_descuentos, aplicar_descuentos_familiares,
         get_descuentos_familiares_activos,
+        aplicar_descuentos_varias_cuotas_auto,
+        get_descuentos_varias_cuotas_activos,
     )
     from ..modificaciones_apply import (
         get_modificaciones_activas_mes, aplicar_modif_a_cuota,
@@ -181,6 +366,7 @@ def _validar_emision(id_manager, mes):
         for r in cur.fetchall():
             familia_por_cliente[r['yo']] = r.get('miembros') or []
     descuentos_familiares = get_descuentos_familiares_activos(id_manager)
+    descuentos_varias = get_descuentos_varias_cuotas_activos(id_manager)
 
     # Helper: precio aplicado a una sub SIN descuentos ni modificaciones.
     def _precio_sub(s):
@@ -196,21 +382,28 @@ def _validar_emision(id_manager, mes):
         cuota = cuotas_by_id.get(s['cuota_id'][0])
         if not cuota: return 0.0
         p_normal = float(cuota.get(f'precio_{s.get("periodicidad","mensual")}') or 0)
-        # 1) Descuentos del catálogo asignados al cliente
+        # 1) Descuentos asignados al cliente (porcentaje/importe únicamente
+        #    — varias_cuotas se aplica automático en el paso 2a desde may 2026)
         p_tras_desc, _info_d = calcular_precio_con_descuentos(
             id_manager, idnoofit, cuota.get('codigo'), p_normal,
             cuotas_activas_codigos=cuotas_activas_codigos)
-        # 2) Descuento automático por familia (≥2 miembros con la cuota)
+        # 2a) Descuento AUTOMÁTICO "dos cuotas" (sin asignación previa)
+        p_tras_varias, _info_v = aplicar_descuentos_varias_cuotas_auto(
+            id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
+            cuotas_activas_codigos=cuotas_activas_codigos,
+            descuentos_varias=descuentos_varias)
+        # 2b) Descuento automático por familia (≥2 miembros con la cuota)
         miembros_fam = familia_por_cliente.get(idnoofit) or []
         cuotas_por_familiar = {
             idn: cuotas_activas_by_idnoofit.get(idn, set())
             for idn in miembros_fam
         }
         p_tras_fam, _info_f = aplicar_descuentos_familiares(
-            id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
+            id_manager, idnoofit, cuota.get('codigo'), p_tras_varias,
             cuotas_por_familiar, descuentos_familiares=descuentos_familiares)
-        # 3) Modificaciones por cuota
-        p_final, _info_m, _ids = aplicar_modif_a_cuota(modifs_mes, cuota['id'], p_tras_fam)
+        # 3) Modificaciones por cuota — match por código
+        p_final, _info_m, _ids = aplicar_modif_a_cuota(modifs_mes, cuota['id'],
+            p_tras_fam, cuota_codigo=cuota.get('codigo'))
         return p_final
 
     for pid, plist in subs_by_partner.items():
@@ -231,6 +424,84 @@ def _validar_emision(id_manager, mes):
                 'tipo': 'cliente_inactivo_odoo',
                 'detalle': 'Partner Odoo inactivo (active=False) con sub activa',
                 'propuesta': 'Reactivar el partner en Odoo o cancelar las subs.',
+            })
+
+        # ya_cubierto_post_mes: cliente con un recibo pagado/emitido cuya
+        # fecha_hasta cubre más allá del mes de emisión (típico trimestral
+        # o anual ya cobrado). NO se le emite otro y aparece como aviso.
+        cubierto_hasta = ya_cubiertos_post_mes.get(idnoofit)
+        if cubierto_hasta:
+            problemas.append({
+                'tipo': 'ya_cubierto_post_mes',
+                'detalle': (f'Tiene un recibo pagado cuya cobertura llega '
+                            f'hasta {cubierto_hasta.isoformat()} '
+                            f'(posterior al fin de mes {ultimo_dia_mes.isoformat()}). '
+                            f'No se le emite otro este mes.'),
+                'propuesta': ('Revisar: si la cobertura es correcta, no hacer nada '
+                              '(el cron lo omite). Si fue un error, ajustar '
+                              'la fecha_hasta del recibo previo.'),
+            })
+
+        # recibo_ya_existe_mes: el cliente ya tiene un recibo de este mes en
+        # BD (emisión previa o manual). La generación lo salta → la
+        # validación lo marca como aviso para que no aparezca como OK.
+        rec_exist = ya_existen_mes.get(idnoofit)
+        if rec_exist:
+            problemas.append({
+                'tipo': 'recibo_ya_existe_mes',
+                'detalle': (f'Ya hay un recibo de {mes} (id {rec_exist["id"]}, '
+                            f'origen {rec_exist["origen"]}, estado {rec_exist["estado"]}). '
+                            f'La emisión no creará otro.'),
+                'propuesta': 'Si el recibo previo es correcto, ignorar. Si no, borrarlo antes de emitir.',
+            })
+
+        # sub_no_toca_este_mes: TODAS las subs del cliente caen fuera del
+        # calendario del mes (típico trimestral en mes intermedio). La
+        # emisión lo salta sin crear recibo — la validación lo refleja
+        # como informativo (no es un error real).
+        subs_que_tocan = [s for s in plist if _toca_emitir_local(s, mes)]
+        if not subs_que_tocan and plist:
+            periodicidades = sorted({s.get('periodicidad') or '?' for s in plist})
+            problemas.append({
+                'tipo': 'sub_no_toca_este_mes',
+                'detalle': (f'Ninguna de sus {len(plist)} sub(s) toca emitir en {mes} '
+                            f'(periodicidades: {", ".join(periodicidades)}). '
+                            f'Se cobra solo en los meses del ciclo desde fecha_inicio.'),
+                'propuesta': 'Sin acción — no se emite este mes por diseño.',
+            })
+
+        # baja_programada_efectiva: el cliente tiene una baja con fecha
+        # <= día 1 del mes que vamos a emitir. NO se emite (el cron diario
+        # lo archivará si aún no lo hizo, pero la emisión ya lo respeta).
+        baja = bajas_pendientes_mes.get(idnoofit)
+        if baja:
+            problemas.append({
+                'tipo': 'baja_programada_efectiva',
+                'detalle': (f'Tiene baja programada para {baja["fecha_baja"].isoformat()} '
+                            f'(<= día 1 del mes {primer_dia_mes.isoformat()})'
+                            + (f'. Motivo: {baja.get("motivo")}' if baja.get("motivo") else '')),
+                'propuesta': ('No se le emite recibo. Si la baja es errónea, '
+                              'cancélala desde la ficha del cliente.'),
+            })
+
+        # cliente_inactivo_nf: enabled=False en NoofitPro (archivado).
+        # Tiene sub activa en Odoo pero su cuenta NF está archivada → no emitir.
+        if idnoofit and idnoofit in cache_idnoofit_enabled and not cache_idnoofit_enabled[idnoofit]:
+            problemas.append({
+                'tipo': 'cliente_inactivo_nf',
+                'detalle': 'Cliente archivado en NoofitPro (enabled=False) con sub activa',
+                'propuesta': ('Cancelar la suscripción Odoo. Si fue archivado por error, '
+                              'reactivar primero el cliente en NoofitPro.'),
+            })
+
+        # cliente_desvinculado: no aparece en cliente_cache del manager.
+        # NoofitPro ya no lo expone para ningún trainer → desvinculado o eliminado.
+        if idnoofit and idnoofit not in cache_idnoofit_enabled:
+            problemas.append({
+                'tipo': 'cliente_desvinculado',
+                'detalle': 'Cliente no aparece en NoofitPro para ningún trainer del manager',
+                'propuesta': ('Verificar en NoofitPro. Si quedó huérfano, cancelar la sub. '
+                              'Si fue desvinculado por error, re-vincularlo al trainer.'),
             })
 
         # cat_sin_cuota_con_sub: cliente con categoría Trabajador/Invitado/Wellhub
@@ -294,6 +565,22 @@ def _validar_emision(id_manager, mes):
                     'detalle': 'forma_pago=sepa pero IBAN vacío',
                     'propuesta': 'Añadir IBAN al cliente o cambiar forma de pago a efectivo.',
                 })
+            elif fp['forma_pago'] == 'sepa':
+                # Validar matemáticamente el IBAN (mod97 + CCC español). Los
+                # IBANs mal escritos hacen que el banco rechace el fichero
+                # SEPA entero, así que es crítico detectarlos antes de generar.
+                from ..iban_validator import validar_iban
+                v = validar_iban(fp.get('iban'))
+                if not v['ok']:
+                    problemas.append({
+                        'tipo': 'sepa_iban_invalido',
+                        'detalle': (f'IBAN matemáticamente inválido '
+                                    f'({v["error"]}): {v["detalle"]}. '
+                                    f'IBAN: {fp.get("iban")}'),
+                        'propuesta': ('Pedir al cliente el IBAN correcto y '
+                                      'actualizarlo en perfil → Cuota y fechas, '
+                                      'o cambiar forma de pago a efectivo.'),
+                    })
             if fp['forma_pago'] == 'tarjeta_token' and not (fp.get('card_token') or '').strip():
                 problemas.append({
                     'tipo': 'tarjeta_sin_token',
@@ -348,26 +635,38 @@ def _validar_emision(id_manager, mes):
             }
 
             # Detalle por cuota: precio_normal y precio_final tras descuentos+mods
+            # Importante: iterar solo las subs que TOCA emitir este mes
+            # (mensual cada mes, trimestral cada 3, etc.) — espejo exacto
+            # de preemision_v2.generar para que el importe coincida.
             cuotas_detalle = []
             importe_subtotal = 0.0
-            for s in plist:
+            for s in subs_que_tocan:
                 if not s.get('cuota_id'): continue
                 cuota = cuotas_by_id.get(s['cuota_id'][0])
                 if not cuota: continue
                 p_normal = float(cuota.get(f'precio_{s.get("periodicidad","mensual")}') or 0)
-                # 1) Descuentos asignados
+                # 1) Descuentos asignados (porcentaje/importe)
                 p_tras_desc, info_desc = calcular_precio_con_descuentos(
                     id_manager, idnoofit, cuota.get('codigo'), p_normal,
                     cuotas_activas_codigos=cuotas_activas_cli)
-                # 2) Descuento automático por familia
-                p_tras_fam, info_fam = aplicar_descuentos_familiares(
+                # 2a) Descuento AUTOMÁTICO "dos cuotas" (sin asignación)
+                p_tras_varias, info_varias = aplicar_descuentos_varias_cuotas_auto(
                     id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
+                    cuotas_activas_codigos=cuotas_activas_cli,
+                    descuentos_varias=descuentos_varias)
+                # 2b) Descuento automático por familia
+                p_tras_fam, info_fam = aplicar_descuentos_familiares(
+                    id_manager, idnoofit, cuota.get('codigo'), p_tras_varias,
                     cuotas_por_familiar, descuentos_familiares=descuentos_familiares)
-                # 3) Modificaciones por cuota
+                # 3) Modificaciones por cuota — match por código (los IDs
+                #    locales no coinciden con los de Odoo)
                 p_final, info_mod, _ids = aplicar_modif_a_cuota(
-                    modifs_mes, cuota['id'], p_tras_fam)
+                    modifs_mes, cuota['id'], p_tras_fam,
+                    cuota_codigo=cuota.get('codigo'))
                 importe_subtotal += p_final
-                desc_partes = list(info_desc or []) + list(info_fam or [])
+                desc_partes = (list(info_desc or [])
+                               + list(info_varias or [])
+                               + list(info_fam or []))
                 cuotas_detalle.append({
                     'codigo': cuota.get('codigo') or '?',
                     'periodicidad': s.get('periodicidad'),
@@ -377,10 +676,29 @@ def _validar_emision(id_manager, mes):
                         f"{x['descuento_codigo']} ({x['precio_antes']}€→{x['precio_despues']}€)"
                         for x in desc_partes
                     ],
+                    # Estructurado para construir las columnas dinámicas del
+                    # listado: por cada descuento, su código + importe ahorrado.
+                    'descuentos_struct': [
+                        {'codigo': x['descuento_codigo'],
+                         'ahorro': round(float(x['precio_antes']) - float(x['precio_despues']), 2)}
+                        for x in desc_partes
+                    ],
                     'modificaciones': [
                         f"{m['tipo']} {m['valor']}€" + (f": {m['razon']}" if m.get('razon') else '')
                         for m in info_mod
                     ] if info_mod else [],
+                    # Estructurado: el `delta` = precio_despues - precio_antes
+                    # es la variación REAL que aplica la modificación al total.
+                    # Para descuento/cargo_extra coincide con `valor`. Para
+                    # `precio_alternativo` puede ser distinto (depende del
+                    # precio que sustituye). Usamos `delta` en la suma.
+                    'modificaciones_struct': [
+                        {'tipo': m['tipo'], 'valor': float(m['valor'] or 0),
+                         'delta': round(float(m.get('precio_despues') or 0)
+                                        - float(m.get('precio_antes') or 0), 2),
+                         'razon': m.get('razon') or ''}
+                        for m in (info_mod or [])
+                    ],
                 })
 
             # Aplicar modificaciones globales (sin cuota_id) sobre el total
@@ -390,19 +708,30 @@ def _validar_emision(id_manager, mes):
                 f"{m['tipo']} {m['valor']}€" + (f": {m['razon']}" if m.get('razon') else '')
                 for m in info_global
             ] if info_global else []
+            modif_globales_struct = [
+                {'tipo': m['tipo'], 'valor': float(m['valor'] or 0),
+                 'delta': round(float(m.get('total_despues') or 0)
+                                - float(m.get('total_antes') or 0), 2),
+                 'razon': m.get('razon') or ''}
+                for m in (info_global or [])
+            ]
 
             forma_pago = (fp or {}).get('forma_pago', '?')
             # Periodicidad principal (la más común entre las subs del cliente)
             from collections import Counter as _Counter
-            per_counts = _Counter(s.get('periodicidad') for s in plist if s.get('periodicidad'))
+            per_counts = _Counter(s.get('periodicidad') for s in subs_que_tocan if s.get('periodicidad'))
             periodicidad = per_counts.most_common(1)[0][0] if per_counts else 'mensual'
             cuotas_codigos = sorted({d['codigo'] for d in cuotas_detalle})
             coherentes.append({
                 **cliente_info,    # incluye dni y codigo_gp
+                'id_trainer': cache_idnoofit_trainer.get(idnoofit),
+                'nombre_solo': cache_idnoofit_nombre.get(idnoofit) or '',
+                'apellido':    cache_idnoofit_apellido.get(idnoofit) or '',
                 'subs': len(plist),
                 'cuotas': cuotas_codigos,
                 'cuotas_detalle': cuotas_detalle,
                 'modificaciones_globales': modif_globales_label,
+                'modificaciones_globales_struct': modif_globales_struct,
                 'forma_pago': forma_pago,
                 'iban': (fp or {}).get('iban', ''),
                 'periodicidad': periodicidad,
@@ -518,6 +847,183 @@ def _validar_emision(id_manager, mes):
             })
     except Exception as e:
         log.warning(f'cliente_sin_sub check: {e}')
+
+    # ── fp_sin_sub: forma de pago activa pero ninguna sub Odoo activa ──────
+    # Síntoma típico de alta de cliente abortada (operador rellenó IBAN/SEPA
+    # pero el wizard de cuota falló a mitad). Esos clientes están a un paso
+    # de cobrar pero no se les llega a emitir recibo → conviene avisar para
+    # completar el alta o quitar la forma de pago.
+    try:
+        idnoofits_con_sub = {partners_by_id[pid].get('id_noofit')
+                             for pid in subs_by_partner
+                             if partners_by_id.get(pid, {}).get('id_noofit')}
+        fp_sin_sub_idn = [idn for idn in fp_by_idnoofit
+                          if idn and idn not in idnoofits_con_sub]
+        # Nombre/email desde Odoo si existe partner; si no, cache cliente NF.
+        partner_lookup_fp = {}
+        nf_lookup_fp = {}
+        if fp_sin_sub_idn:
+            try:
+                rows = o._call('res.partner', 'search_read',
+                    [('id_noofit', 'in', fp_sin_sub_idn),
+                     ('company_id', 'in', [False, company_id])],
+                    ['id', 'id_noofit', 'name', 'email'])
+                partner_lookup_fp = {r['id_noofit']: r for r in rows if r.get('id_noofit')}
+            except Exception as e:
+                log.warning(f'fp_sin_sub partner_lookup: {e}')
+            # Fallback nombre desde cliente_cache (BD local)
+            try:
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""SELECT id, name, surname, email, enabled
+                                     FROM cliente_cache
+                                    WHERE id_manager = %s AND id = ANY(%s)""",
+                                (str(id_manager),
+                                 [int(x) for x in fp_sin_sub_idn if str(x).isdigit()]))
+                    for r in cur.fetchall():
+                        nf_lookup_fp[str(r['id'])] = r
+            except Exception as e:
+                log.warning(f'fp_sin_sub cache lookup: {e}')
+        for idn in fp_sin_sub_idn:
+            fp = fp_by_idnoofit.get(idn) or {}
+            cat = cat_by_idnoofit.get(idn) or {}
+            p = partner_lookup_fp.get(idn) or {}
+            nf = nf_lookup_fp.get(str(idn)) or {}
+            nombre = (p.get('name')
+                      or f"{nf.get('name','')} {nf.get('surname','')}".strip()
+                      or '?')
+            email = (p.get('email') or nf.get('email') or '')
+            if nf.get('enabled') is False:
+                propuesta = ('Cliente archivado en NoofitPro. Quitar la forma '
+                             'de pago activa o reactivar al cliente.')
+                extra = ' [archivado en NF]'
+            elif cat and cat.get('tiene_cuota') is False:
+                propuesta = (f'Categoría "{cat.get("nombre")}" no requiere cuota — '
+                             'la forma de pago está colgada, conviene quitarla.')
+                extra = f' [cat={cat.get("nombre")}]'
+            else:
+                propuesta = ('Completar la asignación de cuota desde el perfil '
+                             '(Cuota y fechas → Asignar nueva cuota) o quitar la '
+                             'forma de pago si el cliente ya no debe cobrar.')
+                extra = ''
+            incoherencias.append({
+                'tipo': 'fp_sin_sub',
+                'detalle': (f'Forma de pago "{fp.get("forma_pago")}" activa pero '
+                            f'sin sub Odoo' + extra),
+                'cliente': {'partner_id': p.get('id'), 'idnoofit': idn,
+                            'nombre': nombre, 'email': email},
+                'propuesta': propuesta,
+            })
+    except Exception as e:
+        log.warning(f'fp_sin_sub check: {e}')
+
+    # ── sub_sin_categoria: sub Odoo activa pero sin categoría asignada en BD ─
+    # Cobra pero el banner "Nuevos clientes esperando cobro" no lo detecta
+    # como ya atendido (porque la señal canónica es "tiene categoría"). Cuotas
+    # generadas a oscuras. Indicio de cliente creado vía import o sub creada
+    # manualmente en Odoo sin pasar por el wizard de alta.
+    try:
+        sub_sin_cat_pids = [pid for pid in subs_by_partner
+                            if partners_by_id.get(pid, {}).get('id_noofit')
+                            and partners_by_id[pid]['id_noofit'] not in cat_by_idnoofit]
+        for pid in sub_sin_cat_pids:
+            partner = partners_by_id.get(pid, {})
+            idn = partner.get('id_noofit')
+            cuotas_act = sorted(cuotas_activas_by_idnoofit.get(idn, set())) or ['?']
+            incoherencias.append({
+                'tipo': 'sub_sin_categoria',
+                'detalle': (f'Sub activa ({", ".join(cuotas_act)}) pero sin '
+                            'categoría asignada en BD'),
+                'cliente': {
+                    'partner_id': pid, 'idnoofit': idn,
+                    'nombre': partner.get('name') or '?',
+                    'email': partner.get('email') or '',
+                },
+                'propuesta': ('Asignar categoría desde el perfil del cliente '
+                              '(Datos personales → Categoría). Mientras no la '
+                              'tenga, el banner de "Nuevos clientes" lo seguirá '
+                              'mostrando como pendiente.'),
+            })
+    except Exception as e:
+        log.warning(f'sub_sin_categoria check: {e}')
+
+    # ─── Recibos manuales en borrador para esta remesa ───────────────────
+    # Los borradores creados desde "Recibos manuales" (estado='borrador_remesa')
+    # NO vienen de subscripciones Odoo. Hay que añadirlos manualmente a los
+    # coherentes para que aparezcan en el Excel/validación junto a los
+    # auto-generados. Cada borrador → un coherente con `_manual=True`.
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, cliente_idnoofit, cliente_nombre,
+                       id_trainer::text AS id_trainer,
+                       cuota_codigo, cuota_descripcion, periodicidad,
+                       importe_total, metodo_pago, fecha_emision, notas
+                  FROM recibo
+                 WHERE id_manager = %s AND periodo = %s
+                   AND estado = 'borrador_remesa'
+                 ORDER BY created_at ASC
+            """, (str(id_manager), mes))
+            borradores = cur.fetchall()
+    except Exception as e:
+        log.warning(f'manuales_borrador query: {e}')
+        borradores = []
+
+    METODO_A_FORMA_PAGO = {
+        'sepa': 'sepa',
+        'tarjeta_tok': 'tarjeta_token',
+        'caja_efectivo': 'efectivo',
+        'caja_tpv_fisico': 'tpv',
+        'caja_tpv_virtual': 'tpv',
+        'enlace_pago': 'enlace_pago',
+    }
+
+    for r in borradores:
+        idnoofit = str(r['cliente_idnoofit'] or '')
+        partner_iban = (fp_by_idnoofit.get(idnoofit) or {}).get('iban', '')
+        # Separar nombre/apellido si viene como "Nombre Apellido…"
+        full = (r['cliente_nombre'] or '').strip()
+        cache_nom = cache_idnoofit_nombre.get(idnoofit) or ''
+        cache_ape = cache_idnoofit_apellido.get(idnoofit) or ''
+        if not cache_nom and not cache_ape and full:
+            parts = full.split(' ', 1)
+            cache_nom = parts[0]
+            cache_ape = parts[1] if len(parts) > 1 else ''
+        coherentes.append({
+            'partner_id': None,
+            'idnoofit': idnoofit,
+            'nombre': full or f'{cache_nom} {cache_ape}'.strip(),
+            'email': '',
+            'dni': '',
+            'codigo_gp': '',
+            'id_trainer': r.get('id_trainer') or cache_idnoofit_trainer.get(idnoofit),
+            'nombre_solo': cache_nom,
+            'apellido':    cache_ape,
+            'subs': 0,
+            'cuotas': [r['cuota_codigo']] if r.get('cuota_codigo') else ['(manual)'],
+            'cuotas_detalle': [{
+                'codigo': r.get('cuota_codigo') or '(manual)',
+                'descripcion': r.get('cuota_descripcion') or '',
+                # `precio_normal` es el campo que consume el Excel para la
+                # columna "Cuota: <cod>". Para un manual usamos el importe
+                # total que el operador haya puesto.
+                'precio_normal': float(r.get('importe_total') or 0),
+                'precio': float(r.get('importe_total') or 0),
+                'periodicidad': r.get('periodicidad') or 'mensual',
+                'descuentos_struct': [],
+                'modificaciones_struct': [],
+            }],
+            'modificaciones_globales': [],
+            'modificaciones_globales_struct': [],
+            'forma_pago': METODO_A_FORMA_PAGO.get(r.get('metodo_pago')) or r.get('metodo_pago') or '?',
+            'iban': partner_iban,
+            'periodicidad': r.get('periodicidad') or 'mensual',
+            'importe_total': round(float(r.get('importe_total') or 0), 2),
+            'categoria': '',
+            # Marcadores propios — el Excel los usa para destacarlos.
+            '_manual': True,
+            '_recibo_bd_id': r['id'],
+            '_notas': r.get('notas') or '',
+        })
 
     # ─── Resumen agregado de lo que se va a emitir ───────────────────────
     resumen = _resumir_emision(coherentes)
@@ -637,15 +1143,19 @@ def _resumir_emision(coherentes):
     por_forma_pago = defaultdict(lambda: {'n': 0, 'importe': 0.0})
     por_periodicidad = defaultdict(lambda: {'n': 0, 'importe': 0.0})
     por_cuota = defaultdict(lambda: {'n': 0, 'importe': 0.0})
+    por_trainer = defaultdict(lambda: {'n': 0, 'importe': 0.0})
 
     for c in coherentes:
         imp = c.get('importe_total', 0) or 0
         fp = c.get('forma_pago', '?')
         per = c.get('periodicidad', 'mensual')
+        tr = str(c.get('id_trainer') or 'sin_trainer')
         por_forma_pago[fp]['n'] += 1
         por_forma_pago[fp]['importe'] += imp
         por_periodicidad[per]['n'] += 1
         por_periodicidad[per]['importe'] += imp
+        por_trainer[tr]['n'] += 1
+        por_trainer[tr]['importe'] += imp
         # Por cuota: usar el precio_final real por cuota (con descuentos+mods).
         # Si no hay detalle (compatibilidad), repartir el total a partes iguales.
         detalle = c.get('cuotas_detalle') or []
@@ -660,13 +1170,14 @@ def _resumir_emision(coherentes):
                 por_cuota[cod]['importe'] += imp / max(1, len(c.get('cuotas') or [1]))
 
     # Redondear importes
-    for d in (por_forma_pago, por_periodicidad, por_cuota):
+    for d in (por_forma_pago, por_periodicidad, por_cuota, por_trainer):
         for k in d:
             d[k]['importe'] = round(d[k]['importe'], 2)
 
     return {
         'total_recibos': total_recibos,
         'total_importe': total_importe,
+        'por_trainer': dict(por_trainer),
         'por_forma_pago': dict(por_forma_pago),
         'por_periodicidad': dict(por_periodicidad),
         'por_cuota': dict(por_cuota),
@@ -915,24 +1426,33 @@ def validar_excel(mes):
                 _add_row(f'  {cod} — # recibos', 'n_cuota', cat=cod)
                 _add_row(f'  {cod} — importe', 'imp_cuota', cat=cod, is_imp=True)
 
-        # Tipos de incoherencia
+        # Tipos de incoherencia (con etiqueta amigable para el gestor)
         if incoherencias:
             r += 1
-            ws.cell(r, 1, 'INCOHERENCIAS POR TIPO').font = Font(bold=True, color='FFFFFF')
+            # Cabecera (3 columnas: motivo | # casos | código técnico)
+            ws.cell(r, 1, 'MOTIVOS DE EXCLUSIÓN').font = Font(bold=True, color='FFFFFF')
             ws.cell(r, 1).fill = PatternFill('solid', fgColor='DC2626')
             ws.cell(r, 2, '# Casos').font = Font(bold=True, color='FFFFFF')
             ws.cell(r, 2).fill = PatternFill('solid', fgColor='DC2626')
-            for col in (1, 2): ws.cell(r, col).alignment = Alignment(horizontal='center')
+            ws.cell(r, 3, 'Código técnico').font = Font(bold=True, color='FFFFFF')
+            ws.cell(r, 3).fill = PatternFill('solid', fgColor='DC2626')
+            for col in (1, 2, 3): ws.cell(r, col).alignment = Alignment(horizontal='center')
+            # Ensanchar col A para el texto descriptivo
+            ws.column_dimensions['A'].width = max(ws.column_dimensions['A'].width or 38, 55)
             r += 1
             from collections import Counter
             tipos = Counter(i['tipo'] for i in incoherencias)
             for t, n in tipos.most_common():
-                ws.cell(r, 1, t); ws.cell(r, 2, n); r += 1
+                ws.cell(r, 1, _label_tipo(t))
+                ws.cell(r, 2, n)
+                ws.cell(r, 3, t).font = Font(color='6B7280', size=10)
+                r += 1
 
         # ─── INCOHERENCIAS ──────────────────────────────────────────────
         if incoherencias:
             ws = wb.create_sheet('INCOHERENCIAS')
-            heads = [('Tipo', 22), ('Cliente', 30), ('idnoofit', 11), ('Email', 26),
+            heads = [('Motivo', 50), ('Código técnico', 22),
+                     ('Cliente', 30), ('idnoofit', 11), ('Email', 26),
                      ('Detalle', 50), ('Propuesta de solución', 60)]
             fill_h = PatternFill('solid', fgColor='F87171')
             for col, (h, w) in enumerate(heads, 1):
@@ -944,69 +1464,219 @@ def validar_excel(mes):
             ws.freeze_panes = 'A2'
             for i, inc in enumerate(incoherencias, 2):
                 cli = inc['cliente']
-                vals = [inc['tipo'], cli['nombre'], cli['idnoofit'], cli['email'],
+                vals = [_label_tipo(inc['tipo']), inc['tipo'],
+                        cli['nombre'], cli['idnoofit'], cli['email'],
                         inc['detalle'], inc['propuesta']]
                 for j, v in enumerate(vals, 1):
                     ws.cell(i, j, v).border = border
             ws.auto_filter.ref = ws.dimensions
 
-        # ─── OK (recibos a emitir, con detalle) ─────────────────────────
+        # ─── OK (recibos a emitir, con columnas dinámicas) ──────────────
+        # Estructura: código cliente, nombre, apellido, categoría, forma pago,
+        # periodicidad, [columna por cada CUOTA del catálogo del manager con
+        # el precio del cliente en ella], [columna por cada DESCUENTO del
+        # catálogo con el importe ahorrado por ese cliente], modificación €,
+        # nota modificación, importe total €.
         ws = wb.create_sheet('OK')
-        heads = [('Cliente', 30), ('idnoofit', 11), ('DNI', 13),
-                 ('Cód. GP', 9), ('Categoría', 13),
-                 ('Email', 28),
-                 ('Cuotas', 28), ('Detalle precios', 40),
-                 ('Periodicidad', 13),
-                 ('Forma pago', 14), ('IBAN', 28),
-                 ('# Subs', 8), ('Importe €', 12)]
-        fill_h = PatternFill('solid', fgColor='2DD4A8')
-        for col, (h, w) in enumerate(heads, 1):
-            c = ws.cell(1, col, h); c.fill = fill_h; c.font = font_h
-            c.alignment = Alignment(horizontal='center'); c.border = border
-            ws.column_dimensions[get_column_letter(col)].width = w
-        ws.row_dimensions[1].height = 22; ws.freeze_panes = 'A2'
-        for i, c in enumerate(coherentes, 2):
-            cuotas_str = ', '.join(c.get('cuotas') or [])
-            # Detalle precios: "RT 2 dias: 52.50€ · I MYGYM: 55€→10€ (RT2DIAS+MYGYM)"
-            detalle_partes = []
-            for d in (c.get('cuotas_detalle') or []):
-                cod = d.get('codigo', '?')
-                pn = float(d.get('precio_normal') or 0)
-                pf = float(d.get('precio_final') or 0)
-                if abs(pf - pn) < 0.01 and not d.get('descuentos') and not d.get('modificaciones'):
-                    detalle_partes.append(f'{cod}: {pf:.2f}€')
-                else:
-                    extras = ' '.join(d.get('descuentos', []) + d.get('modificaciones', []))
-                    detalle_partes.append(
-                        f'{cod}: {pn:.2f}€→{pf:.2f}€'
-                        + (f' [{extras}]' if extras else ''))
-            for mg in (c.get('modificaciones_globales') or []):
-                detalle_partes.append(f'global {mg}')
-            detalle_str = ' · '.join(detalle_partes)
 
-            vals = [c['nombre'], c['idnoofit'], c.get('dni', ''),
-                    c.get('codigo_gp', ''), c.get('categoria', ''),
-                    c['email'],
-                    cuotas_str, detalle_str,
-                    c.get('periodicidad', ''),
-                    c.get('forma_pago', ''), c.get('iban', ''),
-                    c['subs'], c.get('importe_total', 0)]
-            for j, v in enumerate(vals, 1):
-                cell = ws.cell(i, j, v); cell.border = border
-                if j == 13: cell.number_format = '#,##0.00 €'
-                if j == 8:
-                    cell.alignment = Alignment(wrap_text=False, horizontal='left')
-        # Fila TOTAL (col 12 = # Subs, col 13 = Importe)
+        # Cuotas del catálogo del manager (de Odoo: round.cuota.catalogo).
+        # Filtrar a las que están realmente en uso por los coherentes.
+        codigos_cuota_orden = sorted({d['codigo'] for c in coherentes
+                                      for d in (c.get('cuotas_detalle') or [])
+                                      if d.get('codigo')})
+
+        # Descuentos en uso por los coherentes (catálogo local).
+        codigos_desc_orden = sorted({x['codigo'] for c in coherentes
+                                      for d in (c.get('cuotas_detalle') or [])
+                                      for x in (d.get('descuentos_struct') or [])
+                                      if x.get('codigo')})
+
+        # Cabecera
+        heads_fijas = [
+            ('Cód. cliente', 12),
+            ('Nombre', 18),
+            ('Apellido', 22),
+            ('Categoría', 14),
+            ('Forma pago', 14),
+            ('Periodicidad', 12),
+        ]
+        heads_modif = [
+            ('Modificación €', 14),
+            ('Nota modificación', 40),
+            ('IMPORTE TOTAL €', 16),
+        ]
+        # Construir lista completa de columnas
+        all_heads = list(heads_fijas)
+        for cod in codigos_cuota_orden:
+            all_heads.append((f'Cuota: {cod}', 14))
+        for cod in codigos_desc_orden:
+            all_heads.append((f'Desc: {cod}', 14))
+        all_heads.extend(heads_modif)
+
+        fill_fijas = PatternFill('solid', fgColor='2DD4A8')
+        fill_cuotas = PatternFill('solid', fgColor='059669')
+        fill_desc   = PatternFill('solid', fgColor='F59E0B')
+        fill_modif  = PatternFill('solid', fgColor='7C3AED')
+
+        for col, (h, w) in enumerate(all_heads, 1):
+            c = ws.cell(1, col, h); c.font = font_h
+            c.alignment = Alignment(horizontal='center', wrap_text=True)
+            c.border = border
+            ws.column_dimensions[get_column_letter(col)].width = w
+            # Color por bloque
+            if col <= len(heads_fijas):
+                c.fill = fill_fijas
+            elif col <= len(heads_fijas) + len(codigos_cuota_orden):
+                c.fill = fill_cuotas
+            elif col <= len(heads_fijas) + len(codigos_cuota_orden) + len(codigos_desc_orden):
+                c.fill = fill_desc
+            else:
+                c.fill = fill_modif
+        ws.row_dimensions[1].height = 30
+        ws.freeze_panes = ws.cell(2, len(heads_fijas) + 1).coordinate
+
+        col_modif_eur  = len(heads_fijas) + len(codigos_cuota_orden) + len(codigos_desc_orden) + 1
+        col_modif_nota = col_modif_eur + 1
+        col_total     = col_modif_eur + 2
+
+        # Fill amber para destacar recibos manuales (borrador_remesa) que no
+        # vienen del flujo auto-generado de Odoo.
+        fill_manual = PatternFill('solid', fgColor='FEF3C7')
+
+        for i, c in enumerate(coherentes, 2):
+            es_manual = bool(c.get('_manual'))
+            # Bloque 1: identidad + datos básicos
+            ws.cell(i, 1, c.get('idnoofit') or '').border = border
+            ws.cell(i, 2, c.get('nombre_solo') or '').border = border
+            ws.cell(i, 3, c.get('apellido') or '').border = border
+            ws.cell(i, 4, 'MANUAL' if es_manual else (c.get('categoria') or '')).border = border
+            ws.cell(i, 5, c.get('forma_pago') or '').border = border
+            ws.cell(i, 6, c.get('periodicidad') or '').border = border
+
+            # Bloque 2: una columna por cada cuota del catálogo → precio de
+            # CONFIGURACIÓN (precio_normal). El descuento aplicado va en su
+            # columna aparte. Así la fila suma: precio_cuota − descuento +
+            # modificación = importe total.
+            precios_por_cuota = {d['codigo']: float(d.get('precio_normal') or 0)
+                                 for d in (c.get('cuotas_detalle') or [])
+                                 if d.get('codigo')}
+            for k, cod in enumerate(codigos_cuota_orden):
+                col_idx = len(heads_fijas) + 1 + k
+                if cod in precios_por_cuota:
+                    cell = ws.cell(i, col_idx, precios_por_cuota[cod])
+                    cell.number_format = '#,##0.00 €'
+                else:
+                    cell = ws.cell(i, col_idx, '')
+                cell.border = border
+
+            # Bloque 3: una columna por cada descuento → importe ahorrado
+            ahorro_por_desc = {}
+            for d in (c.get('cuotas_detalle') or []):
+                for x in (d.get('descuentos_struct') or []):
+                    cod = x.get('codigo')
+                    if cod:
+                        ahorro_por_desc[cod] = ahorro_por_desc.get(cod, 0.0) + float(x.get('ahorro') or 0)
+            for k, cod in enumerate(codigos_desc_orden):
+                col_idx = len(heads_fijas) + len(codigos_cuota_orden) + 1 + k
+                val = ahorro_por_desc.get(cod)
+                if val:
+                    cell = ws.cell(i, col_idx, -round(val, 2))  # negativo: es un descuento
+                    cell.number_format = '#,##0.00 €'
+                    cell.font = Font(color='006400')
+                else:
+                    cell = ws.cell(i, col_idx, '')
+                cell.border = border
+
+            # Bloque 4: modificación €  + nota
+            # Usamos `delta` (precio_despues − precio_antes) que es el efecto
+            # REAL en el total. Para precio_alternativo `delta` puede diferir
+            # del `valor` crudo (sustituye precio en vez de sumar/restar).
+            mod_total = 0.0
+            mod_notas = []
+            for d in (c.get('cuotas_detalle') or []):
+                for m in (d.get('modificaciones_struct') or []):
+                    delta = float(m.get('delta') or 0)
+                    mod_total += delta
+                    tipo = m.get('tipo') or ''
+                    if tipo == 'precio_alternativo':
+                        n = (f"{d['codigo']}: precio_alternativo "
+                             f"{m.get('valor'):.2f}€ (delta {'+' if delta >= 0 else '−'}{abs(delta):.2f}€)")
+                    else:
+                        n = f"{d['codigo']}: {'+' if delta >= 0 else '−'}{abs(delta):.2f}€"
+                    if m.get('razon'): n += f' ({m["razon"]})'
+                    mod_notas.append(n)
+            for m in (c.get('modificaciones_globales_struct') or []):
+                delta = float(m.get('delta') or 0)
+                mod_total += delta
+                tipo = m.get('tipo') or ''
+                if tipo == 'precio_alternativo':
+                    n = (f"global: precio_alternativo {m.get('valor'):.2f}€ "
+                         f"(delta {'+' if delta >= 0 else '−'}{abs(delta):.2f}€)")
+                else:
+                    n = f"global: {'+' if delta >= 0 else '−'}{abs(delta):.2f}€"
+                if m.get('razon'): n += f' ({m["razon"]})'
+                mod_notas.append(n)
+            if mod_total != 0:
+                cell = ws.cell(i, col_modif_eur, round(mod_total, 2))
+                cell.number_format = '#,##0.00 €'
+                cell.font = Font(color='C00000' if mod_total < 0 else '0066CC', bold=True)
+            else:
+                ws.cell(i, col_modif_eur, '')
+            ws.cell(i, col_modif_eur).border = border
+            nota_cell = ws.cell(i, col_modif_nota, ' · '.join(mod_notas))
+            nota_cell.border = border
+            nota_cell.alignment = Alignment(wrap_text=False, horizontal='left')
+
+            # Importe total
+            tot = ws.cell(i, col_total, float(c.get('importe_total') or 0))
+            tot.number_format = '#,##0.00 €'
+            tot.font = Font(bold=True)
+            tot.border = border
+
+            # Si es manual, pintar toda la fila en amber para que destaque
+            # visualmente entre los auto-generados.
+            if es_manual:
+                for col_i in range(1, col_total + 1):
+                    cell = ws.cell(i, col_i)
+                    cell.fill = fill_manual
+                # Anotamos la nota del operador en la columna de modificación nota
+                if c.get('_notas'):
+                    existing = ws.cell(i, col_modif_nota).value or ''
+                    extra = f'[MANUAL] {c["_notas"]}'
+                    ws.cell(i, col_modif_nota,
+                            f'{existing} · {extra}' if existing else extra)
+
+        # Fila TOTAL
         total_row = len(coherentes) + 2
-        ws.cell(total_row, 1, 'TOTAL').font = Font(bold=True)
-        ws.cell(total_row, 1).fill = fill_total
-        ws.cell(total_row, 12, len(coherentes)).font = Font(bold=True)
-        ws.cell(total_row, 12).fill = fill_total
-        cell_imp = ws.cell(total_row, 13, resumen.get('total_importe', 0))
-        cell_imp.font = Font(bold=True)
-        cell_imp.fill = fill_total
-        cell_imp.number_format = '#,##0.00 €'
-        ws.auto_filter.ref = f'A1:M{len(coherentes)+1}'
+        lab = ws.cell(total_row, 1, 'TOTAL')
+        lab.font = Font(bold=True); lab.fill = fill_total
+        # Sumar cada columna de cuota
+        for k, cod in enumerate(codigos_cuota_orden):
+            col_idx = len(heads_fijas) + 1 + k
+            col_letter = get_column_letter(col_idx)
+            t = ws.cell(total_row, col_idx,
+                        f'=SUM({col_letter}2:{col_letter}{total_row - 1})')
+            t.number_format = '#,##0.00 €'
+            t.font = Font(bold=True); t.fill = fill_total
+        for k, cod in enumerate(codigos_desc_orden):
+            col_idx = len(heads_fijas) + len(codigos_cuota_orden) + 1 + k
+            col_letter = get_column_letter(col_idx)
+            t = ws.cell(total_row, col_idx,
+                        f'=SUM({col_letter}2:{col_letter}{total_row - 1})')
+            t.number_format = '#,##0.00 €'
+            t.font = Font(bold=True); t.fill = fill_total
+        # Modificación total
+        col_letter = get_column_letter(col_modif_eur)
+        t = ws.cell(total_row, col_modif_eur,
+                    f'=SUM({col_letter}2:{col_letter}{total_row - 1})')
+        t.number_format = '#,##0.00 €'; t.font = Font(bold=True); t.fill = fill_total
+        # Importe total
+        col_letter = get_column_letter(col_total)
+        t = ws.cell(total_row, col_total,
+                    f'=SUM({col_letter}2:{col_letter}{total_row - 1})')
+        t.number_format = '#,##0.00 €'; t.font = Font(bold=True); t.fill = fill_total
+
+        ws.auto_filter.ref = f'A1:{get_column_letter(col_total)}{total_row - 1}'
 
         buf = BytesIO()
         wb.save(buf); buf.seek(0)

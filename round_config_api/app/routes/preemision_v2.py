@@ -37,6 +37,36 @@ def _company_id():
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
+def _calc_fecha_hasta(fecha_emision_iso, periodicidad):
+    """Devuelve la fecha (ISO) hasta la que el pago cubre, según periodicidad.
+
+    Convención: emisión + N meses − 1 día (último día cubierto inclusive).
+    - mensual:    NULL  (cobertura del mes natural ya implícita en `periodo`)
+    - trimestral: emisión + 3 meses − 1 día
+    - semestral:  emisión + 6 meses − 1 día
+    - anual:      emisión + 12 meses − 1 día
+    - puntual:    NULL
+
+    Necesario para que la idempotencia `ya_cubiertos_post_mes` detecte que
+    un cliente trimestral / semestral / anual ya está cubierto cuando llega
+    el siguiente mes (si fecha_hasta fuese NULL, el validador NO lo detecta
+    y podría emitir un recibo duplicado).
+    """
+    meses = {'mensual': 0, 'bimensual': 2, 'trimestral': 3,
+             'semestral': 6, 'anual': 12, 'puntual': 0}.get(periodicidad, 0)
+    if meses == 0:
+        return None
+    try:
+        d = dt.date.fromisoformat(fecha_emision_iso)
+    except Exception:
+        return None
+    y = d.year + (d.month - 1 + meses) // 12
+    m = (d.month - 1 + meses) % 12 + 1
+    day = min(d.day, 28)
+    fin = dt.date(y, m, day)
+    return (fin - dt.timedelta(days=1)).isoformat()
+
+
 def _toca_emitir(sub, mes_str):
     """Decide si una subscription debe emitir recibo en `mes_str` (YYYY-MM).
 
@@ -81,6 +111,16 @@ def generar(mes):
     que TOCA emitir ese mes. Idempotente: si ya existe recibo (cliente, periodo)
     con origen='cron_emision', salta."""
     try:
+        # Recalcular descuentos automáticos JUSTO ANTES de emitir, para que
+        # cualquier cambio reciente (cuota nueva, familia editada, etc.) se
+        # refleje en los recibos del mes. Imprescindible si el manager hizo
+        # cambios desde el último cron diario.
+        try:
+            from ..cron_descuentos_auto import recalcular_descuentos_auto
+            recalcular_descuentos_auto(g.id_manager)
+        except Exception as _e:
+            log.warning(f'recalcular_descuentos_auto pre-emisión: {_e}')
+
         company_id = _company_id()
         o = _odoo()
 
@@ -111,13 +151,36 @@ def generar(mes):
             """, (str(g.id_manager),))
             fp_by_idnoofit = {r['cliente_idnoofit']: r for r in cur.fetchall()}
 
-        # Recibos ya existentes en este periodo (idempotencia)
+        # Idempotencia 1: recibos del MISMO periodo (mes de emisión). Incluye
+        # todos los orígenes (cron_emision, manual, etc.) y todos los estados
+        # no anulados — basta con que exista uno del mes para no emitir otro.
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 SELECT cliente_idnoofit, id FROM recibo
-                 WHERE id_manager=%s AND periodo=%s AND origen='cron_emision'
+                 WHERE id_manager=%s AND periodo=%s
+                   AND estado IN ('emitido','pagado','facturado','impagado')
             """, (str(g.id_manager), mes))
             ya_existen = {r['cliente_idnoofit']: r['id'] for r in cur.fetchall()}
+
+        # Idempotencia 2: recibos PAGADOS cuya `fecha_hasta` se extiende más
+        # allá del último día del mes de emisión (típico de pagos trimestrales,
+        # semestrales o anuales). Si el cliente ya pagó hasta una fecha
+        # posterior al mes que estamos emitiendo, NO se le emite otro.
+        target_y_tmp, target_m_tmp = map(int, mes.split('-'))
+        if target_m_tmp == 12:
+            ultimo_dia_mes_emision = dt.date(target_y_tmp, 12, 31)
+        else:
+            ultimo_dia_mes_emision = (
+                dt.date(target_y_tmp, target_m_tmp + 1, 1) - dt.timedelta(days=1))
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT cliente_idnoofit FROM recibo
+                 WHERE id_manager=%s
+                   AND estado IN ('pagado','emitido','facturado')
+                   AND fecha_hasta IS NOT NULL
+                   AND fecha_hasta > %s
+            """, (str(g.id_manager), ultimo_dia_mes_emision))
+            ya_cubiertos_post_mes = {r['cliente_idnoofit'] for r in cur.fetchall()}
 
         # Clientes con baja efectiva el día 1 del mes que se emite. No
         # importa si `cliente_baja_programada.ejecutada_at` está NULL: solo
@@ -134,23 +197,68 @@ def generar(mes):
             """, (str(g.id_manager), primer_dia))
             inactivos_dia_1 = {str(r['cliente_idnoofit']) for r in cur.fetchall()}
 
+        # Cache local NoofitPro: estado real de cada cliente.
+        #   - cliente_cache.enabled = TRUE  → en alta en NF
+        #   - cliente_cache.enabled = FALSE → archivado (inactivo) en NF
+        #   - NO está en cliente_cache      → desvinculado (NF ya no lo
+        #     devuelve para ningún trainer del manager)
+        # `id_trainer` se guarda en el recibo para que la emisión sea
+        # agrupable por trainer (antes se metía NULL).
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id::text AS id, id_trainer::text AS id_trainer, enabled
+                  FROM cliente_cache WHERE id_manager=%s
+            """, (str(g.id_manager),))
+            cache_rows = cur.fetchall()
+        cache_idnoofit_enabled = {r['id']: bool(r['enabled']) for r in cache_rows}
+        cache_idnoofit_trainer = {r['id']: r['id_trainer'] for r in cache_rows}
+
         # Filtrar subs que tocan + agrupar por cliente
         # Skipea clientes que estaban inactivos el día 1 del mes (regla
-        # de baja programada).
+        # de baja programada), inactivos en NF o desvinculados.
+        # Agrupación por id_noofit (no partner_id) para deduplicar partners
+        # duplicados en Odoo con el mismo cliente NoofitPro.
         por_cliente = defaultdict(list)
+        canonico_por_idn = {}    # idnoofit → partner_id canónico (menor id)
         skipped_baja = 0
+        skipped_inactivo_nf = 0
+        skipped_desvinculado = 0
         for s in subs:
             if not _toca_emitir(s, mes): continue
             pid = s['partner_id'][0] if s.get('partner_id') else None
             if not pid: continue
             partner = partners_by_id.get(pid) or {}
             idnoofit = str(partner.get('id_noofit') or '')
-            if idnoofit and idnoofit in inactivos_dia_1:
+            if not idnoofit: continue
+            if idnoofit in inactivos_dia_1:
                 skipped_baja += 1
                 continue
-            por_cliente[pid].append(s)
+            # Cliente_cache: comprueba estado real en NoofitPro.
+            if idnoofit not in cache_idnoofit_enabled:
+                # No está en cache de ningún trainer del manager = desvinculado.
+                skipped_desvinculado += 1
+                continue
+            if not cache_idnoofit_enabled[idnoofit]:
+                # enabled=False en NoofitPro = archivado/inactivo.
+                skipped_inactivo_nf += 1
+                continue
+            # Dedup por idnoofit: si ya hay un canónico, añadir al suyo.
+            existente = canonico_por_idn.get(idnoofit)
+            if existente is None:
+                canonico_por_idn[idnoofit] = pid
+                por_cliente[pid].append(s)
+            elif pid < existente:
+                # Cambiar canónico al pid menor.
+                por_cliente[pid] = por_cliente.pop(existente) + [s]
+                canonico_por_idn[idnoofit] = pid
+            else:
+                por_cliente[existente].append(s)
         if skipped_baja:
             log.info(f'preemision {mes}: {skipped_baja} subs saltadas por baja efectiva día 1')
+        if skipped_inactivo_nf:
+            log.info(f'preemision {mes}: {skipped_inactivo_nf} subs saltadas por cliente inactivo en NoofitPro')
+        if skipped_desvinculado:
+            log.info(f'preemision {mes}: {skipped_desvinculado} subs saltadas por cliente desvinculado (no en cache)')
 
         # Pre-cómputo para descuentos "familiares":
         #   1) cuotas activas (de TODAS las subs activas, no solo las que tocan)
@@ -184,12 +292,20 @@ def generar(mes):
         from ..descuentos_apply import (
             calcular_precio_con_descuentos, aplicar_descuentos_familiares,
             get_descuentos_familiares_activos,
+            aplicar_descuentos_varias_cuotas_auto,
+            get_descuentos_varias_cuotas_activos,
         )
         descuentos_familiares = get_descuentos_familiares_activos(g.id_manager)
+        # Cargamos los descuentos `varias_cuotas` UNA vez por emisión —
+        # son automáticos: se aplican a cualquier cliente que cumpla
+        # condiciones (req + secundaria activa) sin necesitar asignación
+        # manual al cliente.
+        descuentos_varias = get_descuentos_varias_cuotas_activos(g.id_manager)
 
         # Iterar
         creados = []
         skipped_ya = 0
+        skipped_ya_cubierto = 0   # paid recibo con fecha_hasta > fin del mes
         skipped_nf_inactivo = 0
         skipped_sin_fp = 0
         skipped_sin_subs = 0
@@ -204,9 +320,15 @@ def generar(mes):
             if not idnoofit:
                 continue
 
-            # Idempotencia
+            # Idempotencia 1: recibo del mismo mes ya existe
             if idnoofit in ya_existen:
                 skipped_ya += 1
+                continue
+
+            # Idempotencia 2: el cliente ya pagó hasta una fecha POSTERIOR
+            # al mes de emisión (típico trimestral/anual). No emitir otro.
+            if idnoofit in ya_cubiertos_post_mes:
+                skipped_ya_cubierto += 1
                 continue
 
             # Cliente NF inactivo → no emite
@@ -254,21 +376,35 @@ def generar(mes):
                 if not cuota: continue
                 p_normal = _precio_para(cuota, s.get('periodicidad', 'mensual'))
                 # 1) Descuentos del catálogo asignados al cliente
+                #    (porcentaje/importe — varias_cuotas YA no entra aquí
+                #    desde mayo 2026, se aplica en el paso 2b automático)
                 p_tras_desc, info_desc = calcular_precio_con_descuentos(
                     g.id_manager, idnoofit, cuota.get('codigo'), p_normal,
                     cuotas_activas_codigos=cuotas_activas_cli)
-                # 2) Descuento automático por familia (si ≥2 miembros con la cuota)
-                p_tras_fam, info_fam = aplicar_descuentos_familiares(
+                # 2a) Descuento AUTOMÁTICO por "dos cuotas" (varias_cuotas):
+                #     se aplica si el cliente tiene la cuota requerida + la
+                #     secundaria activa, SIN necesitar asignación manual.
+                p_tras_varias, info_varias = aplicar_descuentos_varias_cuotas_auto(
                     g.id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
+                    cuotas_activas_codigos=cuotas_activas_cli,
+                    descuentos_varias=descuentos_varias)
+                # 2b) Descuento AUTOMÁTICO por familia (≥2 miembros con la
+                #     cuota indicada — no requiere asignación).
+                p_tras_fam, info_fam = aplicar_descuentos_familiares(
+                    g.id_manager, idnoofit, cuota.get('codigo'), p_tras_varias,
                     cuotas_por_familiar,
                     descuentos_familiares=descuentos_familiares)
-                # 3) Modificaciones puntuales para esta cuota concreta
+                # 3) Modificaciones puntuales para esta cuota concreta —
+                # match por código (los IDs locales no coinciden con Odoo).
                 p_final, info_mod, ids_mod = aplicar_modif_a_cuota(
-                    modifs_mes, cuota['id'], p_tras_fam)
+                    modifs_mes, cuota['id'], p_tras_fam,
+                    cuota_codigo=cuota.get('codigo'))
                 total_eur += p_final
                 cuota_codigos.append(cuota.get('codigo'))
                 if info_desc:
                     descuentos_aplicados.extend(info_desc)
+                if info_varias:
+                    descuentos_aplicados.extend(info_varias)
                 if info_fam:
                     descuentos_aplicados.extend(info_fam)
                 if info_mod:
@@ -297,6 +433,11 @@ def generar(mes):
             estado = 'pagado' if forma_pago in ('sepa', 'tarjeta_token') else 'impagado'
             fecha_emision = f'{mes}-01'
             fecha_pago = fecha_emision if estado == 'pagado' else None
+            # Cobertura: emisión + N meses según periodicidad de la sub
+            # principal. Crítico para que trimestrales / semestrales / anuales
+            # bloqueen futuros recibos via `ya_cubiertos_post_mes`.
+            periodicidad_recibo = subs_cliente[0].get('periodicidad', 'mensual')
+            fecha_hasta_calc = _calc_fecha_hasta(fecha_emision, periodicidad_recibo)
 
             # Periodo en formato YYYY-MM (sirve también para recibos trimestrales:
             # se guarda el mes de emisión; la cobertura efectiva queda implícita en
@@ -317,11 +458,13 @@ def generar(mes):
                             'cron_emision', NULL, %s, %s, %s)
                     RETURNING id
                 """, (
-                    str(g.id_manager), None, idnoofit, nombre,
+                    str(g.id_manager),
+                    cache_idnoofit_trainer.get(idnoofit),  # id_trainer real del cliente
+                    idnoofit, nombre,
                     ','.join(cuota_codigos),
                     ' + '.join(cuota_descripciones),
-                    mes, fecha_emision, None,
-                    subs_cliente[0].get('periodicidad', 'mensual'),
+                    mes, fecha_emision, fecha_hasta_calc,
+                    periodicidad_recibo,
                     base, iva, total_eur,
                     forma_pago, estado, fecha_emision, fecha_pago,
                     f'Recibo unión: {len(subs_cliente)} sub(s) · forma_pago activa: {forma_pago}'
@@ -350,15 +493,65 @@ def generar(mes):
                                   if (modif_info_por_cuota or info_global) else '',
             })
 
+        # ── Definitivizar borradores manuales del mes ───────────────────────
+        # Los recibos creados manualmente desde "Recibos manuales" (estado=
+        # 'borrador_remesa') pasan ahora a su estado FINAL según su método de
+        # pago, igual que los auto-generados:
+        #   - sepa / tarjeta_tok → estado='pagado' (el cobro Odoo se crea
+        #     luego al pulsar "Emitir")
+        #   - resto              → estado='impagado'
+        # Set fecha_emision si no la tenía. Idempotente: si no quedan
+        # borradores, no toca nada.
+        PAGADOS_AL_EMITIR = {'sepa', 'tarjeta_tok'}
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, metodo_pago, fecha_emision FROM recibo
+                 WHERE id_manager=%s AND periodo=%s
+                   AND estado='borrador_remesa'
+            """, (str(g.id_manager), mes))
+            borradores = cur.fetchall()
+        manuales_definitivizados = 0
+        for b in borradores:
+            nuevo_estado = 'pagado' if b['metodo_pago'] in PAGADOS_AL_EMITIR else 'impagado'
+            nueva_emision = b['fecha_emision'] or dt.date.fromisoformat(f'{mes}-01')
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE recibo
+                       SET estado=%s, fecha_emision=%s, updated_by=%s
+                     WHERE id=%s AND estado='borrador_remesa'
+                """, (nuevo_estado, nueva_emision, actor_label, b['id']))
+            manuales_definitivizados += 1
+
         log_action(actor, entidad='recibo_lote', entidad_id=mes, accion='preemision_v2',
-                   resumen=f'Preemisión {mes}: {len(creados)} recibos · {skipped_ya} ya · {skipped_sin_fp} sin forma_pago')
+                   resumen=(f'Preemisión {mes}: {len(creados)} recibos · '
+                            f'{manuales_definitivizados} manuales definitivos · '
+                            f'{skipped_ya} ya · {skipped_ya_cubierto} ya_cubierto · '
+                            f'{skipped_inactivo_nf} inactivos · '
+                            f'{skipped_desvinculado} desvinculados · '
+                            f'{skipped_sin_fp} sin forma_pago'))
+
+        # Breakdown por trainer (cuántos recibos y cuánto importe)
+        from collections import defaultdict as _dd
+        por_trainer = _dd(lambda: {'n': 0, 'importe': 0.0})
+        for c in creados:
+            t = cache_idnoofit_trainer.get(c.get('idnoofit')) or 'sin_trainer'
+            por_trainer[t]['n'] += 1
+            por_trainer[t]['importe'] += float(c.get('importe') or 0)
+        por_trainer_out = {t: {'n': v['n'], 'importe': round(v['importe'], 2)}
+                           for t, v in por_trainer.items()}
 
         return jsonify({
             'ok': True, 'mes': mes,
             'creados': len(creados),
+            'manuales_definitivizados': manuales_definitivizados,
             'skipped_ya_existentes': skipped_ya,
+            'skipped_ya_cubierto_post_mes': skipped_ya_cubierto,
+            'skipped_inactivo_nf': skipped_inactivo_nf,
+            'skipped_desvinculado': skipped_desvinculado,
+            'skipped_baja_efectiva_dia_1': skipped_baja,
             'skipped_sin_forma_pago': skipped_sin_fp,
             'skipped_sin_subs': skipped_sin_subs,
+            'por_trainer': por_trainer_out,
             'detalle': creados[:50],
         })
     except Exception as e:

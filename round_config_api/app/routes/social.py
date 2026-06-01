@@ -16,7 +16,7 @@ Agenda (manager + trainer):
 import json, logging
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from .. import meta_client as mc
 
@@ -58,6 +58,7 @@ def list_cuentas():
 
 @bp.route('/cuentas', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.meta.conectar')
 def upsert_cuenta():
     if g.id_trainer:
         return jsonify({'ok': False, 'error': 'manager_only'}), 403
@@ -121,6 +122,7 @@ def upsert_cuenta():
 
 @bp.route('/cuentas/<int:cuenta_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.meta.desconectar')
 def delete_cuenta(cuenta_id):
     if g.id_trainer:
         return jsonify({'ok': False, 'error': 'manager_only'}), 403
@@ -186,6 +188,7 @@ def list_posts():
 
 @bp.route('/posts', methods=['POST'])
 @auth_required
+@require_permission('crm.agenda_social.crear_post')
 def crear_post():
     d = request.get_json() or {}
     cuenta_id = d.get('social_cuenta_id')
@@ -232,6 +235,7 @@ def crear_post():
 
 @bp.route('/posts/<int:post_id>', methods=['PATCH'])
 @auth_required
+@require_permission('crm.agenda_social.editar_post')
 def update_post(post_id):
     d = request.get_json() or {}
     sets, params = [], []
@@ -255,6 +259,7 @@ def update_post(post_id):
 
 @bp.route('/posts/<int:post_id>', methods=['DELETE'])
 @auth_required
+@require_permission('crm.agenda_social.borrar_post')
 def delete_post(post_id):
     sql_extra = ' AND id_trainer=%s' if g.id_trainer else ''
     params = [post_id, g.id_manager]
@@ -269,6 +274,7 @@ def delete_post(post_id):
 
 @bp.route('/posts/<int:post_id>/publicar-ya', methods=['POST'])
 @auth_required
+@require_permission('crm.agenda_social.publicar_ya')
 def publicar_ya(post_id):
     """Adelanta el schedule_at a NOW() — el cron lo publicará en su próxima ronda."""
     sql_extra = ' AND id_trainer=%s' if g.id_trainer else ''

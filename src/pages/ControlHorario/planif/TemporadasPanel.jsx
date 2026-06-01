@@ -6,6 +6,7 @@ import {
   temporadasList, temporadaCreate, temporadaUpdate, temporadaDelete,
   aperturaGet, aperturaSave,
 } from '../../../utils/horarioApi'
+import { useCan } from '../../../hooks/useCan'
 
 
 const DIAS = [
@@ -75,6 +76,7 @@ function fmtMin(mins) {
 
 export default function TemporadasPanel({ identity }) {
   const toast = useToast()
+  const canEditar = useCan('control_horario.planificacion.editar_temporadas')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)   // id de la temporada activa en editor
@@ -116,9 +118,11 @@ export default function TemporadasPanel({ identity }) {
       <Card style={{ padding: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>Temporadas</strong>
-          <Btn size="sm" onClick={handleCrear}>
-            <Plus size={13} /> Nueva
-          </Btn>
+          {canEditar && (
+            <Btn size="sm" onClick={handleCrear}>
+              <Plus size={13} /> Nueva
+            </Btn>
+          )}
         </div>
         {loading && <p style={{ color: 'var(--text-3)', fontSize: 12 }}>Cargando…</p>}
         {!loading && items.length === 0 && (
@@ -132,6 +136,7 @@ export default function TemporadasPanel({ identity }) {
             <TemporadaRow key={t.id} t={t}
                           active={selected === t.id}
                           identity={identity}
+                          canEditar={canEditar}
                           onSelect={() => setSelected(t.id)}
                           onSaved={reload}
                           onDelete={() => handleBorrar(t)} />
@@ -154,7 +159,7 @@ export default function TemporadasPanel({ identity }) {
 }
 
 
-function TemporadaRow({ t, active, identity, onSelect, onSaved, onDelete }) {
+function TemporadaRow({ t, active, identity, canEditar, onSelect, onSaved, onDelete }) {
   const toast = useToast()
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({
@@ -201,14 +206,18 @@ function TemporadaRow({ t, active, identity, onSelect, onSaved, onDelete }) {
                 : 'Permanente'}
             </p>
           </div>
-          <button onClick={(e) => { e.stopPropagation(); setEditing(true) }}
-                  style={iconBtn} title="Editar">
-            <CalendarRange size={13} />
-          </button>
-          <button onClick={(e) => { e.stopPropagation(); onDelete() }}
-                  style={iconBtn} title="Borrar">
-            <Trash2 size={13} />
-          </button>
+          {canEditar && (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); setEditing(true) }}
+                      style={iconBtn} title="Editar">
+                <CalendarRange size={13} />
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); onDelete() }}
+                      style={iconBtn} title="Borrar">
+                <Trash2 size={13} />
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

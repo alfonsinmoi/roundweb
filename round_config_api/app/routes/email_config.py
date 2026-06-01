@@ -3,7 +3,7 @@ Solo el manager puede gestionar (no impersonando trainer).
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..email_sender import test_proveedor
 
@@ -66,6 +66,7 @@ def get():
 @bp.route('', methods=['PUT'])
 @bp.route('/', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.email.editar')
 def upsert():
     err = _manager_only()
     if err: return err
@@ -159,6 +160,7 @@ def upsert():
 @bp.route('', methods=['DELETE'])
 @bp.route('/', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.email.editar')
 def delete_trainer_config():
     """Borra la config específica de un trainer (vuelve a usar fallback del manager)."""
     err = _manager_only()
@@ -179,6 +181,7 @@ def delete_trainer_config():
 
 @bp.route('/test', methods=['POST'])
 @auth_required
+@require_permission('configuracion.email.editar')
 def test():
     err = _manager_only()
     if err: return err

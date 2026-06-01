@@ -129,14 +129,14 @@ export function AuthProvider({ children }) {
   //    - Si responde 401 con error 'invalid_credentials' o 'missing_fields' →
   //      cae a NoofitPro (puede ser email del manager/trainer)
   // 2. Si NoofitPro funciona → login clásico
-  const login = useCallback(async (email, password) => {
+  const login = useCallback(async (email, password, idTrainer = null) => {
     invalidateCache()
     abortRequests()
     clearPersistedCache()
 
     // Intento 1: usuario_web
     try {
-      const res = await loginUsuarioWeb(email, password)
+      const res = await loginUsuarioWeb(email, password, idTrainer)
       if (res.mustChangePassword) {
         // Devolvemos info para que la UI redirija al flujo de cambio
         return {
@@ -144,6 +144,17 @@ export function AuthProvider({ children }) {
           mustChangePassword: true,
           reason: res.reason,
           message: res.message || 'Debes cambiar tu contraseña antes de continuar.',
+        }
+      }
+      if (res.multiTrainer) {
+        // El usuario tiene acceso a varios centros — la UI debe pedirle que
+        // elija uno y volver a llamar a `login(email, password, idTrainerElegido)`.
+        return {
+          ok: false,
+          multiTrainer: true,
+          trainers: res.trainers || [],
+          usuario: res.usuario,
+          message: res.message || 'Selecciona el centro al que quieres acceder.',
         }
       }
       if (res.ok && res.token) {

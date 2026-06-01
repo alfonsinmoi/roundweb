@@ -20,6 +20,7 @@ import { Btn, DatosTabla } from './UI'
 import { useToast } from './Toast'
 import { managerProvisionModulo } from '../utils/configApi'
 import { ModalShell, Label, Input } from './WizardActivarCRM'
+import IBANInput from './IBANInput'
 
 const STORAGE_KEY = (mgr) => `round.wizard_activar_cuotas:${mgr}`
 
@@ -325,9 +326,8 @@ function FormIban({ data, set }) {
       </p>
       <div style={{ marginBottom: 12 }}>
         <Label>IBAN</Label>
-        <Input value={data.iban_principal} name="iban"
-               onChange={e => set({ iban_principal: e.target.value.toUpperCase() })}
-               placeholder="ES00 0000 0000 0000 0000 0000" />
+        <IBANInput value={data.iban_principal}
+                   onChange={(val) => set({ iban_principal: val })} />
       </div>
       <div>
         <Label>Nombre del banco (opcional)</Label>

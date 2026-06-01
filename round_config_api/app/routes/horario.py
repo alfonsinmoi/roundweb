@@ -54,6 +54,7 @@ TRABAJADOR_CATEGORIAS = ('Trabajador', 'Trabajadores', 'Empleado', 'Empleados')
 
 @bp.route('/activar', methods=['POST'])
 @auth_required
+@require_permission('control_horario.modulo.activar')
 def activar_modulo():
     """Activa el módulo control horario para el manager actual.
 
@@ -87,6 +88,7 @@ def activar_modulo():
 
 @bp.route('/desactivar', methods=['POST'])
 @auth_required
+@require_permission('control_horario.modulo.desactivar')
 def desactivar_modulo():
     """Desactiva el módulo. NO borra datos (los fichajes históricos se
     conservan 4 años por normativa). Sólo deshabilita nuevos fichajes."""
@@ -245,6 +247,7 @@ def _opt_str(v):
 @bp.route('/trainer-empresa/<id_trainer>', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.config.editar_trainer_empresa')
 def upsert_trainer_empresa(id_trainer):
     d = request.get_json() or {}
     razon_social = _opt_str(d.get('razon_social'))
@@ -387,6 +390,7 @@ def listar_pausa_motivos():
 @bp.route('/pausa-motivos', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.config.editar_pausa_motivos')
 def crear_pausa_motivo():
     d = request.get_json() or {}
     codigo = _opt_str(d.get('codigo'))
@@ -420,6 +424,7 @@ def crear_pausa_motivo():
 @bp.route('/pausa-motivos/<int:motivo_id>', methods=['PATCH'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.config.editar_pausa_motivos')
 def actualizar_pausa_motivo(motivo_id):
     d = request.get_json() or {}
     sets, params = [], []
@@ -454,6 +459,7 @@ def actualizar_pausa_motivo(motivo_id):
 @bp.route('/pausa-motivos/<int:motivo_id>', methods=['DELETE'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.config.editar_pausa_motivos')
 def borrar_pausa_motivo(motivo_id):
     """Solo permite eliminar motivos del manager. Los globales no se
     pueden borrar — para "ocultarlos" se crea un override con
@@ -603,6 +609,7 @@ def trabajadores_pendientes():
 @bp.route('/trabajadores', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.crear')
 def alta_trabajador():
     """Alta laboral del trabajador (transición pendiente_alta → activo).
 
@@ -765,6 +772,7 @@ def _trabajador_snapshot(row):
 @bp.route('/trabajadores/<int:trab_id>', methods=['PATCH'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.editar')
 def actualizar_trabajador(trab_id):
     d = request.get_json() or {}
     sets, params = [], []
@@ -847,6 +855,7 @@ def get_horario_trabajador(trab_id):
 @bp.route('/trabajadores/<int:trab_id>/horario', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.editar_horario')
 def put_horario_trabajador(trab_id):
     """Reemplaza el horario completo del trabajador en una transacción.
 
@@ -1001,6 +1010,7 @@ def historial_trabajador(trab_id):
 @bp.route('/trabajadores/<int:trab_id>/autorizar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.autorizar')
 def autorizar_trabajador(trab_id):
     """Autoriza una solicitud pendiente del trabajador. Acepta sobrescritura
     de datos (NIF, jornada, trainer) por si el admin quiere ajustar lo
@@ -1061,6 +1071,7 @@ def autorizar_trabajador(trab_id):
 @bp.route('/trabajadores/<int:trab_id>/rechazar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.rechazar')
 def rechazar_trabajador(trab_id):
     """Rechaza una solicitud pendiente. El trabajador puede volver a solicitar."""
     d = request.get_json() or {}
@@ -1092,6 +1103,7 @@ def _autor_admin_id_horario():
 @bp.route('/trabajadores/<int:trab_id>/baja', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.baja')
 def baja_trabajador(trab_id):
     d = request.get_json() or {}
     fecha = _opt_str(d.get('fecha_baja_laboral'))
@@ -1124,6 +1136,7 @@ def baja_trabajador(trab_id):
 @bp.route('/trabajadores/<int:trab_id>/reactivar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.reactivar')
 def reactivar_trabajador(trab_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -1144,6 +1157,7 @@ def reactivar_trabajador(trab_id):
 @bp.route('/trabajadores/<int:trab_id>/trainers', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.editar_trainers')
 def vincular_trainer(trab_id):
     """Añade un trainer adicional al trabajador (puede fichar también allí)."""
     d = request.get_json() or {}
@@ -1181,6 +1195,7 @@ def vincular_trainer(trab_id):
 @bp.route('/trabajadores/<int:trab_id>/trainers/<int:vinculo_id>', methods=['DELETE'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.trabajadores.editar_trainers')
 def desvincular_trainer(trab_id, vinculo_id):
     """Cierra el vínculo (fecha_fin = hoy). NO borra para preservar histórico
     de fichajes en ese trainer.

@@ -11,6 +11,27 @@
 
 ---
 
+## 0. QR de vinculación cliente ↔ mynoofit ✅ RESUELTO (junio 2026)
+
+**Estado:** ACTIVADO. Spec en `docs/QR_TRAINER_CLIENTE.md`.
+
+**Formatos confirmados por NoofitPro:**
+- **QR de la ficha** (`QrFichaCliente`, `ClientProfile.jsx`): payload sin
+  cifrar. `TRAINERLINK;<idCliente>` si `cedeDatos=true` (defecto), o
+  `cedeDatosFalse:<idCliente>:<dni>:<idTrainer>` si `cedeDatos=false`.
+  Helper: `payloadQrVincular()` en `src/utils/qrCifrado.js`.
+- **QR del centro/trainer** (`QrCentroButton`): payload cifrado AES-256-CBC
+  con PBKDF2-HMAC-SHA1 (1000 iter., 48 bytes), salida base64.
+  Texto plano: `TRAINER;<idTrainer>;<managerId>;<nombreCompleto>`.
+  Helper: `cifrarQrTrainer()` en `src/utils/qrCifrado.js` (Web Crypto API).
+
+**TODO menor:**
+- El flag `Trainer.cedeDatos` no lo expone NoofitPro hoy: la web asume
+  `cedeDatos=true` (caso defecto). Cuando llegue por API, pasarlo a
+  `payloadQrVincular({cedeDatos})` en `QrFichaCliente`.
+
+---
+
 ## 1. Categorías de cliente (Gympass / Trabajador / Invitado / …)
 
 **Estado actual:** Round las mantiene en sus tablas `categoria` (catálogo

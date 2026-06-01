@@ -45,7 +45,9 @@ class RoundModificacionRecibo(models.Model):
         string='Importe',
         required=True,
         currency_field='currency_id',
-        help="Importe positivo. El tipo determina si suma o resta del recibo.",
+        help="Importe con SIGNO: positivo suma al recibo, negativo lo reduce. "
+             "Para 'precio_alternativo' se interpreta el valor absoluto como "
+             "el nuevo precio que sustituye al base.",
     )
 
     razon = fields.Char(string='Razón / Motivo')

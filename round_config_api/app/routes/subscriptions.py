@@ -41,11 +41,25 @@ def _company_id():
 @auth_required
 @require_feature('cuotas')
 def cuotas_catalogo():
-    """Lista cuotas del catálogo Odoo (para dropdowns)."""
+    """Lista cuotas del catálogo Odoo (para dropdowns).
+
+    Filtra por:
+      - company del manager (CONFIG_ODOO_COMPANY) → evita leak cross-company.
+      - trainer: si llega `?trainer=<id>`, devuelve las cuotas de ESE trainer
+        + las legacy (id_trainer NULL/'') como fallback retrocompat.
+        Si no llega, devuelve solo las legacy (compat con llamadas antiguas).
+    """
     try:
+        trainer = (request.args.get('trainer') or '').strip()
+        domain = [['company_id', '=', _company_id()]]
+        if trainer:
+            # Cuotas de ese trainer O legacy sin trainer asignado
+            domain += ['|',
+                       ['id_trainer', '=', trainer],
+                       ['id_trainer', 'in', [False, '']]]
         o = _odoo()
-        rows = o._call('round.cuota.catalogo', 'search_read', [],
-            ['id', 'codigo', 'descripcion',
+        rows = o._call('round.cuota.catalogo', 'search_read', domain,
+            ['id', 'codigo', 'descripcion', 'id_trainer',
              'precio_mensual', 'precio_trimestral',
              'precio_semestral', 'precio_anual', 'matricula'])
         for r in rows:
@@ -66,7 +80,8 @@ def cuotas_catalogo():
 def descuentos_catalogo():
     try:
         o = _odoo()
-        rows = o._call('round.descuento.catalogo', 'search_read', [],
+        rows = o._call('round.descuento.catalogo', 'search_read',
+            [['company_id', '=', _company_id()]],
             ['id', 'codigo', 'descripcion', 'tipo', 'valor'])
         for r in rows:
             v = r.get('valor')
@@ -101,6 +116,11 @@ def _serialize_sub(s):
 @require_feature('cuotas')
 def list_by_cliente(id_noofit):
     """Lista subscriptions del cliente (activas + canceladas) ordenadas."""
+    # Aislamiento por trainer: si el cliente no pertenece al trainer
+    # impersonado, devolver vacío.
+    from ..trainer_scope import cliente_pertenece_a_trainer
+    if not cliente_pertenece_a_trainer(id_noofit):
+        return jsonify({'ok': True, 'subscriptions': [], 'partner_id': None})
     try:
         o = _odoo()
         company_id = _company_id()
@@ -168,6 +188,7 @@ def create_subscription():
                 import json as _json
                 from ..db import get_conn
                 from ..odoo_alta import OdooAlta
+                from .. import noofit_client as nc
                 with get_conn() as conn, conn.cursor() as cur:
                     cur.execute("""
                         SELECT raw_data FROM cliente_cache
@@ -182,11 +203,38 @@ def create_subscription():
                         try: cli = _json.loads(cli)
                         except Exception: cli = None
                 if not cli:
+                    # Fallback: cache miss (cliente recién creado en NoofitPro
+                    # antes de que el sync background lo recoja). Disparamos un
+                    # sync síncrono que itera TODAS las credenciales de trainer
+                    # del manager (no solo las del .env roundgestion). Esto
+                    # cubre el caso de clientes que pertenecen a un trainer
+                    # distinto del manager por defecto.
+                    log.info(f'subscription create: cliente {cliente_idnoofit} no en cache, '
+                             f'forzando sync síncrono del manager {g.id_manager}')
+                    try:
+                        from .trainer_data import _sync_clientes_manager
+                        _sync_clientes_manager(str(g.id_manager))
+                        # Reintentar lectura tras sync
+                        with get_conn() as conn3, conn3.cursor() as cur3:
+                            cur3.execute("""
+                                SELECT raw_data FROM cliente_cache
+                                 WHERE id_manager = %s AND id = %s
+                                 LIMIT 1
+                            """, (str(g.id_manager), int(cliente_idnoofit)))
+                            row3 = cur3.fetchone()
+                        if row3:
+                            cli = row3['raw_data']
+                            if isinstance(cli, str):
+                                try: cli = _json.loads(cli)
+                                except Exception: cli = None
+                    except Exception as live_e:
+                        log.warning(f'fallback sync_clientes_manager idnoofit={cliente_idnoofit}: {live_e}')
+                if not cli:
                     return jsonify({
                         'ok': False,
                         'error': 'cliente_no_encontrado_en_noofit',
-                        'detail': ('El cliente no está en la cache local de NoofitPro. '
-                                   'Refresca el listado de clientes y vuelve a intentar.'),
+                        'detail': ('El cliente no aparece ni en la cache local ni en NoofitPro. '
+                                   'Comprueba que sigue dado de alta o refresca el listado.'),
                     }), 400
                 oa = OdooAlta()
                 oa._connect()

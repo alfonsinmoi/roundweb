@@ -117,6 +117,7 @@ def get_contab_config():
 @bp.route('/config/<id_trainer>', methods=['PUT'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('configuracion.contabilidad_tab.editar')
 def put_contab_config(id_trainer):
     err = _manager_only()
     if err: return err
@@ -169,6 +170,7 @@ def get_listados_visibilidad():
 @bp.route('/config/listados/<id_trainer>/<listado_id>', methods=['PUT'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('configuracion.contabilidad_tab.editar')
 def put_listado_visibilidad(id_trainer, listado_id):
     err = _manager_only()
     if err: return err
@@ -229,6 +231,7 @@ def list_categorias():
 @bp.route('/categorias', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.editar')
 def create_categoria():
     err = _manager_only()
     if err: return err
@@ -273,6 +276,7 @@ def create_categoria():
 @bp.route('/categorias/<int:cat_id>', methods=['PATCH'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.editar')
 def update_categoria(cat_id):
     err = _manager_only()
     if err: return err
@@ -305,6 +309,7 @@ def update_categoria(cat_id):
 @bp.route('/categorias/<int:cat_id>', methods=['DELETE'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.editar')
 def delete_categoria(cat_id):
     err = _manager_only()
     if err: return err
@@ -334,6 +339,7 @@ def delete_categoria(cat_id):
 @bp.route('/categorias/<int:cat_id>/visibilidad/<id_trainer>', methods=['PUT'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.visibilidad')
 def put_categoria_visibilidad(cat_id, id_trainer):
     err = _manager_only()
     if err: return err
@@ -412,6 +418,7 @@ def list_documentos():
 @bp.route('/documentos', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.subir')
 def upload_documento():
     """Upload multipart/form-data: campo 'file' + form fields opcionales:
     categoria_id, id_trainer, proveedor, num_factura, fecha_documento,
@@ -586,6 +593,7 @@ def get_documento_file(doc_id):
 @bp.route('/documentos/<int:doc_id>', methods=['PATCH'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.subir')
 def patch_documento(doc_id):
     try:
         d = request.get_json() or {}
@@ -617,6 +625,7 @@ def patch_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/escanear', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.subir')
 def escanear_documento(doc_id):
     """Llama al LLM para extraer campos del archivo y rellena el doc.
 
@@ -926,6 +935,7 @@ def validar_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/a-borrador', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.a_borrador')
 def desvalidar_documento(doc_id):
     """Revierte un documento validado a estado 'borrador'.
 
@@ -1397,6 +1407,7 @@ def asiento_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/rechazar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.rechazar')
 def rechazar_documento(doc_id):
     try:
         d = request.get_json() or {}
@@ -1613,6 +1624,7 @@ def listado_faltantes():
 @bp.route('/listados/faltantes/ignorar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.faltantes.archivar')
 def faltante_ignorar():
     """Archiva un faltante para que no aparezca en el listado.
     Body: { categoria_id, periodo_faltante, motivo? }
@@ -1646,6 +1658,7 @@ def faltante_ignorar():
 @bp.route('/listados/faltantes/ignorar/<int:cat_id>/<periodo>', methods=['DELETE'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.faltantes.designorar')
 def faltante_restaurar(cat_id, periodo):
     """Quita el archivado: el faltante volverá a aparecer."""
     err = _manager_only()
@@ -2008,6 +2021,7 @@ def listado_resultados():
 @bp.route('/banco/importar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.banco.importar_extracto')
 def banco_importar():
     """Sube un extracto bancario (CSV / XLSX) y crea filas en banco_movimiento.
 
@@ -2164,6 +2178,7 @@ def banco_movimientos():
 @bp.route('/banco/movimientos/<int:mov_id>', methods=['PATCH'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.banco.vincular_manual')
 def banco_movimiento_link(mov_id):
     """Vincula un movimiento a una factura, lo desvincula o cambia estado.
 
@@ -2203,6 +2218,7 @@ def banco_movimiento_link(mov_id):
 @bp.route('/banco/matching', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.banco.cuadrar_automatico')
 def banco_matching():
     """Ejecuta matching 1:1 entre movimientos sin cuadrar y facturas validadas.
 

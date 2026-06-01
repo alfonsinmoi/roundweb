@@ -199,9 +199,23 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
   const [apellidos, setApellidos] = useState(usuario?.apellidos || '')
   const [telefono, setTelefono] = useState(usuario?.telefono || '')
   const [perfilId, setPerfilId] = useState(usuario?.perfil_id || '')
-  const [idTrainer, setIdTrainer] = useState(usuario?.id_trainer || identity?.managerId || '')
+  // Multi-trainer: array de strings con los ids NoofitPro de los centros a
+  // los que este usuario tiene acceso. Si la fila viene con `id_trainers`
+  // (backend nuevo) lo usamos; si solo viene el singular `id_trainer` (retro),
+  // arrancamos con ese único. Si está vacío → usuario "corporativo" sin
+  // centro asignado (puede ver datos cross-trainer si su perfil lo permite).
+  const initialTrainers = Array.isArray(usuario?.id_trainers) && usuario.id_trainers.length > 0
+    ? usuario.id_trainers.map(String)
+    : (usuario?.id_trainer ? [String(usuario.id_trainer)] : [])
+  const [idTrainers, setIdTrainers] = useState(initialTrainers)
   const [activo, setActivo] = useState(usuario?.activo ?? true)
   const [saving, setSaving] = useState(false)
+
+  const toggleTrainer = (id) => {
+    const s = String(id)
+    setIdTrainers(prev =>
+      prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])
+  }
 
   const handleSave = async () => {
     if (!email.trim() || !email.includes('@')) { toast.error('Email no válido'); return }
@@ -213,7 +227,8 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
       const payload = {
         email: email.trim().toLowerCase(),
         nombre: nombre.trim(), apellidos: apellidos.trim(), telefono: telefono.trim(),
-        perfil_id: Number(perfilId), id_trainer: idTrainer || null,
+        perfil_id: Number(perfilId),
+        id_trainers: idTrainers,
       }
       let resp = null
       if (isEdit) await usuarioWebUpdate(identity, usuario.id, { ...payload, activo })
@@ -262,23 +277,42 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
             ))}
           </select>
         </Field>
-        <Field label="Centro">
-          <select value={idTrainer || ''}
-                  onChange={e => setIdTrainer(e.target.value)}
-                  className="form-input" style={fieldStyle()}>
-            <option value="">— Corporativo (sin centro asignado) —</option>
-            {centros.map(c => {
-              const nombre = `${c.nombre ?? c.name ?? ''} ${c.apellidos ?? c.surname ?? ''}`.trim()
-                          || c.email
-                          || `Centro ${c.id}`
-              return <option key={c.id} value={c.id}>{nombre}</option>
-            })}
-          </select>
-          {centros.length === 0 && (
-            <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-              No se han podido cargar los centros (igual no hay sesión NoofitPro activa).
-            </p>
-          )}
+        <Field label={`Centros (${idTrainers.length} seleccionado${idTrainers.length === 1 ? '' : 's'})`}>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '0 0 8px 0' }}>
+            Marca todos los centros a los que tendrá acceso. Si seleccionas más
+            de uno, al iniciar sesión se le pedirá elegir cuál usar.
+            {' '}Sin centros seleccionados → usuario corporativo (ve datos cross-trainer si su perfil lo permite).
+          </p>
+          <div style={{
+            border: '1px solid var(--line)', borderRadius: 10,
+            background: 'var(--bg-2)', maxHeight: 200, overflowY: 'auto',
+          }}>
+            {centros.length === 0 ? (
+              <p style={{ padding: 12, fontSize: 12, color: 'var(--text-3)', margin: 0 }}>
+                No se han podido cargar los centros (sin sesión NoofitPro activa).
+              </p>
+            ) : (
+              centros.map(c => {
+                const id = String(c.id)
+                const checked = idTrainers.includes(id)
+                const nombre = `${c.nombre ?? c.name ?? ''} ${c.apellidos ?? c.surname ?? ''}`.trim()
+                            || c.email || `Centro ${c.id}`
+                return (
+                  <label key={c.id}
+                         style={{
+                           display: 'flex', alignItems: 'center', gap: 10,
+                           padding: '8px 12px', cursor: 'pointer', fontSize: 13,
+                           borderBottom: '1px solid var(--line)',
+                         }}>
+                    <input type="checkbox" checked={checked}
+                           onChange={() => toggleTrainer(c.id)} />
+                    <span style={{ flex: 1 }}>{nombre}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>id {c.id}</span>
+                  </label>
+                )
+              })
+            )}
+          </div>
         </Field>
 
         {isEdit && (

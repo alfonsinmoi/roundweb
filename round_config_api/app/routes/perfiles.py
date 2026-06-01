@@ -7,7 +7,7 @@ desde `src/config/permissions.js`.
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn, seed_perfiles_for_manager
 from ..audit_log import log_action, actor_from_request, diff_dict
 
@@ -36,6 +36,7 @@ def list_perfiles():
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_permission('configuracion.perfiles.editar')
 def create_perfil():
     d = request.get_json() or {}
     nombre = (d.get('nombre') or '').strip()
@@ -67,6 +68,7 @@ def create_perfil():
 
 @bp.route('/<int:pid>', methods=['PATCH', 'PUT'])
 @auth_required
+@require_permission('configuracion.perfiles.editar')
 def update_perfil(pid):
     d = request.get_json() or {}
     sets, vals = [], []
@@ -109,6 +111,7 @@ def update_perfil(pid):
 
 @bp.route('/<int:pid>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.perfiles.editar')
 def delete_perfil(pid):
     with get_conn() as conn, conn.cursor() as cur:
         # Comprobar usuarios

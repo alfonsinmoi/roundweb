@@ -10,6 +10,7 @@ import {
   ausenciasList, ausenciaAprobar, ausenciaRechazar,
   ausenciaCrearAdmin, trabajadoresList,
 } from '../../utils/horarioApi'
+import { useCan } from '../../hooks/useCan'
 
 
 const TIPOS_LIST = [
@@ -29,6 +30,9 @@ const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
 
 export default function AusenciasTab({ identity }) {
   const toast = useToast()
+  const canAprobar = useCan('control_horario.ausencias.aprobar')
+  const canRechazar = useCan('control_horario.ausencias.rechazar')
+  const canInsertar = useCan('control_horario.ausencias.insertar')
 
   const currentYear = new Date().getFullYear()
   const [filters, setFilters] = useState({
@@ -210,9 +214,11 @@ export default function AusenciasTab({ identity }) {
           <Btn variant="ghost" size="sm" onClick={reload}>
             <RefreshCcw size={14} /> Recargar
           </Btn>
-          <Btn size="sm" onClick={() => setShowNueva(true)}>
-            <Plus size={14} /> Nueva ausencia
-          </Btn>
+          {canInsertar && (
+            <Btn size="sm" onClick={() => setShowNueva(true)}>
+              <Plus size={14} /> Nueva ausencia
+            </Btn>
+          )}
         </div>
       </Card>
 
@@ -268,12 +274,16 @@ export default function AusenciasTab({ identity }) {
               )},
               { key: 'acciones', label: '', render: (_, r) => r.estado === 'pendiente' ? (
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                  <Btn size="sm" variant="ghost" onClick={() => handleRechazar(r)}>
-                    <X size={13} /> Rechazar
-                  </Btn>
-                  <Btn size="sm" onClick={() => handleAprobar(r)}>
-                    <Check size={13} /> Aprobar
-                  </Btn>
+                  {canRechazar && (
+                    <Btn size="sm" variant="ghost" onClick={() => handleRechazar(r)}>
+                      <X size={13} /> Rechazar
+                    </Btn>
+                  )}
+                  {canAprobar && (
+                    <Btn size="sm" onClick={() => handleAprobar(r)}>
+                      <Check size={13} /> Aprobar
+                    </Btn>
+                  )}
                 </div>
               ) : (
                 <span style={{ fontSize: 11, color: 'var(--text-3)' }}>

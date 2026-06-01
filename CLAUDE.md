@@ -162,13 +162,23 @@ ssh round-vps "systemctl stop odoo17 && \
 | `round_reminders.timer` | cada 30 min | recordatorios prueba 24h antes |
 | `round_cliente_log.timer` | diario 03:30 | log cambios estado cliente |
 | `round_social_publish.timer` | cada 5 min | publica posts Meta programados |
+| `round_entradas_puntuales.timer` | cada 5 min | detecta reservas confirmadas → entradas puntuales |
 
 ## Tablas BD principales (round_config)
 
 - `manager_config` — catálogo de managers + sus credenciales NoofitPro
   (multi-tenant: los crons iteran sobre las filas activas)
 - `cuota`, `descuento`, `modificacion` — catálogos del manager
+  (cuota: cols `tipo_cuota` ['recurrente'|'entrada_puntual'] + `precio_entrada`)
 - `cuota_cliente`, `descuento_asignacion`, `modificacion_cobro` — asignaciones
+  (descuento_asignacion: cols `trabajador_id` + `relacion` para tipo
+  `familiar_trabajador`)
+- `entrada_puntual_alta` — registro local de clientes en cuotas de entrada
+  puntual (modo `por_entrada`|`por_mes`, forma_pago, precio_entrada). Fuente de
+  verdad para la detección (desacopla de Odoo round.subscription).
+- `entrada_puntual_evento` — cada reserva confirmada detectada = una entrada a
+  cobrar (por_entrada, recepción) o facturar al cierre de mes (por_mes).
+  Estados: pendiente|cobrado|facturado|anulado. UNIQUE cliente+sala+fecha.
 - `centro_contacto` — un centro por trainer (slug, email, teléfono)
 - `lead_asignacion` — leads CRM (con stage_history, score, qualification, lost_reason)
 - `slot_reserva` — reservas prueba gratuita con token + expiry
@@ -218,6 +228,21 @@ ssh round-vps "systemctl stop odoo17 && \
   - Trainer ROUND AÑORETA: **17674**
   - id_manager interno (Round Config): **17677** (no es el de NoofitPro)
 
+## Política de scope (mayo 2026)
+
+**Las reglas se guardan manager-wide POR DEFECTO**. Solo si la petición
+explicita `scope='trainer'` (o pasa `id_trainer` en el body) se restringe
+a un trainer concreto. El simple hecho de estar impersonando un trainer
+al crear NO debe limitar la regla a ese trainer.
+
+Aplica a catálogos: `cuota`, `descuento`, `modificacion` (esta es
+per-cliente, así que sigue con trainer-scope obligatorio), `categoria`
+(manager-wide por diseño), `convenio`, `pausa_motivo`.
+
+Excepciones explícitamente per-trainer: `centro_contacto`, `pasarela_credenciales`,
+`email_proveedor` (cada uno con su sufijo `trainer-id` cuando aplica),
+`trainer_empresa`.
+
 ## Endpoints públicos del backend (noofit.wiemspro.com)
 
 ```
@@ -234,7 +259,17 @@ GET    /api/crm/funnel          → analítica embudo
 GET    /api/clientes/estado-log
 POST   /api/clientes/<id>/sync-odoo
 POST   /api/cuotas/recibo/<id>/enviar  → enviar factura PDF
-POST   /api/cuotas/alta-cliente
+POST   /api/cuotas/alta-cliente   (alta.importe_cero_justificado + alta.justificacion → recibo 0€ justificado)
+
+# Entradas puntuales (drop-in / pago por visita)
+GET/POST/DELETE /api/entradas-puntuales/altas      → registro local de altas
+GET    /api/entradas-puntuales/pendientes          → banner cobro recepción (por_entrada)
+GET    /api/entradas-puntuales/eventos             → listado (filtros estado|modo|mes|cliente)
+POST   /api/entradas-puntuales/eventos/<id>/cobrar → cobro recepción (genera recibo suelto)
+POST   /api/entradas-puntuales/eventos/<id>/anular
+POST   /api/entradas-puntuales/emitir-mes          → factura agregada mes (por_mes)
+POST   /api/entradas-puntuales/detectar            → dispara detección a demanda
+
 GET/PUT /api/config/centros|email|email-templates|pasarelas
 GET/PUT /api/social/cuentas|posts
 
@@ -341,6 +376,121 @@ está preparado para la reforma del RD digital en trámite.
 - Spec mynoofit: `docs/SPEC_API_MYNOOFIT_FICHAJE.md` (para equipo MAUI).
 - Detalle completo: `docs/CONTROL_HORARIO.md`.
 
+## Subsistema POS / TPV (Fases 1-10 + 3 sprints fix, mayo 2026)
+
+Punto de venta táctil del centro: vender productos/servicios, descuentos,
+cuadre diario, dashboard, facturas proveedor. Sincroniza con Odoo
+(account.move + account.payment + reconcile) y respeta SII.
+
+### Activación
+- Requiere `manager_config.odoo_cuotas_enabled=TRUE` para metodo
+  `recibo_mensual` y para que cualquier venta cree move en Odoo. Sin Odoo
+  se pueden hacer ventas locales que quedan en `sync_status='skipped'`.
+- Catálogo (productos/categorías/descuentos) funciona sin Odoo.
+
+### Tablas BD (round_config)
+- `pos_categoria` — plantilla global (id_manager NULL) + per-manager.
+- `pos_producto` — per-trainer (cada centro su catálogo). Cuenta 700/705
+  por defecto. Inventariables tienen `stock_actual` auto-actualizado.
+- `pos_descuento` — porcentaje/importe sobre producto/general per-trainer.
+- `pos_stock_movimiento` — append-only. Tipos `reposicion|ajuste|baja|
+  venta|anulacion|merma` con `id_trainer` propagado.
+- `pos_venta` — cabecera con `numero='T-AAAA-NNNNN'` UNIQUE (manager,
+  trainer, numero), `sync_status`, `odoo_move_id`, `odoo_payment_id`,
+  `odoo_refund_move_id`, `recibo_id` (para applied_to_recibo).
+- `pos_venta_linea` — snapshot inmutable (cuenta_contable, tipo).
+- `pos_cierre_caja` — 1 cierre/trainer/día (UNIQUE), totales por método
+  + diferencia entre contado vs esperado.
+- `pos_factura_proveedor` — compras: NIF/CIF/NIE validado mod-23, in_invoice
+  o in_refund (total<0), PDF attachable, DRAFT en Odoo (regla carajfam).
+
+### Endpoints `/api/pos/` (35 endpoints, todos con `@require_permission`)
+| Ruta | Permiso fino |
+|---|---|
+| GET/POST/PATCH/DELETE `/categorias[/<id>]` | `configuracion.pos.categorias_editar` (write) / `productos_ver` (read) |
+| GET/POST/PATCH `/productos[/<id>]` + `/archivar` + `/restaurar` | `configuracion.pos.productos_*` |
+| POST GET `/productos/<id>/stock/[ajuste|historial]` | `configuracion.pos.stock_ajuste` / `productos_ver` |
+| POST/DELETE `/upload-media` (PDF/imagen/video) | `configuracion.pos.productos_editar` |
+| GET/POST/PATCH/DELETE `/descuentos[/<id>]` | `configuracion.pos.descuentos_editar` (write) |
+| POST `/ventas` (cobrar) | `tpv.ventas.cobrar` |
+| GET `/ventas[/<id>]` | `tpv.ventas.ver` |
+| POST `/ventas/<id>/anular` | `tpv.ventas.anular` |
+| POST `/ventas/<id>/sync-odoo` + `/force-reset-sync` | `tpv.ventas.sync_odoo` |
+| GET `/dashboard` | `tpv.dashboard.ver` |
+| GET/POST `/caja/[resumen|cerrar|cierres|cierre/<id>]` | `tpv.caja.{ver,cerrar}` |
+| GET/POST/PATCH `/proveedores[/<id>]` + `/anular` + `/sync` | `tpv.proveedores.{ver,crear,anular}` |
+
+### Sincronización Odoo (`app/odoo_pos_sync.py`, `app/odoo_proveedores_sync.py`)
+Reglas operativas:
+- **Idempotency por `ref=`**: venta → `T-AAAA-NNNNN`; refund venta →
+  `REV T-AAAA-NNNNN`; refund applied_to_recibo → `REV-APLIC T-...`;
+  draft mensual → `TPV-AAAA-MM-<partner_id>`; factura proveedor →
+  `PROV-<id>-<numero_factura[:20]>`; rectificativa proveedor →
+  `REV-PROV-<id>`. Cualquier search-before-create filtra `state!='cancel'`.
+- **Lock optimista BD** con `sync_status='syncing'|'reverting'` + TTL 5min
+  (Audit #7, Sprint 1 #3) — un worker muerto libera el lock automático.
+- **Validación post-acción**: tras `action_post`+reconcile, releemos
+  `state='posted'` y `amount_residual=0`; si no, `sync_status='error'`
+  con detalle (NO 'synced' silencioso). Audit #5.
+- **price_include=True tax para ventas TPV** (auto-clonado del PYMES sin
+  price_include) → descuadres 0.01€ resueltos. `purchase` tax SIN
+  price_include para facturas proveedor.
+- **Drafts only para proveedores**: `in_invoice`/`in_refund` quedan en
+  state='draft' esperando validación humana del admin (regla carajfam).
+- **Cuentas PGC**: 600/602/607/621-629 (proveedores), 700/705 (ventas),
+  708 (descuentos sobre ventas), 4xx (IVA), 5xx (caja/banco).
+- **Partner**: ventas TPV usan `id_noofit` (cliente NoofitPro) o
+  "Consumidor final TPV" anónimo per-company; proveedores usan `vat`
+  cross-company con `supplier_rank=1`.
+- **Anulación**: ventas synced → `out_refund` con `reversed_entry_id` +
+  payment outbound + reconcile (Sprint 1 #3); ventas
+  applied_to_recibo → eliminar líneas del draft mensual, o si ya posteado
+  fallback `_refund_aplicacion_posteada` (Sprint 1 #2); facturas
+  proveedor → rectificativa `in_refund` con `reversed_entry_id` DRAFT
+  para SII (Sprint 1 #1).
+
+### Frontend
+- `/tpv` — terminal de venta (grid productos + carrito + cobrar +
+  cuadre + historial con anular)
+- `/tpv/dashboard` — KPIs, gráficas, top productos/clientes
+- `/tpv/proveedores` — listado + alta factura proveedor + PDF upload
+- Configuración → Terminal de Caja — catálogo productos / categorías /
+  descuentos (3 sub-tabs)
+- Ficha cliente → pestaña "Compras TPV" — historial de compras del cliente
+- Sidebar TPV es un grupo con children (Vender / Dashboard / Proveedores)
+
+### Hallazgos resueltos por Sprint
+- **Sprint 1 (contable/SII)**: lock + residual validation en revert venta;
+  payment+reconcile en refund applied_to_recibo posteado; rectificativa
+  in_refund con reversed_entry_id en anular factura proveedor (vs
+  button_cancel anterior que rompía SII).
+- **Sprint 2 (gates frontend)**: `useCan` en 4 páginas (TerminalCajaTab,
+  DashboardTPV, TabComprasTPV, HistorialModal); UI anular venta TPV;
+  `centroSel` se hidrata si `identity` llega tarde; `PagoModal` ya no
+  cierra silencioso ante validación fallida.
+- **Sprint 3 (polish)**: IVA descuento mixto (split proporcional por
+  tramo IVA del carrito); descuentos fantasma se purgan al vaciar
+  carrito o quitar el producto vinculado; `_attach_pdf` idempotente
+  (search ir.attachment); `validarNifCifNie` frontend espejo del backend.
+
+### Auditorías 1-10 (Sprint 0, ya resueltas)
+1. Anular `applied_to_recibo` removía líneas del draft (Fase 6.5).
+2. Path traversal `X-Round-Manager-Id` → validación regex `\d{1,16}`
+   en `auth.py` + realpath check en upload.
+3. Descuento type override → no admite producto_id si tipo=descuento.
+4. `/tpv` ungated + recibo_mensual sin Odoo → backend valida
+   `odoo_cuotas_enabled`, PagoModal deshabilita el botón.
+5. `sync_status='synced'` aunque action_post/reconcile fallen → ahora
+   marca 'error' con detalle.
+6. Orphan payment (move sin payment) → flujo cae a creación normal y
+   reusa move existente.
+7. Lock `'syncing'` sin TTL → `sync_attempted_at < NOW()-5min` libera +
+   endpoint admin `force-reset-sync`.
+8/10. Cache negativo de tax/account permanente → NUNCA cachear None;
+   si copy() falla, propaga excepción.
+9. Race en `_siguiente_numero` → `pg_advisory_xact_lock` +
+   UNIQUE (manager,trainer,numero).
+
 ## Cosas que NO hay que hacer
 
 - ❌ Editar archivos directamente en el VPS sin pasar por git (perdería los
@@ -351,6 +501,22 @@ está preparado para la reforma del RD digital en trámite.
   tiene email con `_MAK` (es marker de sandbox y NoofitPro no lo deja editar).
 - ❌ Llamar a Meta Graph API sin tener el App Review aprobado y un Page
   Access Token de larga duración (60 días) configurado.
+
+## Drill de restore (semestral)
+
+Cada 6 meses (mínimo) ejecutar un drill de restore POS para verificar
+que el backup sigue siendo recoverable end-to-end:
+
+1. Elegir una `pos_venta` real reciente (e.g. ayer).
+2. Backup actual: `pg_dump round_config -t pos_venta -t pos_venta_linea -t pos_stock_movimiento --data-only > /tmp/pre_drill.sql`.
+3. Borrar la venta + sus líneas + sus movimientos (`DELETE FROM ... WHERE id=X`).
+4. Restaurar siguiendo **ESCENARIO 5** de `docs/RECOVERY.md`.
+5. Resync Odoo siguiendo **ESCENARIO 6**.
+6. Verificar coherencia: cuadrar `stock_actual` vs `Σ movimientos`,
+   `pos_venta.total` vs `account.move.amount_total`.
+7. Registrar fecha y resultado en una nota interna.
+
+Si algo falla → arreglar el procedimiento ANTES de la próxima desgracia.
 
 ## Cosas que sí hay que hacer
 

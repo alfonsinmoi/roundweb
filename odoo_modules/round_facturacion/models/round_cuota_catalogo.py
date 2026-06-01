@@ -8,6 +8,11 @@ class RoundCuotaCatalogo(models.Model):
     NoofitPro es la fuente de verdad. El MCP/webhook crea o actualiza una
     entrada aquí cuando aparece una cuota nueva en NoofitPro o cuando el
     primer cliente la usa.
+
+    Scope per-trainer (mayo 2026): cada cuota pertenece a UN trainer (centro)
+    del manager. Esto permite que Round Málaga Centro y Round Añoreta
+    tengan tarifas independientes. `id_trainer` NULL/'' = plantilla legacy
+    del manager (fallback retrocompat).
     """
     _name = 'round.cuota.catalogo'
     _description = 'Catálogo de cuotas (espejo NoofitPro)'
@@ -54,6 +59,17 @@ class RoundCuotaCatalogo(models.Model):
     )
     activo = fields.Boolean(default=True)
 
+    # ── Scope per-trainer ────────────────────────────────────────────────
+    id_trainer = fields.Char(
+        string='Trainer (id NoofitPro)',
+        index=True,
+        help=(
+            "Id NoofitPro del trainer (centro) al que pertenece esta cuota. "
+            "Si está vacío, la cuota se considera plantilla del manager y "
+            "se muestra a todos los trainers como fallback retrocompat."
+        ),
+    )
+
     # Relaciones
     subscription_ids = fields.One2many(
         'round.subscription',
@@ -66,9 +82,11 @@ class RoundCuotaCatalogo(models.Model):
     )
 
     _sql_constraints = [
-        ('codigo_company_unique',
-         'UNIQUE(codigo, company_id)',
-         'El código de cuota debe ser único por empresa.'),
+        # Antes era (codigo, company_id). Ahora incluye id_trainer porque
+        # cada centro puede tener su propia "I MYGYM" con distintos precios.
+        ('codigo_company_trainer_unique',
+         'UNIQUE(codigo, company_id, id_trainer)',
+         'El código de cuota debe ser único por empresa y trainer.'),
     ]
 
     @api.depends('subscription_ids', 'subscription_ids.estado')

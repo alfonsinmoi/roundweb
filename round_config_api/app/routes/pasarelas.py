@@ -10,7 +10,7 @@ Reglas:
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 
 bp = Blueprint('pasarelas', __name__)
@@ -65,6 +65,7 @@ def list_all():
 
 @bp.route('/<id_trainer>', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.pasarelas.editar')
 def upsert(id_trainer):
     """Crea o actualiza una credencial. Body:
       { proveedor: 'paycomet', api_token: '...', terminal: '...',
@@ -124,6 +125,7 @@ def upsert(id_trainer):
 
 @bp.route('/<id_trainer>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.pasarelas.editar')
 def delete(id_trainer):
     err = _manager_only()
     if err: return err

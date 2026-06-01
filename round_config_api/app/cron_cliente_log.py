@@ -56,14 +56,48 @@ def sincronizar_log(id_manager=None):
 
 
 def _sincronizar_one(id_manager):
-    """Sincroniza un manager concreto. Lógica original."""
+    """Sincroniza un manager concreto: itera manager parent + cada trainer
+    activo con credenciales en trainer_noofit_creds y deduplica por id_cliente
+    (un cliente puede aparecer en varios espacios).
+    """
+    id_manager = str(id_manager)
+    clientes_map = {}    # id → dict (último gana; manager parent + trainers)
+    # 1) Manager parent
     try:
-        clientes = nc.get_clientes() or []
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT noofit_email, noofit_password
+                             FROM manager_config
+                            WHERE id_manager=%s AND activo=TRUE""", (id_manager,))
+            m = cur.fetchone()
+        if m:
+            tok, mhdr = nc._login(m['noofit_email'], m['noofit_password'])
+            r = nc._request_as(tok, mhdr, 'GET', '/api/dispositivos/getClienteSimple')
+            r.raise_for_status()
+            for c in (((r.json() or {}).get('clientes')) or []):
+                if c.get('id') is not None:
+                    clientes_map[int(c['id'])] = c
     except Exception as e:
-        log.exception('sincronizar_log: get_clientes')
-        return {'ok': False, 'error': str(e)}
+        log.warning(f'manager {id_manager} parent: {e}')
+    # 2) Trainers del manager
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id_trainer, noofit_email, noofit_password
+                         FROM trainer_noofit_creds
+                        WHERE id_manager=%s AND activo=TRUE""", (id_manager,))
+        trainers = cur.fetchall()
+    for t in trainers:
+        try:
+            clis_t = nc.get_clientes_as_trainer(
+                t['noofit_email'], t['noofit_password']) or []
+            for c in clis_t:
+                if c.get('id') is not None:
+                    clientes_map[int(c['id'])] = c
+            log.info(f'  trainer {t["id_trainer"]}: {len(clis_t)} clientes')
+        except Exception as e:
+            log.warning(f'  trainer {t["id_trainer"]}: {e}')
 
-    log.info(f'sincronizar_log manager={id_manager} clientes_total={len(clientes)}')
+    clientes = list(clientes_map.values())
+    log.info(f'sincronizar_log manager={id_manager} clientes_total={len(clientes)} '
+             f'(unión manager + trainers)')
     inicial, cambios, sin_cambio = 0, 0, 0
 
     with get_conn() as conn, conn.cursor() as cur:

@@ -11,7 +11,7 @@ campo `noofit_alias` en categoria.
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn, seed_categorias_for_manager
 
 bp = Blueprint('categorias', __name__)
@@ -46,6 +46,7 @@ def list_categorias():
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_permission('configuracion.categorias_cliente.crear')
 def create_categoria():
     """Crea categoría. body = {nombre, color?, puede_reservar?, tiene_cuota?, activa?}"""
     try:
@@ -80,6 +81,7 @@ def create_categoria():
 
 @bp.route('/<int:cat_id>', methods=['PATCH', 'PUT'])
 @auth_required
+@require_permission('configuracion.categorias_cliente.editar')
 def update_categoria(cat_id):
     """Edita categoría. Acepta cualquier subset de campos."""
     try:
@@ -110,6 +112,7 @@ def update_categoria(cat_id):
 
 @bp.route('/<int:cat_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.categorias_cliente.borrar')
 def delete_categoria(cat_id):
     """Borrado. Si la categoría está en uso, se desactiva (activa=false) en lugar
     de borrar duro, para no romper asignaciones existentes. Pasar ?hard=1 para
@@ -221,6 +224,7 @@ def get_cliente_categoria(id_noofit):
 
 @bp.route('/clientes/<id_noofit>', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.categorias_cliente.asignar_a_cliente')
 def set_cliente_categoria(id_noofit):
     """body = {categoria_id: int|null}. Si null o vacío, borra la asignación."""
     try:
@@ -256,6 +260,7 @@ def set_cliente_categoria(id_noofit):
 
 @bp.route('/clientes/<id_noofit>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.categorias_cliente.quitar_de_cliente')
 def del_cliente_categoria(id_noofit):
     try:
         with get_conn() as conn, conn.cursor() as cur:

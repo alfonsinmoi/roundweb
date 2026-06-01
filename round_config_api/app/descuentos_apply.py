@@ -56,6 +56,90 @@ def get_familia_de_cliente(id_manager, idnoofit):
         return r['id'], (r.get('miembros') or [])
 
 
+def get_descuentos_varias_cuotas_activos(id_manager):
+    """Lista los descuentos tipo='varias_cuotas' activos del manager.
+
+    Estos descuentos se aplican AUTOMÁTICAMENTE durante la emisión cuando el
+    cliente cumple las condiciones (tiene tanto la cuota_requerida como una
+    de las cuotas_secundarias activas). NO requieren asignación manual al
+    cliente — basta con que el cliente tenga las cuotas configuradas.
+
+    Devuelve [{id, codigo, descripcion, cuota_requerida_codigo,
+               combo_secundarias: [{cuota_codigo, precio}, ...]}].
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, codigo, descripcion, cuota_requerida_codigo,
+                   combo_secundarias
+              FROM descuento
+             WHERE id_manager=%s AND tipo='varias_cuotas' AND active=TRUE
+        """, (str(id_manager),))
+        rows = cur.fetchall() or []
+        for r in rows:
+            cs = r.get('combo_secundarias')
+            if isinstance(cs, str):
+                try:
+                    import json as _j
+                    r['combo_secundarias'] = _j.loads(cs)
+                except Exception:
+                    r['combo_secundarias'] = []
+            elif cs is None:
+                r['combo_secundarias'] = []
+        return rows
+
+
+def aplicar_descuentos_varias_cuotas_auto(id_manager, idnoofit, cuota_codigo,
+                                          precio_actual, cuotas_activas_codigos,
+                                          descuentos_varias=None):
+    """Aplica AUTOMÁTICAMENTE descuentos tipo='varias_cuotas' al precio.
+
+    Reglas:
+      - El cliente tiene `cuota_requerida_codigo` en sus cuotas activas.
+      - La cuota actual (`cuota_codigo`) está en `combo_secundarias` con
+        un precio definido.
+      → Sustituye `precio_actual` por el precio del combo (no porcentual).
+
+    NO requiere que el cliente tenga el descuento asignado en
+    `descuento_asignacion` — es 100% automático. Permite que el manager
+    configure el descuento una vez y todos los clientes que cumplan
+    condiciones lo reciban sin intervención manual.
+
+    Args:
+        cuotas_activas_codigos: set/list de códigos de cuotas que el cliente
+            tiene activas (incluida la que se está cobrando ahora).
+
+    Returns:
+        (precio_final, info_aplicado: list[dict])
+    """
+    if descuentos_varias is None:
+        descuentos_varias = get_descuentos_varias_cuotas_activos(id_manager)
+    cuotas_activas = set(cuotas_activas_codigos or [])
+    info = []
+    precio = float(precio_actual or 0)
+
+    for d in descuentos_varias:
+        req = d.get('cuota_requerida_codigo')
+        if not req or req not in cuotas_activas:
+            continue
+        cs = d.get('combo_secundarias') or []
+        for s in cs:
+            if s.get('cuota_codigo') == cuota_codigo:
+                nuevo = round(float(s.get('precio') or 0), 2)
+                # Solo aplicar si baja el precio (el descuento no debe encarecer)
+                if nuevo < precio:
+                    info.append({
+                        'descuento_codigo': d['codigo'],
+                        'tipo': 'varias_cuotas',
+                        'precio_antes': precio,
+                        'precio_despues': nuevo,
+                        'auto': True,
+                    })
+                    precio = nuevo
+                break
+
+    return precio, info
+
+
 def get_descuentos_familiares_activos(id_manager):
     """Lista los descuentos tipo='familiares' activos del manager.
     Devuelve [{id, codigo, valor, unidad, cuota_aplicada_codigo, combo_secundarias}].
@@ -125,19 +209,45 @@ def calcular_precio_con_descuentos(id_manager, idnoofit, cuota_codigo,
                 nuevo = max(0.0, round(precio - v, 2))
                 aplica = True
         elif tipo == 'varias_cuotas':
-            req = d.get('cuota_requerida_codigo')
-            if req and req in cuotas_activas:
-                # Buscar la cuota actual en combo_secundarias
-                cs = d.get('combo_secundarias') or []
-                if isinstance(cs, str):
-                    import json as _j
-                    try: cs = _j.loads(cs)
-                    except Exception: cs = []
-                for s in cs:
-                    if s.get('cuota_codigo') == cuota_codigo:
-                        nuevo = round(float(s.get('precio') or 0), 2)
-                        aplica = True
-                        break
+            # Desde mayo 2026 los descuentos `varias_cuotas` son AUTOMÁTICOS:
+            # se aplican vía `aplicar_descuentos_varias_cuotas_auto` (a todos
+            # los clientes que cumplan condiciones, sin asignación previa).
+            # Aquí los ignoramos para evitar doble aplicación. Si el cliente
+            # tiene una asignación legacy, se ignora — el efecto es el mismo.
+            continue
+        elif tipo == 'familiar_trabajador':
+            # Descuento manual a familiares de un trabajador. Multi-cuota: en
+            # `combo_secundarias` se define, por cada actividad seleccionada, su
+            # valor + unidad ([{cuota_codigo, valor, unidad}]). Solo aplica a las
+            # cuotas listadas. Fallback legacy: si no hay lista, se aplica el
+            # valor/unidad raíz a cualquier cuota. El trabajador + relación van
+            # en la asignación (informativos a efectos de cobro).
+            cs = d.get('combo_secundarias') or []
+            if isinstance(cs, str):
+                try:
+                    cs = _j.loads(cs)
+                except Exception:
+                    cs = []
+            entry = next((s for s in cs if s.get('cuota_codigo') == cuota_codigo), None)
+            if entry:
+                v = float(entry.get('valor') or 0)
+                unidad = entry.get('unidad') or 'porcentaje'
+                if v > 0:
+                    if unidad == 'importe':
+                        nuevo = max(0.0, round(precio - v, 2))
+                    else:
+                        nuevo = round(precio * (1 - v / 100.0), 2)
+                    aplica = True
+            elif not cs:
+                # Legacy: valor/unidad raíz aplica a cualquier cuota
+                v = float(d['valor'] or 0)
+                unidad = (d.get('unidad') or 'porcentaje')
+                if v > 0:
+                    if unidad == 'importe':
+                        nuevo = max(0.0, round(precio - v, 2))
+                    else:
+                        nuevo = round(precio * (1 - v / 100.0), 2)
+                    aplica = True
         elif tipo == 'precio_combo':   # legacy
             req = d.get('cuota_requerida_codigo')
             apl = d.get('cuota_aplicada_codigo')

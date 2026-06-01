@@ -51,7 +51,7 @@ import logging
 from flask import Blueprint, request, jsonify, g
 from psycopg.types.json import Json
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_guard import require_feature
 from ..audit_log import log_action, actor_from_request
@@ -112,6 +112,7 @@ def listar_temporadas():
 @bp.route('/temporadas', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_temporadas')
 def crear_temporada():
     d = request.get_json() or {}
     nombre = _opt_str(d.get('nombre'))
@@ -143,6 +144,7 @@ def crear_temporada():
 @bp.route('/temporadas/<int:tid>', methods=['PATCH'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_temporadas')
 def actualizar_temporada(tid):
     d = request.get_json() or {}
     sets, params = [], []
@@ -180,6 +182,7 @@ def actualizar_temporada(tid):
 @bp.route('/temporadas/<int:tid>', methods=['DELETE'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_temporadas')
 def borrar_temporada(tid):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM temporada WHERE id=%s AND id_manager=%s",
@@ -221,6 +224,7 @@ def get_apertura(tid):
 @bp.route('/temporadas/<int:tid>/apertura', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_temporadas')
 def put_apertura(tid):
     """Reemplaza el horario de apertura completo. Body: { apertura: {dia: [bloques]} }"""
     d = request.get_json() or {}
@@ -298,6 +302,7 @@ def listar_puestos():
 @bp.route('/puestos', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_puestos')
 def crear_puesto():
     d = request.get_json() or {}
     codigo = _opt_str(d.get('codigo'))
@@ -330,6 +335,7 @@ def crear_puesto():
 @bp.route('/puestos/<int:pid>', methods=['PATCH'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_puestos')
 def actualizar_puesto(pid):
     d = request.get_json() or {}
     sets, params = [], []
@@ -363,6 +369,7 @@ def actualizar_puesto(pid):
 @bp.route('/puestos/<int:pid>', methods=['DELETE'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_puestos')
 def borrar_puesto(pid):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM puesto_trabajo WHERE id=%s AND id_manager=%s",
@@ -393,6 +400,7 @@ def listar_compatibilidades():
 @bp.route('/puestos/compatibilidades', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_puestos')
 def put_compatibilidades():
     """Body: { pares: [[a, b], [a, c], ...] }. Reemplaza la matriz entera."""
     d = request.get_json() or {}
@@ -473,6 +481,7 @@ def get_demanda(pid):
 @bp.route('/puestos/<int:pid>/demanda', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_puestos')
 def put_demanda(pid):
     """Reemplaza la demanda completa del puesto (todas las temporadas).
 
@@ -560,6 +569,7 @@ def get_trabajador_puestos(tid):
 @bp.route('/trabajadores/<int:tid>/puestos', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_puestos')
 def put_trabajador_puestos(tid):
     """Body: { puestos: [{puesto_id, nivel?, preferente?}, ...] }. Reemplaza."""
     d = request.get_json() or {}
@@ -639,6 +649,7 @@ def get_preferencias(tid):
 @bp.route('/trabajadores/<int:tid>/preferencias', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_preferencias')
 def put_preferencias(tid):
     d = request.get_json() or {}
     franja = (d.get('prefiere_franja') or 'cualquiera').strip().lower()
@@ -757,6 +768,7 @@ def get_plantilla(pid):
 @bp.route('/turno-plantillas', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_plantillas')
 def crear_plantilla():
     d = request.get_json() or {}
     nombre = _opt_str(d.get('nombre'))
@@ -782,6 +794,7 @@ def crear_plantilla():
 @bp.route('/turno-plantillas/<int:pid>', methods=['PATCH'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_plantillas')
 def actualizar_plantilla(pid):
     d = request.get_json() or {}
     sets, params = [], []
@@ -817,6 +830,7 @@ def actualizar_plantilla(pid):
 @bp.route('/turno-plantillas/<int:pid>', methods=['DELETE'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_plantillas')
 def borrar_plantilla(pid):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -840,6 +854,7 @@ def borrar_plantilla(pid):
 @bp.route('/turno-plantillas/<int:pid>/bloques', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.editar_plantillas')
 def put_bloques(pid):
     """Body: { bloques: [{hora_inicio, hora_fin, tipo, puesto_id?, orden?}] }.
     Reemplaza la lista completa de bloques."""
@@ -976,6 +991,7 @@ def listar_asignaciones():
 @bp.route('/turno-asignaciones/bulk', methods=['PUT'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.asignar_turnos')
 def bulk_asignaciones():
     """Body: { ops: [{trabajador_id, fecha, accion: 'asignar'|'libre'|'borrar',
                        turno_plantilla_id?, notas?}] }"""
@@ -1643,6 +1659,7 @@ def _copiar_asignaciones(cur, id_manager, lunes_origen, lunes_destino, replace):
 @bp.route('/turno-asignaciones/copiar-semana', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.asignar_turnos')
 def copiar_semana():
     """Copia las asignaciones de una semana origen a una semana destino.
     Body: { desde_lunes: 'YYYY-MM-DD', hasta_lunes: 'YYYY-MM-DD', replace: true }"""
@@ -1666,6 +1683,7 @@ def copiar_semana():
 @bp.route('/turno-asignaciones/replicar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.asignar_turnos')
 def replicar_semana():
     """Replica una semana origen en las N semanas SIGUIENTES.
     Body: { desde_lunes, num_semanas: 4, replace: true }"""
@@ -1698,6 +1716,7 @@ def replicar_semana():
 @bp.route('/turno-asignaciones/patron-rotativo', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.planificacion.asignar_turnos')
 def patron_rotativo():
     """Aplica un patron ciclico A,B,C,... de semanas origen durante N ciclos.
     Body: { semanas_origen: ['YYYY-MM-DD', 'YYYY-MM-DD', ...],

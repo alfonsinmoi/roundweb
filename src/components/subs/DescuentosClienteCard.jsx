@@ -32,10 +32,14 @@ function descLabel(a) {
 }
 
 // Los descuentos automáticos (acumulación de cuotas, familiares) se gestionan
-// por el sistema al cumplir/dejar de cumplir la condición. El trainer NO debe
-// quitarlos manualmente.
-function esAcumulacion(tipo) {
-  return tipo === 'varias_cuotas' || tipo === 'precio_combo' || tipo === 'familiares'
+// por el cron `round_descuentos_auto` al cumplir/dejar de cumplir condición.
+// El trainer NO debe quitarlos manualmente — el backend bloquea el delete.
+//
+// La fuente de verdad es la columna `origen` (manual / auto_varias_cuotas /
+// auto_familiares). Si no llega (filas viejas), caemos a deducir por tipo.
+function esAuto(a) {
+  if (a.origen && a.origen !== 'manual') return true
+  return a.tipo === 'varias_cuotas' || a.tipo === 'precio_combo' || a.tipo === 'familiares'
 }
 
 export default function DescuentosClienteCard({ cliente }) {
@@ -122,7 +126,11 @@ export default function DescuentosClienteCard({ cliente }) {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {activas.map(a => {
-                  const auto = esAcumulacion(a.tipo)
+                  const auto = esAuto(a)
+                  // Tooltip enriquecido con el motivo real que devolvió el cron.
+                  const tooltip = a.auto_motivo
+                    ? `Asignado automáticamente por el sistema.\nMotivo: ${a.auto_motivo}\n\nÚltima evaluación: ${a.auto_evaluado_at ? new Date(a.auto_evaluado_at).toLocaleString('es-ES') : '—'}\n\nPara quitarlo: ajusta las cuotas o la familia del cliente; el cron lo cancelará en su próxima pasada.`
+                    : 'Descuento automático — gestionado por el sistema al cumplir condiciones.'
                   return (
                   <div key={a.asig_id} style={{
                     display: 'flex', alignItems: 'center', gap: 8,
@@ -134,10 +142,11 @@ export default function DescuentosClienteCard({ cliente }) {
                                   display: 'flex', alignItems: 'center', gap: 6 }}>
                         {a.codigo}
                         {auto && (
-                          <span title="Descuento por acumulación de cuotas — automático" style={{
+                          <span title={tooltip} style={{
                             fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
                             background: 'var(--blue)', color: '#fff', letterSpacing: '0.04em',
-                          }}>AUTO</span>
+                            cursor: 'help',
+                          }}>🤖 AUTO</span>
                         )}
                       </p>
                       <p style={{ fontSize: 11, color: 'var(--text-2)', margin: '2px 0 0' }}>
@@ -145,10 +154,16 @@ export default function DescuentosClienteCard({ cliente }) {
                       </p>
                       <p style={{ fontSize: 10, color: 'var(--text-3)', margin: '2px 0 0' }}>
                         Desde {fmt(a.fecha_desde || a.created_at)}
+                        {auto && a.auto_motivo && (
+                          <span style={{ display: 'block', marginTop: 2, fontStyle: 'italic',
+                                         color: 'var(--text-2)' }}>
+                            ↳ {a.auto_motivo}
+                          </span>
+                        )}
                       </p>
                     </div>
                     {auto ? (
-                      <span title="No se puede quitar: se asigna automáticamente al cumplir la combinación de cuotas. Para desactivarlo, quita una de las cuotas del cliente o desactiva el descuento en Configuración."
+                      <span title={tooltip}
                             style={{ color: 'var(--text-3)', padding: 4, cursor: 'help' }}>
                         🔒
                       </span>

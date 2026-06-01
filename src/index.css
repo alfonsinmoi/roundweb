@@ -157,9 +157,9 @@ h1, h2, h3, h4, h5, h6 {
 /* ── Form inputs — use CSS for focus instead of inline JS ──────────────────── */
 .form-input:focus { border-color: var(--green) !important; outline: none; }
 
-/* ── Date / time pickers — calendar/clock icon visible en tema oscuro ────── */
-/* Por defecto el indicator de Chrome es negro y se pierde sobre fondo oscuro.
-   Lo invertimos para que se vea + le ponemos cursor pointer. */
+/* ── Date / time pickers — calendar/clock icon visible en ambos temas ────── */
+/* En tema OSCURO: el indicator negro nativo se pierde, lo invertimos.
+   En tema CLARO: el indicator negro nativo se ve bien — no aplicar filter. */
 input[type="date"]::-webkit-calendar-picker-indicator,
 input[type="datetime-local"]::-webkit-calendar-picker-indicator,
 input[type="time"]::-webkit-calendar-picker-indicator,
@@ -179,6 +179,26 @@ input[type="month"]::-webkit-calendar-picker-indicator:hover,
 input[type="week"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
   background: rgba(255, 255, 255, 0.06);
+}
+
+/* Tema claro: el icono nativo (negro) ya se ve sobre fondo blanco — no
+   invertir. Si lo invirtiéramos quedaría blanco sobre blanco y desaparecería
+   (esto era el bug que reportó el usuario: el calendario no se veía). */
+:root[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator,
+:root[data-theme="light"] input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+:root[data-theme="light"] input[type="time"]::-webkit-calendar-picker-indicator,
+:root[data-theme="light"] input[type="month"]::-webkit-calendar-picker-indicator,
+:root[data-theme="light"] input[type="week"]::-webkit-calendar-picker-indicator {
+  filter: none;
+  opacity: 0.7;
+}
+:root[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator:hover,
+:root[data-theme="light"] input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
+:root[data-theme="light"] input[type="time"]::-webkit-calendar-picker-indicator:hover,
+:root[data-theme="light"] input[type="month"]::-webkit-calendar-picker-indicator:hover,
+:root[data-theme="light"] input[type="week"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.04);
 }
 
 /* Permitir click en cualquier parte del input para abrir el picker (Chrome >= 99) */

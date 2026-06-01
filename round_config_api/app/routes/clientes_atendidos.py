@@ -13,9 +13,11 @@ Endpoints:
   DELETE /api/clientes-atendidos                       desmarca todos (reset banner)
 """
 import logging
+from functools import wraps
 from flask import Blueprint, request, jsonify, g
 
 from ..auth import auth_required
+from ..auth_usuario import usuario_web_required
 from ..db import get_conn
 from ..audit_log import actor_from_request
 
@@ -23,24 +25,45 @@ bp = Blueprint('clientes_atendidos', __name__)
 log = logging.getLogger(__name__)
 
 
+def either_auth(fn):
+    """Acepta X-Round-Token (manager) o JWT Bearer (usuario_web). Necesario
+    para que los usuarios_web del centro compartan la misma lista de
+    'clientes atendidos' que el manager — antes solo manager podía leer/
+    escribir y los usuario_web se quedaban con un set local distinto cada
+    uno (cada navegador veía clientes distintos en el banner)."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if request.headers.get('Authorization', '').startswith('Bearer '):
+            return usuario_web_required(fn)(*args, **kwargs)
+        return auth_required(fn)(*args, **kwargs)
+    return wrapper
+
+
 @bp.route('', methods=['GET'])
 @bp.route('/', methods=['GET'])
-@auth_required
+@either_auth
 def list_():
-    """Devuelve {ids: ['1817686','1818030',...]} para que el frontend filtre."""
+    """Devuelve {ids: ['1817686','1818030',...]} para que el frontend filtre.
+
+    Aislamiento por trainer: si está impersonado, restringimos a clientes
+    suyos vía cliente_cache."""
+    from ..trainer_scope import apply_trainer_filter_via_cache
+    where = ['id_manager = %s']
+    vals = [str(g.id_manager)]
+    apply_trainer_filter_via_cache(where, vals, cliente_col='cliente_idnoofit')
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             SELECT cliente_idnoofit
               FROM cliente_atendido_banner
-             WHERE id_manager = %s
-        """, (str(g.id_manager),))
+             WHERE {' AND '.join(where)}
+        """, vals)
         ids = [r['cliente_idnoofit'] for r in cur.fetchall()]
     return jsonify({'ok': True, 'ids': ids})
 
 
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
-@auth_required
+@either_auth
 def mark_atendidos():
     """Marca uno o varios clientes como atendidos. Idempotente (UPSERT).
 
@@ -74,7 +97,7 @@ def mark_atendidos():
 
 
 @bp.route('/<cliente_idnoofit>', methods=['DELETE'])
-@auth_required
+@either_auth
 def unmark(cliente_idnoofit):
     """Desmarca un cliente (volverá a aparecer en el banner)."""
     with get_conn() as conn, conn.cursor() as cur:
@@ -88,7 +111,7 @@ def unmark(cliente_idnoofit):
 
 @bp.route('', methods=['DELETE'])
 @bp.route('/', methods=['DELETE'])
-@auth_required
+@either_auth
 def unmark_all():
     """Vacía la lista de atendidos del manager (reset del banner)."""
     with get_conn() as conn, conn.cursor() as cur:

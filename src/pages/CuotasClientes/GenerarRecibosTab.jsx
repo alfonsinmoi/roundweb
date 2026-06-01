@@ -4,12 +4,19 @@ import { useState, useEffect } from 'react'
 import { Loader2, Play, Send, ShieldCheck, Trash2, X, Download, Check } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
+import { useCan } from '../../hooks/useCan'
 import {
   preemisionV2Generar, preemisionV2Listar, preemisionV2BorrarRecibo, emitirV2,
 } from '../../utils/cuotasApi'
+import RecibosManualesSection from './RecibosManualesSection'
 
-function currentMonth() {
+// Por defecto en validación/emisión usamos el MES PRÓXIMO: lo habitual es
+// pre-emitir recibos del mes siguiente al cierre del actual. El usuario puede
+// cambiarlo a otro mes desde el selector.
+function nextMonth() {
   const d = new Date()
+  d.setDate(1)
+  d.setMonth(d.getMonth() + 1)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
@@ -18,7 +25,13 @@ const TOKEN_ENV = import.meta.env.VITE_CONFIG_API_TOKEN || ''
 
 export default function GenerarRecibosTab({ identity }) {
   const toast = useToast()
-  const [mes, setMes] = useState(currentMonth())
+  // Permisos UI (admin clásico → siempre true)
+  const canValidar = useCan('economico.cuotas_mensuales.validar_preemision')
+  const canEditPre = useCan('economico.cuotas_mensuales.editar_preemision')
+  const canBorrarPre = useCan('economico.cuotas_mensuales.borrar_preemision')
+  const canEmitirMes = useCan('economico.cuotas_mensuales.emitir_mes')
+  const canDescargarSepa = useCan('economico.cuotas_mensuales.descargar_sepa')
+  const [mes, setMes] = useState(nextMonth())
   const [recibos, setRecibos] = useState([])
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -76,6 +89,36 @@ export default function GenerarRecibosTab({ identity }) {
     finally { setValidating(false) }
   }
 
+  async function descargarSepa() {
+    if (!mes) return
+    try {
+      const r = await fetch(`/api/cuotas/sepa/${mes}`, {
+        method: 'POST', headers: _hdrs(),
+      })
+      const ct = r.headers.get('Content-Type') || ''
+      if (!r.ok || !ct.includes('xml')) {
+        let d
+        try { d = await r.json() } catch { d = { error: 'fallo_desconocido' } }
+        toast.error(d.detalle || d.error || `HTTP ${r.status}`)
+        return
+      }
+      const stats = r.headers.get('X-SEPA-Stats') || ''
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      // Filename del Content-Disposition o uno genérico
+      const cd = r.headers.get('Content-Disposition') || ''
+      const m = /filename="([^"]+)"/.exec(cd)
+      a.href = url
+      a.download = m ? m[1] : `remesa_${mes}.xml`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success(`SEPA descargado · ${stats}`)
+    } catch (e) {
+      toast.error(`Error: ${e.message}`)
+    }
+  }
+
   async function descargarValidacionExcel() {
     try {
       const r = await fetch(`/api/cuotas/preemision/${mes}/validar/excel`, { headers: _hdrs() })
@@ -125,17 +168,32 @@ export default function GenerarRecibosTab({ identity }) {
                              color: 'var(--text-0)', fontFamily: 'var(--font-mono)', fontSize: 14 }} />
           </div>
           <div style={{ flex: 1 }} />
-          <Btn variant="secondary" onClick={validar} disabled={!mes}>
-            <ShieldCheck size={14} /> Validar antes de emitir
-          </Btn>
-          <Btn variant="secondary" onClick={generar} disabled={generating || !mes}>
-            {generating ? <><Loader2 size={14} className="animate-spin" /> Generando…</> : <><Play size={14} /> Generar recibos</>}
-          </Btn>
-          <Btn variant="primary" onClick={emitir} disabled={emitting || pendientesEmision === 0}>
-            {emitting ? <><Loader2 size={14} className="animate-spin" /> Emitiendo…</> : <><Send size={14} /> Emitir ({pendientesEmision})</>}
-          </Btn>
+          {canValidar && (
+            <Btn variant="secondary" onClick={validar} disabled={!mes}>
+              <ShieldCheck size={14} /> Validar antes de emitir
+            </Btn>
+          )}
+          {canEditPre && (
+            <Btn variant="secondary" onClick={generar} disabled={generating || !mes}>
+              {generating ? <><Loader2 size={14} className="animate-spin" /> Generando…</> : <><Play size={14} /> Generar recibos</>}
+            </Btn>
+          )}
+          {canEmitirMes && (
+            <Btn variant="primary" onClick={emitir} disabled={emitting || pendientesEmision === 0}>
+              {emitting ? <><Loader2 size={14} className="animate-spin" /> Emitiendo…</> : <><Send size={14} /> Emitir ({pendientesEmision})</>}
+            </Btn>
+          )}
+          {canDescargarSepa && (
+            <Btn variant="secondary" onClick={descargarSepa} disabled={!mes}
+                 title="Descarga el fichero pain.008 para subir al banco">
+              <Download size={14} /> Descargar SEPA
+            </Btn>
+          )}
         </div>
       </Card>
+
+      {/* Recibos manuales para incluir en esta remesa */}
+      <RecibosManualesSection identity={identity} mes={mes} />
 
       {/* Stats */}
       {recibos.length > 0 && (
@@ -219,7 +277,7 @@ export default function GenerarRecibosTab({ identity }) {
                     {r.account_payment_id ? <Badge color="blue">#{r.account_payment_id}</Badge> : '—'}
                   </td>
                   <td style={td}>
-                    {!r.account_payment_id && (
+                    {!r.account_payment_id && canBorrarPre && (
                       <button onClick={() => borrarRecibo(r.id)}
                               style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', padding: 4 }}
                               title="Borrar recibo">

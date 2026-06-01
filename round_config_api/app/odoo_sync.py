@@ -116,10 +116,13 @@ class OdooSync:
     def cuota_create(self, postgres_row):
         if not cfg.ODOO_SYNC_ENABLED: return None
         vals = self._cuota_vals(postgres_row)
-        # Intentar buscar por código primero (idempotencia)
-        existing = self._call('round.cuota.catalogo', 'search',
-                              [('codigo', '=', vals['codigo']), ('company_id', '=', cfg.ODOO_COMPANY)],
-                              limit=1)
+        # Idempotencia: buscar por (codigo, company, id_trainer). Cada centro
+        # tiene su propia cuota con mismo código (Málaga "I MYGYM" ≠ Añoreta "I MYGYM").
+        search_dom = [('codigo', '=', vals['codigo']),
+                      ('company_id', '=', cfg.ODOO_COMPANY)]
+        tr = vals.get('id_trainer') or False
+        search_dom.append(('id_trainer', '=', tr))
+        existing = self._call('round.cuota.catalogo', 'search', search_dom, limit=1)
         if existing:
             self._call('round.cuota.catalogo', 'write', [existing[0]], vals)
             return existing[0]
@@ -135,7 +138,9 @@ class OdooSync:
         return self._call('round.cuota.catalogo', 'unlink', [odoo_id])
 
     def _cuota_vals(self, r):
-        # Construye dict de valores Odoo desde una row de postgres
+        # Construye dict de valores Odoo desde una row de postgres.
+        # id_trainer espeja la columna local — permite scope per-centro.
+        id_trainer = r.get('id_trainer')
         return {
             'codigo':            r['codigo'],
             'descripcion':       r.get('descripcion') or '',
@@ -147,6 +152,7 @@ class OdooSync:
             'activo':            bool(r.get('active', True)),
             'actividades_descripcion': self._build_acts_desc(r),
             'company_id':        cfg.ODOO_COMPANY,
+            'id_trainer':        str(id_trainer) if id_trainer else False,
         }
 
     def _build_acts_desc(self, r):

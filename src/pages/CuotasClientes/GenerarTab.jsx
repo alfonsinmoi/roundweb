@@ -8,8 +8,13 @@ import {
   cuotasList, FORMA_PAGO_LABELS,
 } from '../../utils/cuotasApi'
 
-function currentMonth() {
+// Por defecto en validación/emisión usamos el MES PRÓXIMO (lo habitual es
+// pre-emitir recibos del mes siguiente). El operador puede cambiarlo desde
+// el selector.
+function nextMonth() {
   const d = new Date()
+  d.setDate(1)
+  d.setMonth(d.getMonth() + 1)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
@@ -34,7 +39,7 @@ const EMPTY_FILTERS = {
 
 export default function GenerarTab({ identity }) {
   const toast = useToast()
-  const [mes, setMes] = useState(currentMonth())
+  const [mes, setMes] = useState(nextMonth())
   const [borradores, setBorradores] = useState([])
   const [emitidos, setEmitidos] = useState([])
   const [recibosPrev, setRecibosPrev] = useState([])      // mes anterior

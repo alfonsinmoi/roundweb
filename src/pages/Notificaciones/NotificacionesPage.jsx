@@ -724,13 +724,16 @@ function NuevaNotifModal({ identity, seccionInicial, audiencePreset, presetTitle
                       rows={3} placeholder="Mensaje principal" style={{ ...inputStyle, fontFamily: 'inherit' }} />
           </Lbl>
 
-          {form.seccion === 'noticias' && (
-            <Lbl text="Cuerpo HTML (para webview)">
-              <textarea value={form.cuerpoHtml} onChange={e => setForm(f => ({ ...f, cuerpoHtml: e.target.value }))}
-                        rows={6} placeholder="<h2>Título</h2><p>Contenido…</p>"
-                        style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12 }} />
-            </Lbl>
-          )}
+          {/* Cuerpo HTML disponible en cualquier sección — la app mynoofit
+              lo abre en webview cuando viene poblado. Antes estaba limitado
+              a "noticias" por defecto; ampliado mayo 2026 a petición del
+              equipo: cualquier notificación puede llevar contenido formateado. */}
+          <Lbl text="Cuerpo HTML (opcional — la app lo abre en webview)"
+               hint="Si lo rellenas, la app mynoofit mostrará este HTML en pantalla completa al pulsar la notificación. Si lo dejas vacío, solo se muestra el texto plano del campo anterior.">
+            <textarea value={form.cuerpoHtml} onChange={e => setForm(f => ({ ...f, cuerpoHtml: e.target.value }))}
+                      rows={6} placeholder="<h2>Título</h2><p>Contenido con <strong>formato</strong>…</p>"
+                      style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12 }} />
+          </Lbl>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <Lbl text="Fecha de publicación">
@@ -771,13 +774,18 @@ function NuevaNotifModal({ identity, seccionInicial, audiencePreset, presetTitle
 }
 
 
-function Lbl({ text, children }) {
+function Lbl({ text, hint, children }) {
   return (
     <div>
       <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: 4 }}>
         {text}
       </span>
       {children}
+      {hint && (
+        <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '4px 0 0 0', lineHeight: 1.4 }}>
+          {hint}
+        </p>
+      )}
     </div>
   )
 }

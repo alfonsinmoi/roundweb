@@ -11,6 +11,7 @@ import { navItems, managerItems, configItems } from '../config/routes'
 import { canAccessSection } from '../config/permissions'
 import { useOdooStatus } from '../hooks/useOdooStatus'
 import { useClaseEnCurso } from '../hooks/useClaseEnCurso'
+import { useIncidenciasCount } from '../hooks/useIncidenciasCount'
 import { formatHora } from '../utils/formatters'
 import { Avatar } from './UI'
 import { requestResetUsuarioWeb } from '../utils/authUsuarioApi'
@@ -66,6 +67,9 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
   const [configOpen, setConfigOpen] = useState(true)
   const claseEnCurso = useClaseEnCurso()
   const { features } = useOdooStatus()
+  // Badges (contadores en items del menú). Por ahora solo 'incidencias'.
+  const incidenciasPendientes = useIncidenciasCount()
+  const badges = { incidencias: incidenciasPendientes }
 
   // Trainer switcher
   const [menuOpen,     setMenuOpen]     = useState(false)
@@ -147,7 +151,8 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
     navigate('/dashboard')
   }
 
-  const NavItem = ({ to, icon: Icon, label, children }) => {
+  const NavItem = ({ to, icon: Icon, label, children, badgeKey }) => {
+    const badgeValue = badgeKey ? badges[badgeKey] : 0
     // Si tiene children → renderizar como grupo desplegable
     if (children && children.length > 0) {
       const anyActive = children.some(c => pathname === c.to || pathname.startsWith(c.to))
@@ -222,8 +227,38 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
           transition: 'all 0.1s ease',
         }}
       >
-        <Icon size={19} strokeWidth={active ? 2 : 1.6} aria-hidden="true" />
-        {!collapsed && label}
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <Icon size={19} strokeWidth={active ? 2 : 1.6} aria-hidden="true" />
+          {/* Cuando el menú está colapsado, badge como dot rojo sobre el icono */}
+          {collapsed && badgeValue > 0 && (
+            <span style={{
+              position: 'absolute', top: -3, right: -5,
+              minWidth: 14, height: 14, padding: '0 4px',
+              borderRadius: 7, background: 'var(--red)',
+              color: '#fff', fontSize: 9, fontWeight: 700,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              border: '1.5px solid var(--bg-1)', lineHeight: 1,
+            }} title={`${badgeValue} pendientes`}>
+              {badgeValue > 99 ? '99+' : badgeValue}
+            </span>
+          )}
+        </div>
+        {!collapsed && (
+          <>
+            <span style={{ flex: 1 }}>{label}</span>
+            {badgeValue > 0 && (
+              <span style={{
+                minWidth: 20, height: 18, padding: '0 6px',
+                borderRadius: 9, background: 'var(--red)',
+                color: '#fff', fontSize: 10, fontWeight: 700,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                lineHeight: 1,
+              }} title={`${badgeValue} pendientes`}>
+                {badgeValue > 99 ? '99+' : badgeValue}
+              </span>
+            )}
+          </>
+        )}
       </NavLink>
     )
   }

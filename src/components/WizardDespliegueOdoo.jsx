@@ -13,6 +13,7 @@ import { X, ChevronLeft, ChevronRight, Loader2, CheckCircle2, AlertTriangle } fr
 import { Card, Btn } from './UI'
 import { useToast } from './Toast'
 import { managerSolicitudDespliegue } from '../utils/configApi'
+import IBANInput from './IBANInput'
 
 const STORAGE_KEY = (mgr) => `round.wizard_despliegue_odoo:${mgr}`
 
@@ -331,8 +332,8 @@ function StepBancos({ data, set }) {
         añadir más después desde Odoo.
       </p>
       <Field label="IBAN principal" hint="Solo formato español (24 dígitos comenzando por ES).">
-        <Input value={data.iban_principal} onChange={(v) => set({ iban_principal: v })}
-               placeholder="ES00 0000 0000 0000 0000 0000" />
+        <IBANInput value={data.iban_principal}
+                   onChange={(v) => set({ iban_principal: v })} />
       </Field>
       <Field label="Banco / entidad">
         <Input value={data.banco_nombre} onChange={(v) => set({ banco_nombre: v })}

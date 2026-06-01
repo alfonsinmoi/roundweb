@@ -1,6 +1,6 @@
 """CRUD de modificaciones (no son plantillas, son instancias)."""
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
 from .. import config
@@ -48,6 +48,7 @@ def list_():
 
 @bp.route('', methods=['POST'])
 @auth_required
+@require_permission('configuracion.modificaciones.crear')
 def create():
     d = request.get_json() or {}
     if d.get('tipo') not in config.TIPOS_MODIFICACION:
@@ -92,6 +93,7 @@ def create():
 
 @bp.route('/<int:_id>', methods=['PUT','PATCH'])
 @auth_required
+@require_permission('configuracion.modificaciones.editar')
 def update(_id):
     d = request.get_json() or {}
     if 'tipo' in d and d['tipo'] not in config.TIPOS_MODIFICACION:
@@ -116,6 +118,7 @@ def update(_id):
 
 @bp.route('/<int:_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.modificaciones.borrar')
 def delete(_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT odoo_id FROM modificacion WHERE id=%s AND id_manager=%s", (_id, g.id_manager))

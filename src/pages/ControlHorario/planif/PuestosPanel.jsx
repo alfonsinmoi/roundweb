@@ -7,6 +7,7 @@ import {
   compatibilidadesGet, compatibilidadesSave,
   demandaGet, demandaSave, temporadasList,
 } from '../../../utils/horarioApi'
+import { useCan } from '../../../hooks/useCan'
 
 
 const DIAS = [
@@ -78,6 +79,7 @@ function fmtPersonasHora(mins) {
 
 export default function PuestosPanel({ identity }) {
   const toast = useToast()
+  const canEditarPuestos = useCan('control_horario.planificacion.editar_puestos')
   const [items, setItems] = useState([])
   const [pares, setPares] = useState([])
   const [temporadas, setTemporadas] = useState([])
@@ -145,9 +147,11 @@ export default function PuestosPanel({ identity }) {
         <Card style={{ padding: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <strong style={{ fontSize: 13, color: 'var(--text-1)' }}>Puestos</strong>
-            <Btn size="sm" onClick={handleCrear}>
-              <Plus size={13} /> Nuevo
-            </Btn>
+            {canEditarPuestos && (
+              <Btn size="sm" onClick={handleCrear}>
+                <Plus size={13} /> Nuevo
+              </Btn>
+            )}
           </div>
           {loading && <p style={{ color: 'var(--text-3)', fontSize: 12 }}>Cargando…</p>}
           {!loading && items.length === 0 && (

@@ -9,6 +9,8 @@ import { useAuth } from '../../contexts/AuthContext'
 import { useGympassMap } from '../../hooks/useGympassMap'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
 import { getRoundIdentity, fechaBajaPorCliente, bajaProgramadaList } from '../../utils/configApi'
+import { coincideTexto } from '../../utils/texto'
+import { QrCentroButton } from '../../components/QrAltaCliente'
 import NotasPopover from '../../components/notas/NotasPopover'
 import { useCan } from '../../hooks/useCan'
 
@@ -138,9 +140,10 @@ export default function ClientList() {
   const canExportarExcel = useCan('clientes.exportar_excel')
 
   const filtered = useMemo(() => clientes.filter(c => {
-    const q = deferredSearch.toLowerCase()
-    const match = `${clientFullName(c)} ${c.email} ${c.gympassId || ''} ${c.alias || ''}`.toLowerCase().includes(q)
-    if (!match) return false
+    // Búsqueda case+accent-insensitive. "Jimenez" matchea "Jiménez",
+    // "MARIA" matchea "María", "perez" matchea "Pérez", etc.
+    const haystack = `${clientFullName(c)} ${c.email || ''} ${c.gympassId || ''} ${c.alias || ''} ${c.dni || ''}`
+    if (!coincideTexto(haystack, deferredSearch)) return false
     if (filtroCategoria) {
       const cat = getCategoria(c)
       if (filtroCategoria === 'sin') { if (cat) return false }
@@ -283,6 +286,13 @@ export default function ClientList() {
           </Btn>
           )}
 
+          {/* QR del centro: aparece arriba a la derecha cuando el modo de
+              "Alta de cliente" del trainer activo es 'centro' o 'ambos'.
+              Se actualiza solo si el gestor cambia la configuración. */}
+          {identity?.trainerId && (
+            <QrCentroButton trainerId={String(identity.trainerId)}
+                            nombreCentro={identity.trainerName} />
+          )}
           <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
             <Plus size={15} aria-hidden="true" /> Nuevo cliente
           </Btn>

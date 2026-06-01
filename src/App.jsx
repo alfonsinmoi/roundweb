@@ -26,12 +26,17 @@ const Dispositivos = lazy(() => import('./pages/Dispositivos'))
 const Listados = lazy(() => import('./pages/Listados'))
 const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
 const InformeClientes = lazy(() => import('./pages/InformeClientes'))
+const InformeIntegridad = lazy(() => import('./pages/InformeIntegridad'))
 const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
 const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
 const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
 const CuotasClientes = lazy(() => import('./pages/CuotasClientes/CuotasClientes'))
+const EntradasPuntuales = lazy(() => import('./pages/EntradasPuntuales/EntradasPuntuales'))
 const ControlHorario = lazy(() => import('./pages/ControlHorario/ControlHorario'))
+const TPV = lazy(() => import('./pages/TPV/TPV'))
+const DashboardTPV = lazy(() => import('./pages/TPV/DashboardTPV'))
+const ProveedoresTPV = lazy(() => import('./pages/TPV/ProveedoresTPV'))
 
 // ── Portal del cliente NoofitPro ───────────────────────────────────────────
 const PortalLogin   = lazy(() => import('./pages/PortalCliente/PortalLogin'))
@@ -51,6 +56,7 @@ const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
 const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
 const NotificacionesPage = lazy(() => import('./pages/Notificaciones/NotificacionesPage'))
 const ContabilidadPage = lazy(() => import('./pages/Contabilidad/ContabilidadPage'))
+const Incidencias = lazy(() => import('./pages/Incidencias/Incidencias'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -119,17 +125,23 @@ function AppRoutes() {
           <Route path="/informe-asistencia"          element={<InformeAsistencia />} />
           <Route path="/informe-asistencia/:tab"     element={<InformeAsistencia />} />
           <Route path="/informe-clientes"            element={<InformeClientes />} />
+          <Route path="/informe-integridad"          element={<InformeIntegridad />} />
           <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
           <Route path="/configuracion"       element={<Configuracion />} />
           <Route path="/cuotas-clientes"     element={<CuotasClientes />} />
+          <Route path="/entradas-puntuales"  element={<EntradasPuntuales />} />
           <Route path="/control-horario"     element={<ControlHorario />} />
+          <Route path="/tpv"                 element={<TPV />} />
+          <Route path="/tpv/dashboard"       element={<DashboardTPV />} />
+          <Route path="/tpv/proveedores"     element={<ProveedoresTPV />} />
           <Route path="/crm"                 element={<CrmPage />} />
           <Route path="/agenda-social"       element={<SocialAgenda />} />
           <Route path="/notificaciones"      element={<NotificacionesPage />} />
           <Route path="/contabilidad"        element={<ContabilidadPage />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
           <Route path="/notas" element={<NotasPage />} />
+          <Route path="/incidencias" element={<Incidencias />} />
         </Route>
 
         <Route path="*" element={<RequireAuth><NotFound /></RequireAuth>} />

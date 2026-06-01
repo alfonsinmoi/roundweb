@@ -260,6 +260,71 @@ CREATE TABLE IF NOT EXISTS cuota (
 CREATE INDEX IF NOT EXISTS idx_cuota_manager  ON cuota(id_manager);
 CREATE INDEX IF NOT EXISTS idx_cuota_trainer  ON cuota(id_trainer);
 
+-- Cuota tipo "entrada puntual" (drop-in / pago por visita). `tipo_cuota`
+-- distingue las recurrentes normales de las de entrada puntual; `precio_entrada`
+-- es el precio de UNA entrada (reserva confirmada de la actividad).
+ALTER TABLE cuota ADD COLUMN IF NOT EXISTS tipo_cuota     VARCHAR(20) NOT NULL DEFAULT 'recurrente';
+ALTER TABLE cuota ADD COLUMN IF NOT EXISTS precio_entrada NUMERIC(10,2) DEFAULT 0;
+
+
+-- ─── ENTRADA PUNTUAL ─────────────────────────────────────────────────────────
+-- Registro local de altas en cuotas de entrada puntual. Es la FUENTE DE VERDAD
+-- para la detección (qué clientes están dados de alta, en qué actividades y con
+-- qué modo de cobro). Desacopla la detección de Odoo round.subscription.
+--   modo: 'por_entrada' (cobro en recepción cada visita) |
+--         'por_mes'     (se acumulan y se facturan al cierre del mes)
+CREATE TABLE IF NOT EXISTS entrada_puntual_alta (
+  id                   SERIAL PRIMARY KEY,
+  id_manager           VARCHAR(64) NOT NULL,
+  id_trainer           VARCHAR(64),
+  cliente_idnoofit     VARCHAR(64) NOT NULL,
+  cliente_nombre       VARCHAR(240),
+  cuota_codigo         VARCHAR(64) NOT NULL,
+  actividades_idnoofit INTEGER[] DEFAULT ARRAY[]::INTEGER[],
+  modo                 VARCHAR(12) NOT NULL CHECK (modo IN ('por_entrada','por_mes')),
+  forma_pago           VARCHAR(24),
+  precio_entrada       NUMERIC(10,2) DEFAULT 0,
+  iban                 VARCHAR(34),
+  activo               BOOLEAN NOT NULL DEFAULT TRUE,
+  fecha_alta           DATE NOT NULL DEFAULT CURRENT_DATE,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT entrada_alta_unica UNIQUE (id_manager, cliente_idnoofit, cuota_codigo)
+);
+CREATE INDEX IF NOT EXISTS idx_ep_alta_manager ON entrada_puntual_alta(id_manager);
+CREATE INDEX IF NOT EXISTS idx_ep_alta_activo  ON entrada_puntual_alta(id_manager, activo);
+
+-- Cada reserva confirmada detectada = una entrada a cobrar (por_entrada) o a
+-- facturar al cierre de mes (por_mes). Append vía cron de detección; el cobro
+-- en recepción o la emisión mensual la marcan cobrada/facturada.
+--   estado: 'pendiente' | 'cobrado' | 'facturado' | 'anulado'
+CREATE TABLE IF NOT EXISTS entrada_puntual_evento (
+  id                SERIAL PRIMARY KEY,
+  id_manager        VARCHAR(64) NOT NULL,
+  id_trainer        VARCHAR(64),
+  alta_id           INTEGER REFERENCES entrada_puntual_alta(id) ON DELETE SET NULL,
+  cliente_idnoofit  VARCHAR(64) NOT NULL,
+  cliente_nombre    VARCHAR(240),
+  cuota_codigo      VARCHAR(64),
+  actividad_nombre  VARCHAR(240),
+  sala_id           VARCHAR(64),
+  fecha_clase       DATE NOT NULL,
+  hora_clase        VARCHAR(8),
+  modo              VARCHAR(12) NOT NULL,
+  precio_entrada    NUMERIC(10,2) DEFAULT 0,
+  estado            VARCHAR(16) NOT NULL DEFAULT 'pendiente'
+                      CHECK (estado IN ('pendiente','cobrado','facturado','anulado')),
+  forma_pago        VARCHAR(24),
+  recibo_odoo_id    INTEGER,
+  mes               VARCHAR(7),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  cobrado_at        TIMESTAMPTZ,
+  cobrado_por       VARCHAR(120),
+  CONSTRAINT entrada_evento_unico UNIQUE (id_manager, cliente_idnoofit, sala_id, fecha_clase)
+);
+CREATE INDEX IF NOT EXISTS idx_ep_evt_manager  ON entrada_puntual_evento(id_manager);
+CREATE INDEX IF NOT EXISTS idx_ep_evt_estado   ON entrada_puntual_evento(id_manager, estado);
+CREATE INDEX IF NOT EXISTS idx_ep_evt_mes      ON entrada_puntual_evento(id_manager, mes);
+
 
 -- ─── DESCUENTOS ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS descuento (
@@ -475,6 +540,41 @@ CREATE INDEX IF NOT EXISTS idx_centro_slug ON centro_contacto(id_manager, slug);
 ALTER TABLE centro_contacto
   ADD COLUMN IF NOT EXISTS dias_permitidos        JSONB DEFAULT '[]'::jsonb,
   ADD COLUMN IF NOT EXISTS actividades_permitidas JSONB DEFAULT '[]'::jsonb;
+
+-- Configuración "Alta de cliente": cómo se da de alta un nuevo cliente en
+-- mynoofit y se vincula al trainer. Valores válidos:
+--   'centro'     → QR del CENTRO visible en /clientes (top-right). Cliente
+--                  escanea y se da de alta + queda vinculado al trainer.
+--   'individual' → QR del centro NO visible. El gestor crea primero la ficha
+--                  del cliente y le entrega su QR personal (en la ficha) para
+--                  que el cliente vincule SU cuenta mynoofit a esa ficha.
+--   'ambos'      → ambos QR disponibles a la vez.
+-- El gestor cambia esto en Configuración → Alta de cliente; el cambio aplica
+-- automáticamente sin necesidad de recargar.
+ALTER TABLE centro_contacto
+  ADD COLUMN IF NOT EXISTS alta_cliente_modo VARCHAR(20) NOT NULL DEFAULT 'centro';
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name='centro_contacto'
+                AND column_name='alta_cliente_modo'
+                AND udt_name LIKE 'varchar%') THEN
+    BEGIN
+      ALTER TABLE centro_contacto
+        ADD CONSTRAINT centro_alta_cliente_modo_chk
+        CHECK (alta_cliente_modo IN ('centro','individual','ambos'));
+    EXCEPTION WHEN duplicate_object THEN NULL; END;
+  END IF;
+END $$;
+
+-- Datos SEPA empresa (mayo 2026): necesarios para generar el fichero
+-- pain.008 que Round sube al banco para hacer los adeudos directos.
+ALTER TABLE centro_contacto
+  ADD COLUMN IF NOT EXISTS iban_cobro       VARCHAR(34),
+  ADD COLUMN IF NOT EXISTS bic              VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS sepa_creditor_id VARCHAR(35);
+COMMENT ON COLUMN centro_contacto.iban_cobro       IS 'IBAN donde Round recibe los cobros SEPA';
+COMMENT ON COLUMN centro_contacto.bic              IS 'BIC del banco de Round (opcional)';
+COMMENT ON COLUMN centro_contacto.sepa_creditor_id IS 'Creditor Identifier SEPA, ej: ES50ZZZB12345678';
 
 
 -- ─── ASIGNACIÓN LEADS (para tracking trainer ↔ odoo lead) ───────────────────

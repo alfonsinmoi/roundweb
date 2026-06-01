@@ -409,10 +409,16 @@ def clientes():
     id_trainer = g.id_trainer
     is_admin = bool(g.usuario_web.get('perfil_is_admin'))
     override = (request.args.get('id_trainer') or '').strip()
-    if is_admin:
+    # Nueva regla (mayo 2026): si el usuario eligió un centro al login (su JWT
+    # lleva id_trainer), queda BLOQUEADO a ese centro durante la sesión —
+    # tiene que hacer logout para cambiar. Solo el manager bare (sin id_trainer
+    # en el JWT) puede ver "Todos los centros" o filtrar por ?id_trainer=X.
+    if id_trainer:
+        trainer_filtro = id_trainer
+    elif is_admin:
         trainer_filtro = override if (override and override.lower() not in ('all', '*', '')) else None
     else:
-        trainer_filtro = id_trainer
+        trainer_filtro = None
 
     full = _read_clientes_local(id_manager)
     state = _clientes_sync_state(id_manager)
@@ -483,15 +489,18 @@ def salas():
             return jsonify({'ok': False, 'error': str(e)}), 502
 
     is_admin = bool(g.usuario_web.get('perfil_is_admin'))
-    # Override admin via body o querystring
+    # Override admin via body o querystring (solo si JWT no lleva centro fijo).
     override = (d.get('id_trainer') or request.args.get('id_trainer') or '').strip()
-    if is_admin:
+    if id_trainer:
+        # Usuario eligió centro en login → bloqueado durante la sesión.
+        trainer_filtro = id_trainer
+    elif is_admin:
         if override and override.lower() not in ('all', '*', ''):
             trainer_filtro = override
         else:
             trainer_filtro = None
     else:
-        trainer_filtro = id_trainer
+        trainer_filtro = None
     filtered = _filter_by_trainer(full, trainer_filtro)
     return jsonify({'ok': True, 'mensaje': 'OK', 'salas': filtered,
                     'total_full': len(full), 'total_filtered': len(filtered),

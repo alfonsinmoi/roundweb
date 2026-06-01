@@ -10,7 +10,7 @@ POST   /api/config/email-templates/<id>/test            → enviar a un email de
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..email_templates import (
     seed_templates, render, html_to_text, DEFAULT_TEMPLATES,
@@ -87,6 +87,7 @@ def list_all():
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_permission('configuracion.email_templates.editar')
 def create():
     err = _manager_only()
     if err: return err
@@ -123,6 +124,7 @@ def create():
 
 @bp.route('/<int:tpl_id>', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.email_templates.editar')
 def update(tpl_id):
     err = _manager_only()
     if err: return err
@@ -158,6 +160,7 @@ def update(tpl_id):
 
 @bp.route('/<int:tpl_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.email_templates.editar')
 def delete(tpl_id):
     err = _manager_only()
     if err: return err
@@ -176,6 +179,7 @@ def delete(tpl_id):
 
 @bp.route('/seed', methods=['POST'])
 @auth_required
+@require_permission('configuracion.email_templates.editar')
 def seed():
     """Inserta las plantillas por defecto (solo crea las que faltan)."""
     err = _manager_only()
@@ -190,6 +194,7 @@ def seed():
 
 @bp.route('/<int:tpl_id>/test', methods=['POST'])
 @auth_required
+@require_permission('configuracion.email_templates.editar')
 def test(tpl_id):
     """Renderiza la plantilla con un payload de ejemplo y la envía a dest_email."""
     err = _manager_only()

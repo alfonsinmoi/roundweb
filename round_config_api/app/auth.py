@@ -76,9 +76,12 @@ def _load_usuario_web_from_jwt():
         'is_admin': bool(row['p_is_admin']),
         'permisos': row['p_permisos'] or {},
     }
-    # Sobreescribe id_manager/id_trainer con los del JWT (autoritativos).
+    # id_manager: del BD (es invariante por usuario).
     g.id_manager = row['id_manager']
-    g.id_trainer = row['id_trainer']
+    # id_trainer: del JWT claim `trn` (autoritativo — el usuario eligió
+    # un centro al login y queda bloqueado a él durante toda la sesión).
+    # Fallback al valor del BD para usuarios viejos sin claim `trn`.
+    g.id_trainer = claims.get('trn') or row['id_trainer']
     return True
 
 
@@ -109,6 +112,15 @@ def auth_required(fn):
 
         if not g.id_manager:
             return jsonify({'ok': False, 'error': 'missing_manager_id'}), 400
+        # Validar que id_manager e id_trainer son numéricos (id NoofitPro).
+        # Sin esto, cualquier endpoint que use g.id_manager en rutas
+        # filesystem (upload-media) o WHERE de SQL sin params (no debería
+        # haberlas, pero defensivo) acepta '..' o '/' — audit mayo 2026.
+        import re as _re
+        if not _re.fullmatch(r'\d{1,16}', g.id_manager):
+            return jsonify({'ok': False, 'error': 'invalid_manager_id'}), 400
+        if g.id_trainer and not _re.fullmatch(r'\d{1,16}', g.id_trainer):
+            return jsonify({'ok': False, 'error': 'invalid_trainer_id'}), 400
 
         return fn(*args, **kwargs)
     return wrapper
@@ -135,6 +147,24 @@ def _has_permission(perfil: dict | None, path: str) -> bool:
         if cur is None:
             return False
     return cur is True
+
+
+def resolve_trainer_target(qs_value):
+    """Sprint 4 #C3: helper para evitar cross-trainer leaks.
+
+    Un usuario_web atado a un centro (`g.id_trainer` set por su JWT) NO
+    puede ver datos de OTRO trainer pasando `?id_trainer=Y` en query string.
+    Manager NoofitPro (sin perfil) y manager_bare (con perfil pero sin
+    `trn` claim) sí pueden filtrar libremente.
+
+    Returns: (target_trainer:str|None, forbidden:bool)
+      - forbidden=True → el endpoint debe devolver 403
+    """
+    qs_trainer = (qs_value or '').strip()
+    bound_trainer = getattr(g, 'id_trainer', None)
+    if bound_trainer and qs_trainer and qs_trainer != str(bound_trainer):
+        return None, True
+    return (qs_trainer or bound_trainer), False
 
 
 def require_permission(path: str):

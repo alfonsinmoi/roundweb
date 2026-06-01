@@ -12,6 +12,7 @@ import {
   categoriasList, categoriaCreate, categoriaUpdate, categoriaDelete,
   categoriaConteo,
 } from '../../utils/configApi'
+import { useCan } from '../../hooks/useCan'
 
 const COLORES = [
   { id: 'purple', label: 'Morado' },
@@ -30,6 +31,8 @@ const EMPTY = {
 
 export default function CategoriasTab({ identity }) {
   const toast = useToast()
+  const canCrear = useCan('configuracion.categorias_cliente.crear')
+  const canBorrar = useCan('configuracion.categorias_cliente.borrar')
   const [items, setItems] = useState([])
   const [conteos, setConteos] = useState([])     // [{id, nombre, clientes}]
   const [loading, setLoading] = useState(true)
@@ -110,7 +113,7 @@ export default function CategoriasTab({ identity }) {
           <strong style={{ color: 'var(--text-1)' }}> "puede reservar"</strong> desactivado, los clientes asignados no podrán reservar
           clases. Si la categoría se inactiva, sucede lo mismo.
         </p>
-        {editing == null && (
+        {editing == null && canCrear && (
           <Btn size="sm" onClick={startNew}><Plus size={14} /> Nueva categoría</Btn>
         )}
       </div>
@@ -189,10 +192,12 @@ export default function CategoriasTab({ identity }) {
                         style={btnIcon}>
                   <Edit2 size={13} />
                 </button>
-                <button onClick={() => remove(c)} aria-label="Borrar"
-                        style={{ ...btnIcon, color: 'var(--red)' }}>
-                  <Trash2 size={13} />
-                </button>
+                {canBorrar && (
+                  <button onClick={() => remove(c)} aria-label="Borrar"
+                          style={{ ...btnIcon, color: 'var(--red)' }}>
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
             </div>
           ))}

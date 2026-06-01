@@ -141,7 +141,11 @@ def usuario_web_required(fn):
 
         g.usuario_web = row
         g.id_manager = row['id_manager']
-        g.id_trainer = row['id_trainer']
+        # Trainer activo en esta sesión: el que el usuario eligió al login
+        # (claim `trn` del JWT) — no el default de la fila DB. Cuando el
+        # usuario tiene acceso a varios centros, cada login emite JWT con
+        # `trn` distinto y g.id_trainer debe reflejar esa elección.
+        g.id_trainer = claims.get('trn') or row['id_trainer']
 
         # Refresco silencioso: si al JWT le quedan menos de
         # JWT_REFRESH_WHEN_LESS_THAN_HOURS, emitimos uno nuevo para esta
@@ -152,8 +156,11 @@ def usuario_web_required(fn):
             if exp_ts:
                 remaining_h = (exp_ts - dt.datetime.utcnow().timestamp()) / 3600.0
                 if remaining_h < JWT_REFRESH_WHEN_LESS_THAN_HOURS:
+                    # Conservar el trainer elegido al refrescar (no resetear
+                    # al default de la fila) — si no, el usuario perdería la
+                    # selección de centro a las pocas horas.
                     g._refresh_jwt = issue_jwt(
-                        row['id'], row['id_manager'], row['id_trainer'],
+                        row['id'], row['id_manager'], g.id_trainer,
                         row['perfil_id'], kind='usuario_web')
         except Exception:
             pass

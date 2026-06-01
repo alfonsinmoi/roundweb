@@ -330,14 +330,13 @@ class OdooCuotas:
         mod_descs, mod_total = [], 0.0
         for m in mods:
             v = float(m['valor'])
-            if m['tipo'] == 'descuento':
-                mod_total -= v
-            elif m['tipo'] == 'cargo_extra':
+            # Math por SIGNO de valor: positivo suma, negativo resta.
+            # `tipo` queda como etiqueta; `precio_alternativo` sustituye base.
+            if m['tipo'] in ('descuento', 'cargo_extra'):
                 mod_total += v
             elif m['tipo'] == 'precio_alternativo':
-                # sustituye el base
-                precio_base = v
-            mod_descs.append(f"{m['tipo']} {v}€")
+                precio_base = abs(v)
+            mod_descs.append(f"{m['tipo']} {'+' if v >= 0 else '−'}{abs(v)}€")
 
         precio_final = max(0.0, precio_base - desc_total + mod_total)
         return {
@@ -369,11 +368,17 @@ class OdooCuotas:
         return self._list_recibos(domain)
 
     def list_recibos_cliente(self, id_noofit):
-        partner_ids = self._call('res.partner','search',[('id_noofit','=',str(id_noofit))],limit=1)
+        # IMPORTANTE: hay clientes con varios partners Odoo duplicados con el
+        # mismo id_noofit (residuo de altas previas que crearon ghost partners).
+        # Buscamos TODOS los partners y devolvemos los recibos de TODOS — si
+        # filtrásemos al primero (limit=1) los recibos emitidos contra el
+        # otro partner quedarían invisibles para el operador.
+        partner_ids = self._call('res.partner','search',
+                                 [('id_noofit','=',str(id_noofit))])
         if not partner_ids:
             return []
         return self._list_recibos([('move_type','=','out_invoice'),
-                                   ('partner_id','=',partner_ids[0])])
+                                   ('partner_id','in',partner_ids)])
 
 
     def generar_pdf_factura(self, invoice_id):
@@ -570,12 +575,12 @@ class OdooCuotas:
                         fields=['tipo','valor','razon'])
                     for mo in mods:
                         v = float(mo['valor'])
-                        if mo['tipo'] == 'descuento':
-                            importe = -v
-                        elif mo['tipo'] == 'cargo_extra':
+                        # Signo de valor manda. `precio_alternativo` afecta
+                        # al base, no se suma al importe.
+                        if mo['tipo'] in ('descuento', 'cargo_extra'):
                             importe = v
                         else:  # precio_alternativo
-                            importe = 0  # afecta base, no se suma
+                            importe = 0
                         mods_aplicadas.append({
                             'tipo': mo['tipo'],
                             'valor': v,

@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react'
 import { Loader2, FileText, Download, Check, AlertTriangle } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
+import { useCan } from '../../hooks/useCan'
 import {
   facturacionTrimestrePreview, facturacionTrimestreFacturar,
 } from '../../utils/cuotasApi'
@@ -21,6 +22,9 @@ function currentTrimestre() {
 
 export default function FacturacionTrimestreTab({ identity }) {
   const toast = useToast()
+  // Gates UI
+  const canEmitirTrim = useCan('economico.cuotas_mensuales.facturacion_trimestre_emitir')
+  const canExcelTrim = useCan('economico.cuotas_mensuales.facturacion_trimestre_excel')
   const [trim, setTrim] = useState(currentTrimestre())
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -108,12 +112,16 @@ export default function FacturacionTrimestreTab({ identity }) {
                    }} />
           </div>
           <div style={{ flex: 1 }} />
-          <Btn variant="secondary" onClick={descargarExcel} disabled={!data}>
-            <Download size={14} /> Descargar Excel
-          </Btn>
-          <Btn variant="primary" onClick={facturar} disabled={facturando || marcados.size === 0}>
-            {facturando ? <><Loader2 size={14} className="animate-spin" /> Facturando…</> : <><FileText size={14} /> Facturar marcados ({marcados.size})</>}
-          </Btn>
+          {canExcelTrim && (
+            <Btn variant="secondary" onClick={descargarExcel} disabled={!data}>
+              <Download size={14} /> Descargar Excel
+            </Btn>
+          )}
+          {canEmitirTrim && (
+            <Btn variant="primary" onClick={facturar} disabled={facturando || marcados.size === 0}>
+              {facturando ? <><Loader2 size={14} className="animate-spin" /> Facturando…</> : <><FileText size={14} /> Facturar marcados ({marcados.size})</>}
+            </Btn>
+          )}
         </div>
       </Card>
 

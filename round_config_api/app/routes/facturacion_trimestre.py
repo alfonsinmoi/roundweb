@@ -182,7 +182,7 @@ def facturar(trim):
         cur.execute("""
             SELECT id, cliente_idnoofit, cliente_nombre, cuota_codigo,
                    importe_base, importe_iva, importe_total, periodo,
-                   estado, account_move_id
+                   estado, account_move_id, account_payment_id
               FROM recibo
              WHERE id_manager=%s AND id = ANY(%s) AND estado='pagado'
                AND account_move_id IS NULL
@@ -243,6 +243,28 @@ def facturar(trim):
         try:
             inv_id = o._call('account.move', 'create', invoice_vals)
             o._call('account.move', 'action_post', [inv_id])
+            # C3 (junio 2026) — netting "cuando se facture": estos recibos ya
+            # están pagados (payment a cuenta del cliente creado por
+            # marcar_pagado). Al emitir la factura, reconciliamos cada payment
+            # contra ella para que la factura quede pagada y el crédito a
+            # cuenta del cliente se netee. Un fallo de reconcile NO aborta la
+            # facturación (la factura ya existe; se puede reconciliar luego).
+            reconciliados = 0
+            try:
+                from ..odoo_pos_sync import _reconcile
+                for rr in lista_recibos:
+                    pay_id = rr.get('account_payment_id')
+                    if not pay_id:
+                        continue
+                    try:
+                        _reconcile(o, inv_id, pay_id, company_id)
+                        reconciliados += 1
+                    except Exception as e:
+                        log.warning(f'facturacion_trimestre: reconcile payment '
+                                    f'{pay_id} (recibo {rr["id"]}) ↔ factura '
+                                    f'{inv_id} falló: {e}')
+            except Exception:
+                log.exception('facturacion_trimestre: import/loop reconcile')
             # Vincular recibos
             inv_data = o._call('account.move', 'read', [inv_id], ['name'])[0]
             with get_conn() as conn, conn.cursor() as cur:
@@ -258,6 +280,7 @@ def facturar(trim):
                 'invoice_id': inv_id, 'name': inv_data['name'],
                 'cliente_idnoofit': cli_idnoofit,
                 'recibos': len(lista_recibos),
+                'pagos_reconciliados': reconciliados,
                 'importe_total': sum(float(r['importe_total'] or 0) for r in lista_recibos),
             })
         except Exception as e:

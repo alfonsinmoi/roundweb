@@ -192,6 +192,111 @@ def get_usuarios_sala(sala_id):
     return data.get('usuarios') or []
 
 
+def get_reservas_confirmadas_with_creds(fecha_desde, fecha_hasta,
+                                        email, password):
+    """Variante de `get_reservas_confirmadas` autenticada con credenciales
+    explícitas (manager o trainer). Útil para crons multi-tenant que
+    iteran managers/trainers sin depender del token por defecto del .env.
+    """
+    import datetime as _dt
+    tok, mgr = _login_as(email, password)
+    body = {'fechaDesde': fecha_desde, 'fechaHasta': fecha_hasta}
+    r = _request_as(tok, mgr, 'POST',
+                    '/api/dispositivos/getSalasByManagerByRange', json=body)
+    r.raise_for_status()
+    data = r.json() if r.text else {}
+    salas = (data.get('salas') or [])
+    salas = [s for s in salas if s.get('enabled') is not False]
+    out = []
+    for s in salas:
+        ms = s.get('dateStart')
+        dt = None
+        try:
+            if ms is not None:
+                dt = _dt.datetime.fromtimestamp(int(ms) / 1000)
+        except Exception:
+            dt = None
+        fecha = dt.date().isoformat() if dt else None
+        hora = dt.strftime('%H:%M') if dt else None
+        sala_id = s.get('id') or s.get('idSala')
+        act_id = s.get('idActividad')
+        act_nombre = (s.get('actividad') or s.get('nameActividad')
+                      or s.get('name') or '')
+        trainer = s.get('idTrainer')
+        for u in (s.get('users') or []):
+            if u.get('enabled') is False:
+                continue
+            cid = u.get('idClient') or u.get('idCliente') or u.get('idUsuario')
+            if not cid:
+                continue
+            out.append({
+                'sala_id': str(sala_id) if sala_id is not None else None,
+                'actividad_id': act_id,
+                'actividad_nombre': act_nombre,
+                'id_trainer': trainer,
+                'fecha': fecha,
+                'hora': hora,
+                'cliente_id': str(cid),
+                'cliente_nombre': (u.get('nameClient') or '').strip() or None,
+            })
+    return out
+
+
+def get_reservas_confirmadas(fecha_desde, fecha_hasta):
+    """Reservas CONFIRMADAS (no anuladas) por cliente entre dos fechas.
+
+    Las instancias de clase de `get_clases_por_rango` ya traen embebida la
+    lista `users` con los reservados (cada uno con `enabled`). Una reserva
+    confirmada = usuario con `enabled` != False.
+
+    Devuelve lista de dicts:
+      {sala_id, actividad_id, actividad_nombre, id_trainer,
+       fecha (ISO date), hora ('HH:MM'), cliente_id (str)}
+    """
+    import datetime as _dt
+    salas = get_clases_por_rango(fecha_desde, fecha_hasta) or []
+    out = []
+    for s in salas:
+        ms = s.get('dateStart')
+        dt = None
+        try:
+            if ms is not None:
+                dt = _dt.datetime.fromtimestamp(int(ms) / 1000)
+        except Exception:
+            dt = None
+        fecha = dt.date().isoformat() if dt else None
+        hora = dt.strftime('%H:%M') if dt else None
+        sala_id = s.get('id') or s.get('idSala')
+        act_id = s.get('idActividad')
+        act_nombre = (s.get('actividad') or s.get('nameActividad')
+                      or s.get('name') or '')
+        trainer = s.get('idTrainer')
+        for u in (s.get('users') or []):
+            if u.get('enabled') is False:
+                continue
+            # CRITICAL: `idClient` es el id real del cliente en la web admin
+            # (rango 1.8M+ para Round). `id` es el id del JOIN sala-usuario
+            # (rango 100k, espacio histórico mynoofit) — NO usar como id de
+            # cliente. nameClient es el nombre del cliente.
+            cid = u.get('idClient') or u.get('idCliente') or u.get('idUsuario')
+            if not cid:
+                continue
+            out.append({
+                'sala_id': str(sala_id) if sala_id is not None else None,
+                'actividad_id': act_id,
+                'actividad_nombre': act_nombre,
+                'id_trainer': trainer,
+                'fecha': fecha,
+                'hora': hora,
+                'cliente_id': str(cid),
+                # `nameClient` viene en el payload de la sala. Útil para el
+                # informe de integridad cuando el cliente NO está en nuestra
+                # cache (cliente de otro centro NoofitPro reservando aquí).
+                'cliente_nombre': (u.get('nameClient') or '').strip() or None,
+            })
+    return out
+
+
 def get_clientes():
     """Lista de clientes simplificada (incluye id, name, surname, email, dni...)."""
     r = _request('GET', '/api/dispositivos/getClienteSimple')
@@ -297,10 +402,9 @@ def reactivar_cliente(cliente_id):
 
 def archivar_cliente(cliente_id, motivo: str = None):
     """Archiva un cliente en NoofitPro (enabled=False, motivoArchivado=<motivo>).
-    Lo opuesto a reactivar_cliente. Devuelve True si OK, False si falló.
-    Usado por:
-      - endpoint POST /api/clientes/<id>/baja-programada cuando fecha_baja<=hoy
-      - cron_baja_programada (diario) para ejecutar bajas programadas
+    Usa la cuenta del MANAGER por defecto (la del .env). Sólo funciona si el
+    cliente pertenece a la propia cuenta del manager — para clientes de un
+    TRAINER hijo usa `archivar_cliente_as_trainer`. Devuelve True/False.
     """
     try:
         clis = get_clientes() or []
@@ -318,6 +422,41 @@ def archivar_cliente(cliente_id, motivo: str = None):
         return True
     except Exception as e:
         log.exception(f'archivar_cliente {cliente_id}: {e}')
+        return False
+
+
+def archivar_cliente_as_trainer(cliente_id, motivo, trainer_email, trainer_password):
+    """Variante autenticada como TRAINER (necesario para archivar clientes que
+    pertenecen al espacio del trainer y no al manager parent). NoofitPro
+    devuelve el cliente con `getClienteSimple` autenticado como el trainer
+    correcto y permite hacer el POST de archivar.
+
+    Devuelve True si archivó (o si ya estaba archivado), False si no encontró
+    el cliente o la operación falló.
+    """
+    try:
+        tok, mgr = _login_as(trainer_email, trainer_password)
+        r = _request_as(tok, mgr, 'GET', '/api/dispositivos/getClienteSimple')
+        r.raise_for_status()
+        clis = ((r.json() or {}).get('clientes')) or []
+        cli = next((c for c in clis if c.get('id') == int(cliente_id)), None)
+        if not cli:
+            log.warning(f'archivar_cliente_as_trainer {cliente_id}: no en espacio del trainer {trainer_email}')
+            return False
+        if cli.get('enabled') is False:
+            return True  # ya archivado (idempotente)
+        body = [{**cli, 'enabled': False,
+                 'motivoArchivado': motivo or '',
+                 'toSend': False}]
+        r2 = _request_as(tok, mgr, 'POST',
+                         '/api/dispositivos/clientePlusv2', json=body)
+        r2.raise_for_status()
+        log.info(f'cliente {cliente_id} archivado en NoofitPro como trainer '
+                 f'{trainer_email} (motivo: {motivo!r})')
+        return True
+    except Exception as e:
+        log.exception(f'archivar_cliente_as_trainer {cliente_id} '
+                      f'({trainer_email}): {e}')
         return False
 
 
@@ -346,7 +485,7 @@ def cancelar_reserva_por_join_id(id_sala_join):
 
 
 def cancelar_reserva(sala_id, cliente_id):
-    """Cancela una reserva. Busca primero el id del join en la sala."""
+    """Cancela una reserva (token por defecto). Busca primero el id del join."""
     sala_users = get_usuarios_sala(sala_id) or []
     join_id = None
     for u in sala_users:
@@ -356,3 +495,27 @@ def cancelar_reserva(sala_id, cliente_id):
         log.warning(f'cancelar_reserva: no se encontró join sala={sala_id} cliente={cliente_id}')
         return None
     return cancelar_reserva_por_join_id(join_id)
+
+
+def cancelar_reserva_with_creds(sala_id, cliente_id, email, password):
+    """Variante autenticada con credenciales explícitas. Usar en crons multi-
+    tenant para cancelar reservas del manager/trainer que las creó.
+    """
+    tok, mgr = _login_as(email, password)
+    # Buscar join_id en los usuarios de la sala
+    r = _request_as(tok, mgr, 'POST', '/api/dispositivos/getUsuariosBySala',
+                    json={'idSala': sala_id})
+    r.raise_for_status()
+    usuarios = ((r.json() or {}).get('usuarios')) or []
+    join_id = None
+    for u in usuarios:
+        if u.get('idClient') == cliente_id:
+            join_id = u.get('id'); break
+    if not join_id:
+        log.warning(f'cancelar_reserva_with_creds: no se encontró join '
+                    f'sala={sala_id} cliente={cliente_id} (auth={email})')
+        return None
+    r2 = _request_as(tok, mgr, 'POST', '/api/dispositivos/userRemoveSala',
+                     json={'id': join_id})
+    r2.raise_for_status()
+    return r2.json() if r2.text else None

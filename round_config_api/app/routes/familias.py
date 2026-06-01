@@ -23,8 +23,9 @@ Endpoints:
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
+from ..trainer_scope import cliente_pertenece_a_trainer
 
 bp = Blueprint('familias', __name__)
 # Aceptamos rutas con y sin barra final para que nginx pueda hacer
@@ -56,14 +57,32 @@ def _miembros_de(cur, familia_id):
 @bp.route('/', methods=['GET'])
 @auth_required
 def list_():
-    """Lista todas las familias del manager con sus miembros embebidos."""
+    """Lista todas las familias del manager con sus miembros embebidos.
+
+    Aislamiento por trainer: si el usuario está impersonando un trainer,
+    devolvemos sólo familias con ≥1 miembro perteneciente a ese trainer
+    (vía `cliente_cache.id_trainer`). El manager bare ve todas."""
+    where = ['f.id_manager = %s']
+    vals = [str(g.id_manager)]
+    if g.id_trainer:
+        # EXISTS sub-correlated: la familia tiene al menos un miembro cuyo
+        # cliente está asignado a este trainer.
+        where.append("""EXISTS (
+            SELECT 1 FROM familia_miembro fm
+              JOIN cliente_cache cc
+                ON cc.id::text = fm.cliente_idnoofit
+               AND cc.id_manager = fm.id_manager
+             WHERE fm.familia_id = f.id
+               AND cc.id_trainer = %s
+        )""")
+        vals.append(str(g.id_trainer))
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT id, id_manager, nombre, created_at, updated_at
-              FROM familia
-             WHERE id_manager = %s
-             ORDER BY nombre NULLS LAST, created_at
-        """, (str(g.id_manager),))
+        cur.execute(f"""
+            SELECT f.id, f.id_manager, f.nombre, f.created_at, f.updated_at
+              FROM familia f
+             WHERE {' AND '.join(where)}
+             ORDER BY f.nombre NULLS LAST, f.created_at
+        """, vals)
         familias = [_row(r) for r in cur.fetchall()]
         for f in familias:
             f['miembros'] = _miembros_de(cur, f['id'])
@@ -83,6 +102,20 @@ def get(_id):
         if not f:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         f['miembros'] = _miembros_de(cur, _id)
+        # Aislamiento por trainer: si está impersonado, comprobar que la
+        # familia tiene al menos un miembro suyo. Si no, 404 (no exponer).
+        if g.id_trainer:
+            cur.execute("""
+                SELECT 1 FROM familia_miembro fm
+                  JOIN cliente_cache cc
+                    ON cc.id::text = fm.cliente_idnoofit
+                   AND cc.id_manager = fm.id_manager
+                 WHERE fm.familia_id = %s
+                   AND cc.id_trainer = %s
+                 LIMIT 1
+            """, (_id, str(g.id_trainer)))
+            if not cur.fetchone():
+                return jsonify({'ok': False, 'error': 'not_found'}), 404
     return jsonify({'ok': True, 'familia': f})
 
 
@@ -91,6 +124,7 @@ def get(_id):
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_permission('clientes.familias.crear')
 def create():
     d = request.get_json() or {}
     with get_conn() as conn, conn.cursor() as cur:
@@ -106,6 +140,7 @@ def create():
 
 @bp.route('/<int:_id>', methods=['PATCH', 'PUT'])
 @auth_required
+@require_permission('clientes.familias.editar')
 def update(_id):
     d = request.get_json() or {}
     with get_conn() as conn, conn.cursor() as cur:
@@ -123,6 +158,7 @@ def update(_id):
 
 @bp.route('/<int:_id>', methods=['DELETE'])
 @auth_required
+@require_permission('clientes.familias.borrar')
 def delete(_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -141,6 +177,10 @@ def delete(_id):
 @auth_required
 def familia_de_cliente(idnoofit):
     """Devuelve la familia del cliente (incluyendo TODOS sus miembros) o null."""
+    # Aislamiento por trainer: si el cliente no es del trainer impersonado,
+    # devolver null (no exponer la familia y sus otros miembros).
+    if not cliente_pertenece_a_trainer(idnoofit):
+        return jsonify({'ok': True, 'familia': None})
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT f.id, f.id_manager, f.nombre, f.created_at, f.updated_at
@@ -158,6 +198,7 @@ def familia_de_cliente(idnoofit):
 
 @bp.route('/cliente/<idnoofit>', methods=['POST'])
 @auth_required
+@require_permission('clientes.familias.asignar')
 def add_cliente_a_familia(idnoofit):
     """Asigna `idnoofit` a una familia.
 
@@ -252,6 +293,7 @@ def add_cliente_a_familia(idnoofit):
 
 @bp.route('/cliente/<idnoofit>', methods=['DELETE'])
 @auth_required
+@require_permission('clientes.familias.asignar')
 def quitar_cliente_de_familia(idnoofit):
     """Quita al cliente de su familia. Si la familia queda vacía, la borra."""
     with get_conn() as conn, conn.cursor() as cur:

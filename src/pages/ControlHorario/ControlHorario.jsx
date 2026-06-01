@@ -5,6 +5,7 @@ import { getRoundIdentity } from '../../utils/configApi'
 import { useOdooStatus } from '../../hooks/useOdooStatus'
 import { activarHorario } from '../../utils/horarioApi'
 import { useToast } from '../../components/Toast'
+import { useCan } from '../../hooks/useCan'
 import { Card, Btn } from '../../components/UI'
 import TrabajadoresTab   from './TrabajadoresTab'
 import FichajesTab       from './FichajesTab'
@@ -41,6 +42,7 @@ export default function ControlHorario() {
   const toast = useToast()
   const [activeTab, setActiveTab] = useState(() => _readTabFromLocation() || 'trabajadores')
   const [activating, setActivating] = useState(false)
+  const canActivar = useCan('control_horario.modulo.activar')
 
   // Sync tab ↔ URL hash
   useEffect(() => {
@@ -104,9 +106,15 @@ export default function ControlHorario() {
             <li>Sin biometría (cumple AEPD 2023)</li>
           </ul>
           <div style={{ marginTop: 16 }}>
-            <Btn onClick={handleActivar} disabled={activating}>
-              {activating ? 'Activando…' : 'Activar módulo'}
-            </Btn>
+            {canActivar ? (
+              <Btn onClick={handleActivar} disabled={activating}>
+                {activating ? 'Activando…' : 'Activar módulo'}
+              </Btn>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--text-3)', margin: 0 }}>
+                No tienes permiso para activar este módulo. Contacta con el admin.
+              </p>
+            )}
           </div>
         </Card>
       </div>

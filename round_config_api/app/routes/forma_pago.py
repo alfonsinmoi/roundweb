@@ -15,6 +15,8 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
+from ..trainer_scope import cliente_pertenece_a_trainer
+from ..iban_validator import validar_iban
 
 bp = Blueprint('forma_pago', __name__)
 log = logging.getLogger(__name__)
@@ -30,6 +32,9 @@ def _serialize(row):
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
 def list_by_cliente(id_noofit):
+    # Aislamiento por trainer.
+    if not cliente_pertenece_a_trainer(id_noofit):
+        return jsonify({'ok': True, 'formas_pago': []})
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, cliente_idnoofit, forma_pago, iban, iban_titular, bic,
@@ -66,6 +71,20 @@ def create_forma_pago():
     if forma not in FORMAS_VALIDAS:
         return jsonify({'ok': False, 'error': f'forma_pago_invalid (acepta: {sorted(FORMAS_VALIDAS)})'}), 400
 
+    # Validación IBAN obligatoria para SEPA (rechaza IBANs matemáticamente
+    # inválidos antes de que entren en BD y luego en la remesa).
+    iban_normalizado = (d.get('iban') or '').replace(' ', '').upper()
+    if forma == 'sepa':
+        if not iban_normalizado:
+            return jsonify({'ok': False, 'error': 'iban_required_sepa',
+                            'detalle': 'SEPA requiere IBAN'}), 400
+        v = validar_iban(iban_normalizado)
+        if not v['ok']:
+            return jsonify({'ok': False, 'error': 'iban_invalido',
+                            'codigo': v['error'],
+                            'detalle': v['detalle']}), 400
+        iban_normalizado = v['iban_normalizado']
+
     fecha_inicio = d.get('fecha_inicio') or dt.date.today().isoformat()
     actor = actor_from_request()
     actor_label = actor.get('label') or actor.get('email') or 'API'
@@ -90,7 +109,7 @@ def create_forma_pago():
             RETURNING id
         """, (
             str(g.id_manager), cli, forma,
-            d.get('iban'), d.get('iban_titular'), d.get('bic'), d.get('mandate_ref'),
+            iban_normalizado or None, d.get('iban_titular'), d.get('bic'), d.get('mandate_ref'),
             d.get('card_token'), d.get('card_brand'), d.get('card_last4'),
             fecha_inicio, d.get('motivo_cambio'),
             actor_label, actor_label,

@@ -4,9 +4,10 @@ import { Card, Btn, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import {
   cuotasList, cuotaCreate, cuotaUpdate, cuotaDelete, cuotaAdoptar,
-  FORMAS_PAGO, PERIODICIDADES,
+  FORMAS_PAGO, PERIODICIDADES, TIPOS_CUOTA,
 } from '../../utils/configApi'
 import { getActividades } from '../../utils/api'
+import { useCan } from '../../hooks/useCan'
 
 const PRECIO_CAMPOS = [
   { id: 'precio_mensual',     label: 'Mensual' },
@@ -19,6 +20,10 @@ const PRECIO_CAMPOS = [
 
 export default function CuotasTab({ identity }) {
   const toast = useToast()
+  // Gates UI
+  const canCrear = useCan('configuracion.cuotas.crear')
+  const canBorrar = useCan('configuracion.cuotas.borrar')
+  const canAdoptar = useCan('configuracion.cuotas.adoptar')
   const [cuotas, setCuotas] = useState([])
   const [loading, setLoading] = useState(true)
   const [actividades, setActividades] = useState([])
@@ -71,9 +76,11 @@ export default function CuotasTab({ identity }) {
           <Btn variant="secondary" size="sm" onClick={reload}>
             <RefreshCw size={13} /> Refrescar
           </Btn>
-          <Btn variant="primary" size="sm" onClick={() => setEditing({})}>
-            <Plus size={13} /> Nueva cuota
-          </Btn>
+          {canCrear && (
+            <Btn variant="primary" size="sm" onClick={() => setEditing({})}>
+              <Plus size={13} /> Nueva cuota
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -84,20 +91,21 @@ export default function CuotasTab({ identity }) {
             <CuotaRow key={c.id} cuota={c} actividades={actividades}
                       isTrainer={isTrainer}
                       onEdit={!isTrainer ? () => setEditing(c) : null}
-                      onDelete={!isTrainer ? () => onDelete(c) : null}
-                      onAdoptar={isTrainer && !cuotas.some(t => t.scope === 'trainer' && t.plantilla_origen_id === c.id) ? () => onAdoptar(c.id) : null} />
+                      onDelete={!isTrainer && canBorrar ? () => onDelete(c) : null}
+                      onAdoptar={isTrainer && canAdoptar && !cuotas.some(t => t.scope === 'trainer' && t.plantilla_origen_id === c.id) ? () => onAdoptar(c.id) : null} />
           ))}
         </Section>
       )}
 
-      {/* Cuotas del trainer */}
-      {isTrainer && trainerCuotas.length > 0 && (
-        <Section titulo="Mis cuotas">
+      {/* Cuotas del trainer (también visibles para el manager sin impersonar:
+          las cuotas son per-centro, así que el manager las ve agrupadas) */}
+      {trainerCuotas.length > 0 && (
+        <Section titulo={isTrainer ? 'Mis cuotas' : 'Cuotas por centro'}>
           {trainerCuotas.map(c => (
             <CuotaRow key={c.id} cuota={c} actividades={actividades}
                       isTrainer={isTrainer}
                       onEdit={() => setEditing(c)}
-                      onDelete={() => onDelete(c)} />
+                      onDelete={canBorrar ? () => onDelete(c) : null} />
           ))}
         </Section>
       )}
@@ -150,11 +158,13 @@ function CuotaRow({ cuota, actividades, isTrainer, onEdit, onDelete, onAdoptar }
             <span style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, color: 'var(--text-0)' }}>
               {cuota.codigo}
             </span>
+            {cuota.tipo_cuota === 'entrada_puntual' && <Badge color="amber">Entrada puntual</Badge>}
             {!cuota.active && <Badge color="gray">Inactiva</Badge>}
             {cuota.plantilla_origen_id && <Badge color="blue">Adoptada</Badge>}
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>{cuota.descripcion}</p>
           <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 11, color: 'var(--text-3)', flexWrap: 'wrap' }}>
+            {cuota.tipo_cuota === 'entrada_puntual' && cuota.precio_entrada > 0 && <span>Por entrada <strong style={{ color: 'var(--text-1)' }}>{cuota.precio_entrada}€</strong></span>}
             {cuota.precio_mensual    > 0 && <span>Mensual <strong style={{ color: 'var(--text-1)' }}>{cuota.precio_mensual}€</strong></span>}
             {cuota.precio_trimestral > 0 && <span>Trim <strong style={{ color: 'var(--text-1)' }}>{cuota.precio_trimestral}€</strong></span>}
             {cuota.precio_anual      > 0 && <span>Anual <strong style={{ color: 'var(--text-1)' }}>{cuota.precio_anual}€</strong></span>}
@@ -190,8 +200,11 @@ function CuotaForm({ cuota, actividades, onClose, onSaved, identity }) {
     formas_pago: cuota.formas_pago || [],
     periodicidades: cuota.periodicidades || [],
     actividades_idnoofit: cuota.actividades_idnoofit || [],
+    tipo_cuota: cuota.tipo_cuota || 'recurrente',
+    precio_entrada: cuota.precio_entrada ?? 0,
     active: cuota.active ?? true,
   })
+  const esEntradaPuntual = data.tipo_cuota === 'entrada_puntual'
 
   const set = (k, v) => setData(d => ({ ...d, [k]: v }))
   const toggleArray = (k, v) => set(k, data[k].includes(v) ? data[k].filter(x => x !== v) : [...data[k], v])
@@ -240,31 +253,67 @@ function CuotaForm({ cuota, actividades, onClose, onSaved, identity }) {
             <Input value={data.descripcion} onChange={v => set('descripcion', v)} placeholder="RT 1 día/semana" />
           </Field>
 
-          {/* Precios */}
-          <FieldGroup titulo="Precios por periodicidad">
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
-              {PRECIO_CAMPOS.map(p => (
-                <Field key={p.id} label={p.label} small>
-                  <Input type="number" step="0.01" value={data[p.id]} onChange={v => set(p.id, parseFloat(v) || 0)} suffix="€" />
-                </Field>
-              ))}
-              <Field label="Matrícula" small>
-                <Input type="number" step="0.01" value={data.matricula} onChange={v => set('matricula', parseFloat(v) || 0)} suffix="€" />
-              </Field>
-            </div>
-          </FieldGroup>
+          {/* Tipo de cuota */}
+          <Field label="Tipo de cuota">
+            <select value={data.tipo_cuota} onChange={e => set('tipo_cuota', e.target.value)}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: 'var(--radius-sm)',
+                             background: 'var(--bg-2)', border: '1px solid var(--line)',
+                             color: 'var(--text-0)', fontSize: 13, outline: 'none' }}>
+              {TIPOS_CUOTA.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+            {esEntradaPuntual && (
+              <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 6, lineHeight: 1.5 }}>
+                Se cobra por cada <strong>reserva confirmada</strong> de las actividades
+                marcadas abajo. Al dar de alta a un cliente se elige cómo se cobra:
+                <strong> por cada entrada</strong> (efectivo/TPV/tarjeta en recepción) o
+                <strong> por mes</strong> (SEPA/tarjeta, recibo agregado al cierre).
+              </p>
+            )}
+          </Field>
 
-          {/* Periodicidades disponibles */}
-          <FieldGroup titulo="Periodicidades disponibles para esta cuota">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {PERIODICIDADES.map(p => (
-                <Chip key={p.id} active={data.periodicidades.includes(p.id)}
-                      onClick={() => toggleArray('periodicidades', p.id)}>
-                  {p.label}
-                </Chip>
-              ))}
-            </div>
-          </FieldGroup>
+          {esEntradaPuntual ? (
+            /* Precio por entrada */
+            <FieldGroup titulo="Precio por entrada">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+                <Field label="Precio / entrada" small>
+                  <Input type="number" step="0.01" value={data.precio_entrada}
+                         onChange={v => set('precio_entrada', parseFloat(v) || 0)} suffix="€" />
+                </Field>
+                <Field label="Matrícula" small>
+                  <Input type="number" step="0.01" value={data.matricula}
+                         onChange={v => set('matricula', parseFloat(v) || 0)} suffix="€" />
+                </Field>
+              </div>
+            </FieldGroup>
+          ) : (
+            <>
+              {/* Precios */}
+              <FieldGroup titulo="Precios por periodicidad">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+                  {PRECIO_CAMPOS.map(p => (
+                    <Field key={p.id} label={p.label} small>
+                      <Input type="number" step="0.01" value={data[p.id]} onChange={v => set(p.id, parseFloat(v) || 0)} suffix="€" />
+                    </Field>
+                  ))}
+                  <Field label="Matrícula" small>
+                    <Input type="number" step="0.01" value={data.matricula} onChange={v => set('matricula', parseFloat(v) || 0)} suffix="€" />
+                  </Field>
+                </div>
+              </FieldGroup>
+
+              {/* Periodicidades disponibles */}
+              <FieldGroup titulo="Periodicidades disponibles para esta cuota">
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {PERIODICIDADES.map(p => (
+                    <Chip key={p.id} active={data.periodicidades.includes(p.id)}
+                          onClick={() => toggleArray('periodicidades', p.id)}>
+                      {p.label}
+                    </Chip>
+                  ))}
+                </div>
+              </FieldGroup>
+            </>
+          )}
 
           {/* Formas de pago aceptadas */}
           <FieldGroup titulo="Formas de pago aceptadas">

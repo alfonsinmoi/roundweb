@@ -125,7 +125,7 @@ function SeccionTrabajo({ loading, estado }) {
     return (
       <TrabajoCard color="green">
         <Header icon={CheckCircle2} title="Trabajador activo"
-          sub={`Empleado en el centro ${t.id_trainer_empleador} desde ${t.fecha_alta_laboral || '—'}.`} />
+          sub={`Empleado en ${t.nombre_trainer_empleador || `el centro ${t.id_trainer_empleador}`} desde ${t.fecha_alta_laboral || '—'}.`} />
         <DatosResumen t={t} />
         <BtnPrimary onClick={() => navigate('/portal/fichar')}>
           <Clock size={16} /> Ir a fichar
@@ -196,7 +196,7 @@ function DatosResumen({ t }) {
     }}>
       {t.nif && <div>NIF: <strong style={{ fontFamily: 'var(--font-mono)' }}>{t.nif}</strong></div>}
       {t.jornada_h_semana != null && <div>Jornada: <strong>{t.jornada_h_semana} h/semana</strong></div>}
-      {t.id_trainer_empleador && <div>Trainer: <strong>{t.id_trainer_empleador}</strong></div>}
+      {t.id_trainer_empleador && <div>Centro: <strong>{t.nombre_trainer_empleador || `Centro ${t.id_trainer_empleador}`}</strong></div>}
       {t.fecha_alta_laboral && <div>Alta: <strong>{t.fecha_alta_laboral}</strong></div>}
     </div>
   )

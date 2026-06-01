@@ -15,6 +15,7 @@ from .centros import buscar_centro, proximo_centro_round_robin, get_centros_acti
 from ..email_sender import enviar as enviar_email
 from ..email_templates import trigger as trigger_email
 from ..lead_scoring import calcular_score, color_for_score, LOST_REASONS
+from ..audit_log import log_action, actor_from_request
 from .. import config as cfg
 from datetime import datetime, timezone
 
@@ -249,6 +250,133 @@ def crear_lead_publico():
         'lead_id': odoo_lead_id,
         'centro': centro['nombre_centro'],
     }), 200
+
+
+# ── Crear lead manualmente desde el ERP (autenticado) ──────────────────────
+# Caso de uso: una persona llega presencialmente al gimnasio sin haber
+# pasado por el formulario web. El operador la registra desde el CRM Round
+# y queda como lead normal (con origen='manual_erp' para distinguirlo).
+@bp.route('/lead-manual', methods=['POST'])
+@auth_required
+@require_feature('crm')
+def crear_lead_manual():
+    """Crea un lead a mano desde el ERP. Mismos campos que el público pero
+    con auth de manager + origen='manual_erp'. Sin honeypot/rate-limit."""
+    d = request.get_json() or {}
+    nombre = (d.get('nombre') or '').strip()
+    apellidos = (d.get('apellidos') or '').strip()
+    email = (d.get('email') or '').strip()
+    telefono = (d.get('telefono') or '').strip()
+    mensaje = (d.get('mensaje') or '').strip()
+    centro_slug = (d.get('centro_slug') or '').strip().lower()
+    id_trainer_explicito = (d.get('id_trainer') or '').strip()
+    cuota_interes = (d.get('cuota_interes') or '').strip()
+    objetivo = (d.get('objetivo') or '').strip()
+    canal_id_explicito = d.get('canal_id')
+
+    if not (nombre or apellidos):
+        return jsonify({'ok': False, 'error': 'nombre_requerido'}), 400
+    if not email and not telefono:
+        return jsonify({'ok': False, 'error': 'email_o_telefono_requerido'}), 400
+    if email and not _email_valid(email):
+        return jsonify({'ok': False, 'error': 'email_invalido'}), 400
+
+    id_manager = str(g.id_manager)
+    actor = actor_from_request()
+
+    # 1) Resolver centro: prioridad id_trainer explícito → slug → trainer
+    # logueado → round-robin.
+    centro = None
+    if id_trainer_explicito:
+        centro = buscar_centro(id_manager, id_trainer=id_trainer_explicito)
+    if not centro and centro_slug:
+        centro = buscar_centro(id_manager, slug=centro_slug)
+    if not centro and g.id_trainer:
+        centro = buscar_centro(id_manager, id_trainer=str(g.id_trainer))
+    if not centro:
+        centro = proximo_centro_round_robin(id_manager)
+    if not centro:
+        return jsonify({'ok': False, 'error': 'no_hay_centros_configurados'}), 503
+
+    full_name = f'{nombre} {apellidos}'.strip() or email or telefono
+
+    # 2) Crear lead en Odoo (mismo formato que público, etiquetado "Manual")
+    description_lines = [
+        f'<b>Origen:</b> Alta manual desde ERP por '
+        f'{actor.get("label") or actor.get("email") or "operador"}'
+    ]
+    if cuota_interes: description_lines.append(f'<b>Cuota interés:</b> {cuota_interes}')
+    if objetivo:      description_lines.append(f'<b>Objetivo:</b> {objetivo}')
+    if mensaje:       description_lines.append(f'<b>Mensaje:</b><br/>{mensaje}')
+    description_lines.append(
+        f'<br/><i>Centro asignado: {centro["nombre_centro"]} '
+        f'(trainer #{centro["id_trainer"]} · {centro["email"]})</i>'
+    )
+
+    odoo_lead_id = None
+    try:
+        oc = get_cuotas()
+        vals = {
+            'name': f'Manual · {full_name}',
+            'contact_name': full_name,
+            'email_from': email or False,
+            'phone': telefono or False,
+            'description': '<br/>'.join(description_lines),
+            'type': 'opportunity',
+            'priority': '1',
+            'company_id': cfg.ODOO_COMPANY,
+        }
+        odoo_lead_id = oc._call('crm.lead', 'create', vals)
+        log.info(f'[lead_manual] Odoo lead id={odoo_lead_id} por {actor.get("email")}')
+    except Exception as e:
+        log.exception('crm.lead create manual')
+        return jsonify({'ok': False, 'error': 'odoo_crear_lead_fallo',
+                        'detalle': str(e)[:200]}), 502
+
+    # 3) Asignación local con origen='manual_erp'
+    qualification = {k: v for k, v in {
+        'objetivo': objetivo or None,
+        'cuota_interes': cuota_interes or None,
+    }.items() if v}
+
+    canal_id = None
+    if canal_id_explicito:
+        try: canal_id = int(canal_id_explicito)
+        except: canal_id = None
+
+    asign_id = None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO lead_asignacion
+                  (id_manager, id_trainer, odoo_lead_id, origen,
+                   raw_payload, qualification, score, stage_history, canal_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (id_manager, centro['id_trainer'], odoo_lead_id, 'manual_erp',
+                  json.dumps(d, ensure_ascii=False),
+                  json.dumps(qualification, ensure_ascii=False),
+                  0,
+                  json.dumps([{'stage': 'Nuevo',
+                               'at': datetime.now(timezone.utc).isoformat(),
+                               'by': actor.get('label') or actor.get('email')}],
+                             ensure_ascii=False),
+                  canal_id))
+            asign_id = cur.fetchone()['id']
+    except Exception as e:
+        log.warning(f'lead_asignacion manual: {e}')
+
+    log_action(actor, entidad='crm.lead', entidad_id=str(odoo_lead_id),
+               accion='create_manual',
+               resumen=f'Lead manual: {full_name} ({email or telefono}) → {centro["nombre_centro"]}')
+
+    return jsonify({
+        'ok': True,
+        'lead_id': odoo_lead_id,
+        'asignacion_id': asign_id,
+        'centro': centro['nombre_centro'],
+        'id_trainer': centro['id_trainer'],
+    })
 
 
 # ── Listar leads para el dashboard Round (manager + trainer) ────────────────

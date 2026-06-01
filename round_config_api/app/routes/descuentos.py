@@ -1,6 +1,6 @@
 """CRUD de descuentos (mismo patrón que cuotas)."""
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
 from .. import config
@@ -54,6 +54,7 @@ def list_():
 
 @bp.route('', methods=['POST'])
 @auth_required
+@require_permission('configuracion.descuentos.crear')
 def create():
     d = request.get_json() or {}
     if d.get('tipo') not in config.TIPOS_DESCUENTO:
@@ -105,8 +106,22 @@ def create():
                 return jsonify({'ok': False, 'error':
                     f'valor inválido para {item.get("cuota_codigo")}'}), 400
     import json as _json_mod
-    scope = 'trainer' if g.id_trainer else 'plantilla_manager'
-    id_trainer = g.id_trainer if scope == 'trainer' else None
+    # POLÍTICA (mayo 2026): por DEFECTO una regla se guarda como
+    # `plantilla_manager` para que aplique a todos los trainers del manager.
+    # Solo se crea trainer-scoped si el body lo pide explícitamente con
+    # `scope='trainer'` (+ opcional `id_trainer`). El hecho de que el operador
+    # esté impersonando un trainer al crearla NO la limita automáticamente
+    # a ese trainer — debe poder reutilizarse en otros centros.
+    body_scope = (d.get('scope') or '').strip().lower()
+    if body_scope == 'trainer':
+        scope = 'trainer'
+        id_trainer = (d.get('id_trainer') or '').strip() or g.id_trainer
+        if not id_trainer:
+            return jsonify({'ok': False,
+                            'error': 'scope=trainer requiere id_trainer'}), 400
+    else:
+        scope = 'plantilla_manager'
+        id_trainer = None
     combo_json = _json_mod.dumps(d.get('combo_secundarias') or [])
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""
@@ -134,6 +149,7 @@ def create():
 
 @bp.route('/<int:_id>', methods=['PUT', 'PATCH'])
 @auth_required
+@require_permission('configuracion.descuentos.editar')
 def update(_id):
     d = request.get_json() or {}
     if 'tipo' in d and d['tipo'] not in config.TIPOS_DESCUENTO:
@@ -171,6 +187,7 @@ def update(_id):
 
 @bp.route('/<int:_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.descuentos.borrar')
 def delete(_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT odoo_id, scope FROM descuento WHERE id=%s AND id_manager=%s", (_id, g.id_manager))
@@ -185,7 +202,8 @@ def delete(_id):
 # ── ASIGNACIONES de descuento a uno o varios clientes ──────────────────────
 
 ASIGN_FIELDS = """id, descuento_id, id_manager, id_trainer, cliente_idnoofit,
-                  fecha_desde, fecha_hasta, estado, odoo_id, created_at, updated_at"""
+                  fecha_desde, fecha_hasta, estado, odoo_id, created_at, updated_at,
+                  trabajador_id, relacion"""
 
 def _asig_row(r):
     if not r: return None
@@ -228,17 +246,41 @@ def list_asignaciones(desc_id):
             cuotas_codigos = [desc['cuota_aplicada_codigo']]
         return _list_asig_familiares(desc_id, cuotas_codigos, cs)
 
-    # Asignaciones manuales (resto de tipos)
+    # Asignaciones manuales (resto de tipos).
+    # Aislamiento por trainer: si está impersonado, restringir a asignaciones
+    # cuyo cliente pertenece a su cliente_cache.
+    where = ['descuento_id=%s', 'id_manager=%s']
+    vals = [desc_id, g.id_manager]
+    if g.id_trainer:
+        where.append("""cliente_idnoofit IN (
+            SELECT id::text FROM cliente_cache
+             WHERE id_manager = %s AND id_trainer = %s
+        )""")
+        vals.extend([str(g.id_manager), str(g.id_trainer)])
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""SELECT {ASIGN_FIELDS} FROM descuento_asignacion
-                        WHERE descuento_id=%s AND id_manager=%s
-                        ORDER BY created_at DESC""", (desc_id, g.id_manager))
+                        WHERE {' AND '.join(where)}
+                        ORDER BY created_at DESC""", vals)
         rows = [_asig_row(r) for r in cur.fetchall()]
 
     nombres = _resolver_nombres_odoo([r['cliente_idnoofit'] for r in rows
                                        if r.get('cliente_idnoofit')])
     for r in rows:
         r['cliente_nombre'] = nombres.get(str(r.get('cliente_idnoofit') or ''), '')
+
+    # Enriquecer con nombre del trabajador (para familiar_trabajador)
+    trab_ids = [r['trabajador_id'] for r in rows if r.get('trabajador_id')]
+    if trab_ids:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT id, nombre_completo, nif FROM trabajador
+                            WHERE id_manager=%s AND id = ANY(%s)""",
+                        (g.id_manager, list(set(trab_ids))))
+            trab_map = {t['id']: t for t in cur.fetchall()}
+        for r in rows:
+            if r.get('trabajador_id') and trab_map.get(r['trabajador_id']):
+                t = trab_map[r['trabajador_id']]
+                r['trabajador_nombre'] = t.get('nombre_completo') or f"Trabajador {t['id']}"
+                r['trabajador_nif'] = t.get('nif')
 
     return jsonify({'ok': True, 'asignaciones': rows})
 
@@ -281,15 +323,28 @@ def _list_asig_familiares(desc_id, cuotas_codigos, combo_secundarias):
          ] }
     """
     cuotas_codigos = list(dict.fromkeys(cuotas_codigos or []))     # dedup conservando orden
-    # 1) Familias del manager + miembros
+    # 1) Familias del manager + miembros.
+    # Aislamiento por trainer: filtrar a familias con ≥1 miembro perteneciente
+    # al trainer impersonado.
+    where = ['f.id_manager=%s']; vals = [str(g.id_manager)]
+    if g.id_trainer:
+        where.append("""EXISTS (
+            SELECT 1 FROM familia_miembro fm
+              JOIN cliente_cache cc
+                ON cc.id::text = fm.cliente_idnoofit
+               AND cc.id_manager = fm.id_manager
+             WHERE fm.familia_id = f.id
+               AND cc.id_trainer = %s
+        )""")
+        vals.append(str(g.id_trainer))
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             SELECT f.id, f.nombre,
                    ARRAY(SELECT cliente_idnoofit FROM familia_miembro
                           WHERE familia_id=f.id) AS miembros
               FROM familia f
-             WHERE f.id_manager=%s
-        """, (str(g.id_manager),))
+             WHERE {' AND '.join(where)}
+        """, vals)
         familias_db = cur.fetchall()
 
     if not familias_db or not cuotas_codigos:
@@ -372,11 +427,18 @@ def list_asignaciones_cliente(idnoofit):
     """Lista descuentos asignados a un cliente concreto (con histórico).
     Devuelve: [{asig: {...}, descuento: {codigo, descripcion, tipo, valor,
                                          cuota_requerida_codigo, cuota_aplicada_codigo,
-                                         precio_final}}]"""
+                                         precio_final}}]
+
+    Aislamiento por trainer: si el cliente no pertenece al trainer
+    impersonado, devolver vacío."""
+    from ..trainer_scope import cliente_pertenece_a_trainer
+    if not cliente_pertenece_a_trainer(idnoofit):
+        return jsonify({'ok': True, 'asignaciones': []})
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""
             SELECT a.id AS asig_id, a.descuento_id, a.fecha_desde, a.fecha_hasta,
                    a.estado, a.odoo_id, a.created_at, a.updated_at,
+                   a.origen, a.auto_motivo, a.auto_evaluado_at,
                    d.codigo, d.descripcion, d.tipo, d.valor,
                    d.cuota_requerida_codigo, d.cuota_aplicada_codigo, d.precio_final,
                    d.combo_secundarias
@@ -389,7 +451,7 @@ def list_asignaciones_cliente(idnoofit):
     out = []
     for r in rows:
         d = dict(r)
-        for k in ('created_at','updated_at','fecha_desde','fecha_hasta'):
+        for k in ('created_at','updated_at','fecha_desde','fecha_hasta','auto_evaluado_at'):
             if d.get(k): d[k] = d[k].isoformat()
         if d.get('valor') is not None: d['valor'] = float(d['valor'])
         if d.get('precio_final') is not None: d['precio_final'] = float(d['precio_final'])
@@ -399,6 +461,7 @@ def list_asignaciones_cliente(idnoofit):
 
 @bp.route('/<int:desc_id>/asignaciones', methods=['POST'])
 @auth_required
+@require_permission('configuracion.descuentos.asignar_a_cliente')
 def create_asignacion(desc_id):
     """Asignar el descuento a uno o varios clientes a la vez.
 
@@ -406,7 +469,9 @@ def create_asignacion(desc_id):
       'clientes_idnoofit': ['12345','67890', ...]  (1 o N)
       'fecha_desde': 'yyyy-mm-dd',
       'fecha_hasta': 'yyyy-mm-dd' (opcional),
-      'id_trainer': '...' (opcional, si no, usa el de header)
+      'id_trainer': '...' (opcional, si no, usa el de header),
+      'trabajador_id': <int>  (obligatorio si tipo='familiar_trabajador'),
+      'relacion': 'cónyuge|hijo|...' (obligatorio si tipo='familiar_trabajador')
     }
     """
     d = request.get_json() or {}
@@ -417,14 +482,38 @@ def create_asignacion(desc_id):
     if not id_trainer:
         return jsonify({'ok': False, 'error': 'id_trainer_obligatorio'}), 400
 
-    # Verificar que el descuento existe y obtener su odoo_id
+    # Verificar que el descuento existe y obtener su odoo_id + tipo
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, odoo_id FROM descuento WHERE id=%s AND id_manager=%s",
+        cur.execute("SELECT id, odoo_id, tipo FROM descuento WHERE id=%s AND id_manager=%s",
                     (desc_id, g.id_manager))
         desc_row = cur.fetchone()
     if not desc_row:
         return jsonify({'ok': False, 'error': 'descuento_not_found'}), 404
     desc_odoo_id = desc_row.get('odoo_id')
+
+    # Campos especiales para familiar_trabajador (obligatorios).
+    trabajador_id = d.get('trabajador_id')
+    relacion = (d.get('relacion') or '').strip() or None
+    if desc_row.get('tipo') == 'familiar_trabajador':
+        if not trabajador_id:
+            return jsonify({'ok': False, 'error': 'trabajador_obligatorio'}), 400
+        if not relacion:
+            return jsonify({'ok': False, 'error': 'relacion_obligatoria'}), 400
+        try:
+            trabajador_id = int(trabajador_id)
+        except Exception:
+            return jsonify({'ok': False, 'error': 'trabajador_id_invalido'}), 400
+        # Validar que el trabajador pertenece al manager
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT id FROM trabajador
+                            WHERE id=%s AND id_manager=%s""",
+                        (trabajador_id, g.id_manager))
+            if not cur.fetchone():
+                return jsonify({'ok': False, 'error': 'trabajador_not_found'}), 400
+    else:
+        # Para otros tipos no guardamos estos campos
+        trabajador_id = None
+        relacion = None
 
     creadas, ya_existentes, errores = [], [], []
     for cliente in clientes:
@@ -436,12 +525,13 @@ def create_asignacion(desc_id):
                 cur.execute(f"""
                     INSERT INTO descuento_asignacion
                         (descuento_id, id_manager, id_trainer, cliente_idnoofit,
-                         fecha_desde, fecha_hasta, estado)
-                    VALUES (%s,%s,%s,%s,%s,%s,'activa')
+                         fecha_desde, fecha_hasta, estado, trabajador_id, relacion)
+                    VALUES (%s,%s,%s,%s,%s,%s,'activa',%s,%s)
                     ON CONFLICT (descuento_id, cliente_idnoofit) DO NOTHING
                     RETURNING {ASIGN_FIELDS}
                 """, (desc_id, g.id_manager, id_trainer, cliente,
-                      d.get('fecha_desde'), d.get('fecha_hasta')))
+                      d.get('fecha_desde'), d.get('fecha_hasta'),
+                      trabajador_id, relacion))
                 row = cur.fetchone()
             if not row:
                 ya_existentes.append(cliente)
@@ -463,13 +553,32 @@ def create_asignacion(desc_id):
 
 @bp.route('/<int:desc_id>/asignaciones/<int:asig_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.descuentos.borrar_asignacion')
 def delete_asignacion(desc_id, asig_id):
-    """Revoca una asignación."""
+    """Revoca una asignación.
+
+    Bloqueado para asignaciones origen='auto_*' — esas las gestiona
+    automáticamente el cron `round_descuentos_auto`. Si el cliente ya no
+    cumple condiciones, el cron las cancelará en su próxima pasada (o
+    forzando POST /api/clientes/descuentos-auto/recalcular). Si el manager
+    quiere "quitar" un descuento auto, debe ajustar las cuotas/familia
+    que dispararon el match, no la asignación.
+    """
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT cliente_idnoofit FROM descuento_asignacion
+        cur.execute("""SELECT cliente_idnoofit, origen FROM descuento_asignacion
                        WHERE id=%s AND descuento_id=%s AND id_manager=%s""",
                     (asig_id, desc_id, g.id_manager))
         r = cur.fetchone()
+        if r and (r.get('origen') or 'manual').startswith('auto_'):
+            return jsonify({
+                'ok': False,
+                'error': 'asignacion_automatica',
+                'detail': (f'Esta asignación es automática (origen={r["origen"]}). '
+                           'La gestiona el cron diario según las cuotas/familia '
+                           'del cliente. Para quitarla, ajusta las condiciones '
+                           '(quitar cuota o sacar de la familia) y el cron '
+                           'la cancelará en su próxima pasada.'),
+            }), 409
         cur.execute("DELETE FROM descuento_asignacion WHERE id=%s AND id_manager=%s",
                     (asig_id, g.id_manager))
         n = cur.rowcount
@@ -487,6 +596,7 @@ def delete_asignacion(desc_id, asig_id):
 
 @bp.route('/<int:_id>/adoptar', methods=['POST'])
 @auth_required
+@require_permission('configuracion.descuentos.adoptar')
 def adoptar(_id):
     if not g.id_trainer:
         return jsonify({'ok': False, 'error': 'requires_trainer_id'}), 400

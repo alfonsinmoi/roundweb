@@ -32,7 +32,7 @@ export default function AsientoModal({ doc, identity, onClose }) {
                    display: 'flex', alignItems: 'flex-start',
                    justifyContent: 'center', padding: '40px 20px',
                    overflowY: 'auto' }}>
-      <div style={{ width: '100%', maxWidth: 780, background: 'var(--bg-1)',
+      <div style={{ width: '100%', maxWidth: 940, background: 'var(--bg-1)',
                      border: '1px solid var(--line)', borderRadius: 16,
                      boxShadow: '0 16px 36px -8px rgba(0,0,0,0.45)' }}>
         <header style={{ padding: '16px 22px', borderBottom: '1px solid var(--line)',

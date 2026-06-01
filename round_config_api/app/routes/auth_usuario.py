@@ -218,6 +218,71 @@ def login():
         }), 200
 
     # ── Login válido ──
+    # Antes de emitir el JWT, comprobamos el pivote `usuario_web_trainer`.
+    # Si el usuario tiene acceso a >1 trainer (centro) y NO especificó cuál
+    # quiere usar (`id_trainer` en el body), devolvemos la lista para que el
+    # frontend muestre un selector y vuelva a llamar al login con la elección.
+    id_trainer_choice = (d.get('id_trainer') or '').strip() or None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id_trainer FROM usuario_web_trainer
+             WHERE usuario_id = %s ORDER BY id_trainer
+        """, (u['id'],))
+        trainers_allowed = [r['id_trainer'] for r in cur.fetchall()]
+    # Si el pivote está vacío (usuario antiguo sin migrar) caemos al valor
+    # singular `usuario_web.id_trainer` como única opción posible.
+    if not trainers_allowed and u['id_trainer']:
+        trainers_allowed = [u['id_trainer']]
+
+    if len(trainers_allowed) > 1 and not id_trainer_choice:
+        # Multi-trainer y aún no eligió → devolver la lista. NO emitimos JWT.
+        # Enriquecemos con el NOMBRE del centro (centro_contacto.nombre_centro)
+        # para mostrarlo en lugar del id_trainer crudo. Si no hay fila en
+        # centro_contacto (centro recién creado), caemos al email del trainer.
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_trainer, noofit_email
+                  FROM trainer_noofit_creds
+                 WHERE id_manager = %s AND id_trainer = ANY(%s) AND activo = TRUE
+            """, (u['id_manager'], trainers_allowed))
+            extra = {r['id_trainer']: r for r in cur.fetchall()}
+            cur.execute("""
+                SELECT id_trainer, nombre_centro, slug
+                  FROM centro_contacto
+                 WHERE id_manager = %s AND id_trainer = ANY(%s)
+            """, (u['id_manager'], trainers_allowed))
+            centros = {r['id_trainer']: r for r in cur.fetchall()}
+        opciones = []
+        for t in trainers_allowed:
+            cinfo = centros.get(t) or {}
+            opciones.append({
+                'id_trainer': t,
+                'nombre_centro': cinfo.get('nombre_centro'),
+                'slug': cinfo.get('slug'),
+                'email_trainer': extra.get(t, {}).get('noofit_email')
+                                  if extra.get(t) else None,
+            })
+        audit(u['id'], email, 'login_needs_trainer_choice',
+              f'trainers={trainers_allowed}')
+        return jsonify({
+            'ok': True,
+            'multi_trainer': True,
+            'trainers': opciones,
+            'usuario': {'id': u['id'], 'email': u['email'], 'nombre': u['nombre']},
+            'message': 'Selecciona el centro al que quieres acceder.',
+        })
+
+    # Si el usuario eligió un trainer, validar que tenga acceso
+    if id_trainer_choice:
+        if trainers_allowed and id_trainer_choice not in trainers_allowed:
+            audit(u['id'], email, 'login_fail', f'trainer_no_permitido={id_trainer_choice}')
+            return jsonify({'ok': False, 'error': 'trainer_not_allowed'}), 403
+        id_trainer_for_session = id_trainer_choice
+    elif trainers_allowed:
+        id_trainer_for_session = trainers_allowed[0]
+    else:
+        id_trainer_for_session = u['id_trainer']  # NULL en usuarios corporativos
+
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             UPDATE usuario_web
@@ -227,8 +292,8 @@ def login():
              WHERE id = %s
         """, ((request.headers.get('X-Real-IP') or request.remote_addr or '')[:64], u['id']))
 
-    token = issue_jwt(u['id'], u['id_manager'], u['id_trainer'], u['perfil_id'])
-    audit(u['id'], email, 'login_ok')
+    token = issue_jwt(u['id'], u['id_manager'], id_trainer_for_session, u['perfil_id'])
+    audit(u['id'], email, 'login_ok', f'trainer={id_trainer_for_session}')
 
     # Login automático en NoofitPro usando las credenciales del manager.
     # Esto permite al frontend usar el token NoofitPro para llamar a los
@@ -242,7 +307,11 @@ def login():
         'usuario': {
             'id': u['id'], 'email': u['email'],
             'nombre': u['nombre'], 'apellidos': u['apellidos'],
-            'id_manager': u['id_manager'], 'id_trainer': u['id_trainer'],
+            'id_manager': u['id_manager'],
+            # id_trainer = el ELEGIDO para esta sesión (no necesariamente el
+            # default de la fila usuario_web — puede haber elegido otro entre
+            # los trainers a los que tiene acceso).
+            'id_trainer': id_trainer_for_session,
             'perfil_id': u['perfil_id'],
         },
         'noofit': {

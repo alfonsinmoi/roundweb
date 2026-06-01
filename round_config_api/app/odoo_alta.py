@@ -65,11 +65,33 @@ class OdooAlta(OdooCuotas):
         # Limpiar Falses → no actualizar
         write_vals = {k: v for k, v in vals.items() if v not in (None, '')}
 
-        if partner_id:
-            if write_vals:
-                self._call('res.partner', 'write', [partner_id], write_vals)
-        else:
-            partner_id = self._call('res.partner', 'create', write_vals)
+        def _persist(vals_to_write):
+            if partner_id:
+                if vals_to_write:
+                    self._call('res.partner', 'write', [partner_id], vals_to_write)
+                return partner_id
+            return self._call('res.partner', 'create', vals_to_write)
+
+        try:
+            new_id = _persist(write_vals)
+        except Exception as e:
+            # NoofitPro a veces trae documentos (NIE/pasaporte/etc.) que Odoo
+            # rechaza como número de IVA inválido (p.ej. 'GR6611888', cuyo
+            # prefijo 'GR' Odoo interpreta como IVA griego). En ese caso el
+            # documento NO es un VAT válido: lo guardamos en notas y creamos el
+            # partner SIN vat para no bloquear el alta/suscripción.
+            msg = str(e)
+            if write_vals.get('vat') and ('IVA' in msg or 'VAT' in msg.upper()):
+                doc = write_vals.pop('vat')
+                nota = f'Documento (no validado como IVA): {doc}'
+                write_vals['comment'] = ((write_vals.get('comment') or '') + ' ' + nota).strip()
+                log.warning(f'upsert_partner: vat "{doc}" rechazado por Odoo '
+                            f'(idnoofit={idnoofit}); creando sin vat')
+                new_id = _persist(write_vals)
+            else:
+                raise
+        if not partner_id:
+            partner_id = new_id
             log.info(f'Partner creado id={partner_id} idnoofit={idnoofit}')
 
         # IBAN (res.partner.bank) si se proporciona
@@ -249,7 +271,7 @@ class OdooAlta(OdooCuotas):
 
     # ── Recibo de alta ───────────────────────────────────────────────────────
     def crear_recibo_alta(self, partner_id, sub_id, cuota_dict, importe_alta,
-                          matricula=0, mes_str=None):
+                          matricula=0, mes_str=None, narration_extra=None):
         """Crea account.move (borrador) con la línea del alta + matrícula.
         importe_alta es el TOTAL final del recibo (sin matrícula adicional aparte)."""
         if mes_str is None:
@@ -291,7 +313,8 @@ class OdooAlta(OdooCuotas):
             'invoice_date_due': str(date.today()),
             'invoice_line_ids': line_vals,
             'round_subscription_id': sub_id,
-            'narration': f'Alta cliente {date.today().isoformat()}',
+            'narration': (f'Alta cliente {date.today().isoformat()}'
+                          + (f' · {narration_extra}' if narration_extra else '')),
             'company_id': self.company_id,
         }
         inv_id = self._call('account.move', 'create', inv_vals)
@@ -419,6 +442,47 @@ class OdooAlta(OdooCuotas):
         result['warning'] = f'forma_pago_alta desconocida: {forma_pago_alta}'
         return result
 
+    def crear_recibo_suelto(self, cli, concepto, importe, forma_pago,
+                            id_manager=None, id_trainer=None, fecha=None):
+        """Crea un recibo (account.move) SIN suscripción asociada — para cobros
+        puntuales (cuotas de entrada puntual: cobro en recepción o factura
+        mensual agregada). Postea y, si la forma de pago es de caja/TPV/enlace,
+        registra el pago; para SEPA o tarjeta tokenizada solo postea (el cobro
+        real se hará por remesa SEPA o cargo tokenizado en su flujo).
+        Devuelve {ok, invoice_id, pago}.
+        """
+        partner_id = self.upsert_partner(cli)
+        fecha = fecha or str(date.today())
+        inv_vals = {
+            'partner_id': partner_id,
+            'move_type': 'out_invoice',
+            'invoice_date': fecha,
+            'invoice_date_due': fecha,
+            'invoice_line_ids': [(0, 0, {
+                'name': concepto,
+                'quantity': 1,
+                'price_unit': float(importe),
+                'product_id': False,
+            })],
+            'narration': concepto,
+            'company_id': self.company_id,
+        }
+        invoice_id = self._call('account.move', 'create', inv_vals)
+        pago = {}
+        try:
+            if forma_pago in ('efectivo', 'tpv_fisico', 'enlace_pago'):
+                pago = self.procesar_pago_alta(
+                    invoice_id, forma_pago,
+                    id_manager=id_manager, id_trainer=id_trainer)
+            else:
+                # sepa / tarjeta_token → solo postear
+                self._call('account.move', 'action_post', [invoice_id])
+                pago = {'posted': True, 'forma_pago': forma_pago}
+        except Exception as e:
+            log.exception('crear_recibo_suelto pago')
+            pago = {'error_pago': str(e)}
+        return {'ok': True, 'invoice_id': invoice_id, 'pago': pago}
+
     def _notif_enlace_pago(self, id_manager, id_trainer, invoice_id, inv, amount, url):
         """Notifica al cliente que tiene un enlace de pago pendiente.
 
@@ -518,9 +582,14 @@ class OdooAlta(OdooCuotas):
         # 4) Recibo de alta
         importe_alta = float(alta.get('importe_alta') or 0)
         matricula = float(alta.get('matricula') or 0)
+        # Importe 0 JUSTIFICADO: el operador quiere expresamente un recibo a 0€
+        # (cortesía, beca, promo, etc.). En ese caso NO sustituimos por el
+        # precio de catálogo y guardamos la justificación en el recibo.
+        permitir_cero = bool(alta.get('importe_cero_justificado'))
+        justificacion = (alta.get('justificacion') or '').strip()
         # Si no vino importe_alta del form pero la cuota tiene precio, lo usamos
         # (caso típico: form solo tiene "Precio del curso" y no separa el alta)
-        if importe_alta == 0:
+        if importe_alta == 0 and not permitir_cero:
             periodicidad_norm = (sub.get('periodicidad') or 'mensual').lower()
             campo_precio = {
                 'mensual':    'precio_mensual',
@@ -533,8 +602,12 @@ class OdooAlta(OdooCuotas):
             if precio_catalogo > 0:
                 importe_alta = precio_catalogo
                 log.info(f'importe_alta=0 → usando precio catálogo cuota {cuota.get("codigo")}: {importe_alta}')
+        narration_extra = None
+        if permitir_cero and importe_alta == 0 and justificacion:
+            narration_extra = f'Importe 0€ justificado: {justificacion}'
         invoice_id = self.crear_recibo_alta(
-            partner_id, sub_id, cuota, importe_alta, matricula
+            partner_id, sub_id, cuota, importe_alta, matricula,
+            narration_extra=narration_extra,
         )
 
         # 5) Procesar pago

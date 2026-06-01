@@ -32,11 +32,12 @@ import { useToast } from './Toast'
 import { useAuth } from '../contexts/AuthContext'
 import {
   getRoundIdentity, cuotasList as cfgCuotasList, descuentosList,
-  pasarelasList,
+  pasarelasList, epAltaCreate, EP_FORMAS_POR_ENTRADA, EP_FORMAS_POR_MES,
 } from '../utils/configApi'
 import { altaCliente } from '../utils/cuotasApi'
 import { useCategoriasMap } from '../hooks/useCategoriasMap'
 import { validarIBAN } from '../utils/validators'
+import IBANInput from './IBANInput'
 
 const PERIODICIDAD_OPTS = [
   { value: 'mensual',    label: 'Mensual',    dias: 30 },
@@ -103,8 +104,12 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
   const [iban, setIban] = useState('')
   const [textoRecibo, setTextoRecibo] = useState('Alta + cuota')
   const [importePrimera, setImportePrimera] = useState('')
+  const [justificacionCero, setJustificacionCero] = useState('')
   const [fechaFinPrimero, setFechaFinPrimero] = useState(calcFinPeriodo(hoyISO(), 'mensual'))
   const [formaPagoAlta, setFormaPagoAlta] = useState('efectivo')
+  // Entrada puntual
+  const [epModo, setEpModo] = useState('por_entrada')   // por_entrada | por_mes
+  const [epForma, setEpForma] = useState('efectivo')
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -203,15 +208,48 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
   const categoriaSel = (categorias || []).find(c => String(c.id) === String(categoriaId))
   const requiereCuota = !!categoriaSel?.tiene_cuota
 
+  // Entrada puntual: si la (única) cuota seleccionada es de tipo entrada_puntual
+  // cambiamos el flujo (modo de cobro en vez de importe/recibo).
+  const cuotaUnicaSel = cuotasSeleccionadas.length === 1
+    ? cuotasCat.find(c => c.codigo === cuotasSeleccionadas[0]) : null
+  const esEntradaPuntual = cuotaUnicaSel?.tipo_cuota === 'entrada_puntual'
+  const epFormas = epModo === 'por_mes' ? EP_FORMAS_POR_MES : EP_FORMAS_POR_ENTRADA
+  const epNecesitaIban = esEntradaPuntual && epModo === 'por_mes' && epForma === 'sepa'
+
+  // Al cambiar de modo, asegurar que la forma de pago elegida sigue siendo
+  // válida para ese modo (si no, coger la primera válida).
+  useEffect(() => {
+    if (!esEntradaPuntual) return
+    const validas = (epModo === 'por_mes' ? EP_FORMAS_POR_MES : EP_FORMAS_POR_ENTRADA).map(f => f.id)
+    if (!validas.includes(epForma)) setEpForma(validas[0])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epModo, esEntradaPuntual])
+
   const validar = () => {
     if (!categoriaId) return 'Elige una categoría'
     if (!requiereCuota) return null    // categoría sin cuota: no exigimos nada más
     if (cuotasSeleccionadas.length === 0) return 'Selecciona al menos una cuota'
+    // Entrada puntual: validación propia (modo + forma de pago)
+    if (esEntradaPuntual) {
+      if (!epModo) return 'Elige cómo se cobra (por entrada o por mes)'
+      if (!epForma) return 'Elige la forma de pago'
+      if (epNecesitaIban && !ibanValido) return 'IBAN inválido (requerido para SEPA)'
+      return null
+    }
+    if (cuotasSeleccionadas.some(cod => {
+      const c = cuotasCat.find(x => x.codigo === cod)
+      return c?.tipo_cuota === 'entrada_puntual'
+    })) return 'Las cuotas de entrada puntual deben darse de alta de una en una'
     if (!fechaAlta) return 'Pon una fecha de alta'
     if (!periodicidad) return 'Elige una periodicidad'
     if (!formaPagoRecurrente) return 'Elige una forma de pago recurrente'
     if (necesitaIban && !ibanValido) return 'IBAN inválido (requerido para SEPA)'
-    if (!importePrimera || Number(importePrimera) <= 0) return 'Importe primera cuota inválido'
+    // Importe primera cuota: permitimos 0 (cortesía/beca/promo) PERO exigiendo
+    // una justificación. Negativo o vacío siguen siendo inválidos.
+    if (importePrimera === '' || isNaN(Number(importePrimera)) || Number(importePrimera) < 0)
+      return 'Importe primera cuota inválido'
+    if (Number(importePrimera) === 0 && !justificacionCero.trim())
+      return 'Indica la justificación del importe 0€'
     if (!textoRecibo.trim()) return 'Escribe el texto del recibo'
     if (!fechaFinPrimero) return 'Fecha fin del primer pago inválida'
     if (!formaPagoAlta) return 'Elige forma de pago del alta'
@@ -245,6 +283,30 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
         if (typeof onSaved === 'function') {
           try { await onSaved() } catch {}
         }
+        onClose()
+        return
+      }
+
+      // Entrada puntual: registrar el alta local (sin recibo ahora; las
+      // entradas se cobran por reserva confirmada / al cierre de mes).
+      if (esEntradaPuntual) {
+        const nombre = `${cliente.nombre || cliente.name || ''} ${cliente.apellidos || cliente.surname || ''}`.trim()
+        await epAltaCreate(identity, {
+          cliente_idnoofit: String(cliente.id),
+          cliente_nombre: nombre,
+          cuota_codigo: cuotaUnicaSel.codigo,
+          actividades_idnoofit: cuotaUnicaSel.actividades_idnoofit || [],
+          modo: epModo,
+          forma_pago: epForma,
+          precio_entrada: Number(cuotaUnicaSel.precio_entrada || 0),
+          iban: epNecesitaIban ? iban : null,
+        })
+        toast.success(
+          epModo === 'por_entrada'
+            ? 'Alta en entrada puntual. Cada reserva confirmada aparecerá para cobrar en recepción.'
+            : 'Alta en entrada puntual. Las entradas se facturarán agregadas al cierre de mes.'
+        )
+        if (typeof onSaved === 'function') { try { await onSaved() } catch {} }
         onClose()
         return
       }
@@ -285,6 +347,10 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
             recaptacion: !!recaptacion,
             descripcion: textoRecibo.trim(),
             fecha_vencimiento: fechaFinPrimero,
+            // Importe 0 justificado: el backend NO sustituirá por precio
+            // catálogo y guardará la justificación en el recibo.
+            importe_cero_justificado: Number(importeEsta) === 0,
+            justificacion: Number(importeEsta) === 0 ? justificacionCero.trim() : '',
           },
         }
         try {
@@ -325,7 +391,7 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
            title="Alta de cliente"
            subtitle={`${cliente.name || cliente.nombre || ''} ${cliente.surname || cliente.apellidos || ''}`.trim()
                      || `Cliente #${cliente.id}`}
-           maxWidth={760}>
+           maxWidth={900}>
       <div style={{ padding: '20px 28px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
         <div style={{
           padding: '12px 14px', marginBottom: 18, borderRadius: 12,
@@ -423,6 +489,55 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
           )}
         </Section>
 
+        {/* Entrada puntual: modo de cobro + forma de pago (sustituye 3-9) */}
+        {esEntradaPuntual && (
+          <>
+            <div style={{
+              padding: '12px 14px', marginBottom: 14, borderRadius: 12,
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+              fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
+            }}>
+              <strong>Cuota de entrada puntual.</strong> No se emite recibo ahora.
+              Cada reserva confirmada de la actividad cuenta como una entrada
+              ({Number(cuotaUnicaSel.precio_entrada || 0).toFixed(2)}€/entrada).
+            </div>
+            <Section icon={Wallet} title="Cómo se cobra" required>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {[
+                  { v: 'por_entrada', t: 'Por cada entrada', d: 'Cobro en recepción al entrar (efectivo / TPV / tarjeta).' },
+                  { v: 'por_mes', t: 'Por mes', d: 'Se acumulan y se factura agregado al cierre (SEPA / tarjeta).' },
+                ].map(o => (
+                  <button key={o.v} type="button" onClick={() => setEpModo(o.v)}
+                          style={{
+                            flex: 1, minWidth: 200, textAlign: 'left', cursor: 'pointer',
+                            padding: '10px 12px', borderRadius: 10,
+                            background: epModo === o.v ? 'var(--green-bg)' : 'var(--bg-1)',
+                            border: `1px solid ${epModo === o.v ? 'var(--green)' : 'var(--line)'}`,
+                          }}>
+                    <div style={{ fontSize: 13, fontWeight: 600,
+                                  color: epModo === o.v ? 'var(--green)' : 'var(--text-0)' }}>{o.t}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{o.d}</div>
+                  </button>
+                ))}
+              </div>
+            </Section>
+            <Section icon={CreditCard} title="Forma de pago" required
+                     hint={epModo === 'por_entrada'
+                       ? 'Forma por defecto al cobrar cada entrada (se puede cambiar en recepción).'
+                       : 'Forma con la que se cobrará el recibo agregado del mes.'}>
+              <select value={epForma} onChange={e => setEpForma(e.target.value)} style={inputStyle}>
+                {epFormas.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+              {epNecesitaIban && (
+                <div style={{ marginTop: 8 }}>
+                  <IBANInput value={iban} onChange={setIban} required />
+                </div>
+              )}
+            </Section>
+          </>
+        )}
+
+        {!esEntradaPuntual && (<>
         {/* 3-4. Fecha alta + periodicidad */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <Section icon={Calendar} title="3. Fecha de alta" required>
@@ -450,11 +565,9 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
             ))}
           </select>
           {necesitaIban && (
-            <input type="text" value={iban}
-                   onChange={e => setIban(e.target.value.replace(/\s+/g, ' ').toUpperCase())}
-                   placeholder="ES00 0000 0000 0000 0000 0000"
-                   style={{ ...inputStyle, marginTop: 8,
-                            borderColor: ibanValido ? 'var(--line)' : 'var(--red)' }} />
+            <div style={{ marginTop: 8 }}>
+              <IBANInput value={iban} onChange={setIban} required />
+            </div>
           )}
           {!tieneTokenizacion && (
             <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
@@ -471,12 +584,23 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
                    onChange={e => setTextoRecibo(e.target.value)}
                    placeholder="Alta + cuota" style={inputStyle} />
           </Section>
-          <Section icon={Wallet} title="7. Importe primera cuota (€)" required>
+          <Section icon={Wallet} title="7. Importe primera cuota (€)" required
+                   hint="Pon 0 para alta de cortesía/beca/promo (pedirá justificación).">
             <input type="number" min={0} step="0.01" value={importePrimera}
                    onChange={e => setImportePrimera(e.target.value)}
                    placeholder="0.00" style={inputStyle} />
           </Section>
         </div>
+
+        {/* Justificación obligatoria si el importe de la primera cuota es 0 */}
+        {Number(importePrimera) === 0 && importePrimera !== '' && (
+          <Section icon={Info} title="Justificación del importe 0€" required
+                   hint="Queda registrada en el recibo (ej. beca, cortesía, promo de captación).">
+            <input type="text" value={justificacionCero}
+                   onChange={e => setJustificacionCero(e.target.value)}
+                   placeholder="Motivo del alta sin coste…" style={inputStyle} />
+          </Section>
+        )}
 
         {/* 8-9. Fecha fin + forma pago alta */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -495,6 +619,7 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
             </select>
           </Section>
         </div>
+        </>)}
       </div>
 
       {/* Footer */}

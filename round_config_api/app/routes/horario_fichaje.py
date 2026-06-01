@@ -39,7 +39,7 @@ import datetime as dt
 import jwt
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..auth_trabajador import (
     issue_jwt_trabajador,
     login_noofit_cliente,
@@ -945,6 +945,7 @@ def _autor_admin_id():
 @bp.route('/correcciones/<int:cor_id>/aprobar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.correcciones.aprobar')
 def aprobar_correccion(cor_id):
     d = request.get_json() or {}
     comentario = (d.get('comentario') or '').strip() or None
@@ -1020,6 +1021,7 @@ def aprobar_correccion(cor_id):
 @bp.route('/correcciones/<int:cor_id>/rechazar', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.correcciones.rechazar')
 def rechazar_correccion(cor_id):
     d = request.get_json() or {}
     comentario = (d.get('comentario') or '').strip() or None
@@ -1045,6 +1047,7 @@ def rechazar_correccion(cor_id):
 @bp.route('/eventos/correccion', methods=['POST'])
 @auth_required
 @require_feature('control_horario')
+@require_permission('control_horario.correcciones.insertar_directa')
 def correccion_directa_admin():
     """Inserta una corrección directamente sin pasar por solicitud.
 

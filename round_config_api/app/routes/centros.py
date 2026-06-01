@@ -8,7 +8,7 @@ Solo el manager puede listar/editar (no impersonando trainer).
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 
 bp = Blueprint('centros', __name__)
@@ -49,15 +49,25 @@ def _manager_only():
 @bp.route('/', methods=['GET'])
 @auth_required
 def list_all():
-    err = _manager_only()
-    if err: return err
+    """Lista de centros del manager. Lectura permitida tanto al manager bare
+    (devuelve TODOS sus centros) como al usuario logueado en un centro
+    concreto (devuelve SOLO el suyo) — necesario para que el badge top-right
+    pueda mostrar el nombre del centro al usuario sin permisos de manager.
+    La escritura/borrado SÍ requieren manager (_manager_only en PUT/DELETE).
+    """
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
-                SELECT * FROM centro_contacto
-                 WHERE id_manager = %s
-                 ORDER BY nombre_centro
-            """, (g.id_manager,))
+            if g.id_trainer:
+                cur.execute("""
+                    SELECT * FROM centro_contacto
+                     WHERE id_manager = %s AND id_trainer = %s
+                """, (g.id_manager, str(g.id_trainer)))
+            else:
+                cur.execute("""
+                    SELECT * FROM centro_contacto
+                     WHERE id_manager = %s
+                     ORDER BY nombre_centro
+                """, (g.id_manager,))
             rows = cur.fetchall()
         return jsonify({'ok': True, 'rows': rows})
     except Exception as e:
@@ -67,6 +77,7 @@ def list_all():
 
 @bp.route('/<id_trainer>', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.centros_trainers.editar')
 def upsert(id_trainer):
     err = _manager_only()
     if err: return err
@@ -92,14 +103,21 @@ def upsert(id_trainer):
         except (TypeError, ValueError):
             return jsonify({'ok': False, 'error': 'actividades_permitidas: solo enteros'}), 400
 
+        # Normalizar campos SEPA empresa (mayo 2026). Espacios fuera y
+        # mayúsculas en IBAN/Creditor; BIC también en mayúsculas.
+        iban_cobro = (d.get('iban_cobro') or '').replace(' ', '').upper() or None
+        bic = (d.get('bic') or '').replace(' ', '').upper() or None
+        sepa_creditor_id = (d.get('sepa_creditor_id') or '').replace(' ', '').upper() or None
+
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO centro_contacto
                   (id_manager, id_trainer, nombre_centro, slug, email, email_cc,
                    telefono, ciudad, direccion, cif, razon_social,
                    activo, recibe_round_robin, notas,
-                   dias_permitidos, actividades_permitidas)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+                   dias_permitidos, actividades_permitidas,
+                   iban_cobro, bic, sepa_creditor_id)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s)
                 ON CONFLICT (id_manager, id_trainer) DO UPDATE
                 SET nombre_centro          = EXCLUDED.nombre_centro,
                     slug                   = EXCLUDED.slug,
@@ -114,7 +132,10 @@ def upsert(id_trainer):
                     recibe_round_robin     = EXCLUDED.recibe_round_robin,
                     notas                  = EXCLUDED.notas,
                     dias_permitidos        = EXCLUDED.dias_permitidos,
-                    actividades_permitidas = EXCLUDED.actividades_permitidas
+                    actividades_permitidas = EXCLUDED.actividades_permitidas,
+                    iban_cobro             = EXCLUDED.iban_cobro,
+                    bic                    = EXCLUDED.bic,
+                    sepa_creditor_id       = EXCLUDED.sepa_creditor_id
                 RETURNING *
             """, (g.id_manager, str(id_trainer),
                   d.get('nombre_centro'),
@@ -128,7 +149,8 @@ def upsert(id_trainer):
                   bool(d.get('recibe_round_robin', True)),
                   d.get('notas'),
                   _json.dumps(dias_norm),
-                  _json.dumps(actividades_norm)))
+                  _json.dumps(actividades_norm),
+                  iban_cobro, bic, sepa_creditor_id))
             row = cur.fetchone()
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
@@ -136,8 +158,80 @@ def upsert(id_trainer):
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+# ── Alta de cliente — modo per-trainer ──────────────────────────────────────
+# Configura cómo se da de alta un nuevo cliente desde el web/mynoofit.
+# Tres modos:
+#   'centro'     → QR del centro visible en /clientes. Cliente escanea con
+#                  mynoofit y se da de alta directamente vinculándose al
+#                  trainer (sin ficha previa).
+#   'individual' → QR del centro NO visible. El gestor crea primero la ficha
+#                  del cliente y le entrega su QR personal para vincular su
+#                  mynoofit a esa ficha existente.
+#   'ambos'      → ambos QR disponibles a la vez.
+# Aceptamos lectura tanto para manager como para trainer (cualquiera puede
+# leer SU modo); la escritura SOLO la hace el manager.
+MODOS_ALTA = ('centro', 'individual', 'ambos')
+
+
+@bp.route('/alta-cliente-modo', methods=['GET'])
+@bp.route('/<id_trainer>/alta-cliente-modo', methods=['GET'])
+@auth_required
+def get_alta_modo(id_trainer=None):
+    """Devuelve {modo: 'centro'|'individual'|'ambos'} del trainer indicado
+    (o del trainer impersonado si no se pasa id_trainer)."""
+    try:
+        tid = id_trainer or g.id_trainer
+        if not tid:
+            return jsonify({'ok': False, 'error': 'id_trainer_required'}), 400
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT alta_cliente_modo FROM centro_contacto
+                            WHERE id_manager=%s AND id_trainer=%s""",
+                        (g.id_manager, str(tid)))
+            r = cur.fetchone()
+        modo = (r or {}).get('alta_cliente_modo') or 'centro'
+        return jsonify({'ok': True, 'modo': modo, 'id_trainer': str(tid)})
+    except Exception as e:
+        log.exception('get_alta_modo')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@bp.route('/<id_trainer>/alta-cliente-modo', methods=['PUT'])
+@auth_required
+@require_permission('configuracion.centros_trainers.editar')
+def set_alta_modo(id_trainer):
+    """Cambia el modo para un trainer. Solo manager (no impersonando)."""
+    err = _manager_only()
+    if err: return err
+    try:
+        d = request.get_json() or {}
+        modo = (d.get('modo') or '').strip().lower()
+        if modo not in MODOS_ALTA:
+            return jsonify({'ok': False,
+                             'error': f'modo invalido (acepta: {MODOS_ALTA})'}), 400
+        with get_conn() as conn, conn.cursor() as cur:
+            # UPSERT — si no existe centro_contacto, crear con valores mínimos.
+            cur.execute("""
+                INSERT INTO centro_contacto (id_manager, id_trainer,
+                                              nombre_centro, email,
+                                              alta_cliente_modo)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id_manager, id_trainer) DO UPDATE
+                SET alta_cliente_modo = EXCLUDED.alta_cliente_modo
+                RETURNING alta_cliente_modo
+            """, (g.id_manager, str(id_trainer),
+                  f'Centro {id_trainer}', f'noreply+{id_trainer}@example.com',
+                  modo))
+            row = cur.fetchone()
+        return jsonify({'ok': True, 'modo': row['alta_cliente_modo'],
+                         'id_trainer': str(id_trainer)})
+    except Exception as e:
+        log.exception('set_alta_modo')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @bp.route('/<id_trainer>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.centros_trainers.borrar')
 def delete(id_trainer):
     err = _manager_only()
     if err: return err

@@ -2,7 +2,7 @@ import { useLocation } from 'react-router-dom'
 import { Menu } from 'lucide-react'
 import { navItems } from '../config/routes'
 import ThemeToggle from './ThemeToggle'
-import TrainerFilterBar from './TrainerFilterBar'
+import CentroBadge from './CentroBadge'
 
 export default function Header({ onMenuClick }) {
   const { pathname } = useLocation()
@@ -27,7 +27,10 @@ export default function Header({ onMenuClick }) {
         {title}
       </h1>
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <TrainerFilterBar />
+        {/* Badge fijo del centro actual. NO permite cambiar — el usuario
+            tiene que cerrar sesión y volver a entrar para elegir otro
+            centro (evita modificar datos del centro equivocado por error). */}
+        <CentroBadge />
         <ThemeToggle />
       </div>
     </header>

@@ -479,10 +479,21 @@ export function invalidateSalasCache() {
 }
 
 export const postClientes = async (clienteList) => {
-  const r = await apiPost(
+  // Usamos apiPostRaw para conservar el mensaje exacto de NoofitPro
+  // (apiPost lo aplasta con userFriendlyError → no veríamos "DNI inválido",
+  // "email ya existe", etc.).
+  const r = await apiPostRaw(
     'api/dispositivos/clientePlusv2',
     clienteList.map(c => ({ ...c, toSend: true }))
   )
+  if (!r.ok || (r.data && r.data.mensaje && r.data.mensaje !== 'OK')) {
+    const noofitMsg = r.data?.mensaje || r.data?.error || `HTTP ${r.status}`
+    const err = new Error(noofitMsg)
+    err.noofitMessage = noofitMsg
+    err.body = r.data
+    err.status = r.status
+    throw err
+  }
   invalidateCache('clientes')
   clearPersistedCache('clientes')
   // Tras crear/editar en NoofitPro, refrescar la cache local del backend

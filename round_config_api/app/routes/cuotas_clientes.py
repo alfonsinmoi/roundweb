@@ -10,7 +10,9 @@ from ..auth import auth_required, require_permission
 from ..odoo_guard import require_feature
 from ..odoo_cuotas import get_cuotas
 from ..odoo_alta import get_alta
+from ..db import get_conn
 from ..notif_sender import enviar_notificacion
+from ..trainer_scope import clientes_id_noofit_del_trainer, cliente_pertenece_a_trainer
 from .. import config as cfg
 
 bp = Blueprint('cuotas_clientes', __name__)
@@ -96,17 +98,162 @@ def _serialize(rec):
     return out
 
 
+# Estados BD `recibo` → payment_state estilo Odoo (consumido por el front).
+_BD_ESTADO_PAYMENT_STATE = {
+    'pagado':     'paid',
+    'facturado':  'paid',
+    'impagado':   'not_paid',
+    'devuelto':   'not_paid',
+    'emitido':    'not_paid',
+    'cancelado':  'not_paid',
+}
+
+
+def _bd_recibo_to_unified(r):
+    """Convierte una fila de BD `recibo` al shape "tipo Odoo" que espera el
+    frontend (RecibosTable, ListadoTab). Así podemos devolver una lista
+    unificada — BD + Odoo — sin que la UI tenga que diferenciar.
+
+    Marcadores: `_source='bd'` + `_origen` + `estado_bd` para que el front
+    pueda mostrar un chip indicando que aún no está facturado a Odoo.
+    """
+    def _iso(d):
+        return d.isoformat() if hasattr(d, 'isoformat') else d
+    importe = float(r.get('importe_total') or 0)
+    estado_bd = r.get('estado') or 'emitido'
+    periodo = r.get('periodo') or ''
+    nombre_doc = f'BD/{periodo}/{r["id"]:05d}' if periodo else f'BD/{r["id"]:05d}'
+    return {
+        # `id` con prefijo para no colisionar con IDs de account.move Odoo.
+        'id': f'bd-{r["id"]}',
+        'id_bd': r['id'],
+        'name': nombre_doc,
+        'invoice_date': _iso(r.get('fecha_emision')),
+        'invoice_date_due': _iso(r.get('fecha_hasta')) or _iso(r.get('fecha_emision')),
+        'amount_total': importe,
+        'state': 'posted',
+        'payment_state': _BD_ESTADO_PAYMENT_STATE.get(estado_bd, 'not_paid'),
+        'partner_id': {'id': None, 'name': r.get('cliente_nombre') or ''},
+        'partner_idnoofit': r.get('cliente_idnoofit'),
+        'round_subscription_id': None,
+        'cuota_codigo': r.get('cuota_codigo') or '',
+        'cuota_descripcion': r.get('cuota_descripcion') or '',
+        'cuota_actividades': '',
+        'forma_pago': r.get('metodo_pago'),
+        'periodicidad': r.get('periodicidad'),
+        'mes_ref': periodo or None,
+        'create_date': _iso(r.get('created_at')),
+        'narration': r.get('notas') or '',
+        'descuentos_aplicados': [],
+        'modificaciones_aplicadas': [],
+        # Marcadores propios — no rompen el front existente.
+        '_source': 'bd',
+        '_origen': r.get('origen'),
+        'estado_bd': estado_bd,
+    }
+
+
+def _bd_recibos_cliente(id_noofit):
+    """Lee recibos BD de un cliente del manager actual. Excluye:
+      - los facturados a Odoo (`account_move_id IS NOT NULL`) — esos
+        llegan vía la consulta Odoo, evitamos duplicar.
+      - los borradores de remesa (`estado='borrador_remesa'`) — solo
+        deben verse en el tab "Recibos manuales" hasta que se emitan.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, cliente_idnoofit, cliente_nombre,
+                   cuota_codigo, cuota_descripcion,
+                   periodo, fecha_emision, fecha_pago, fecha_hasta, fecha_desde,
+                   periodicidad, importe_total, metodo_pago, estado,
+                   origen, notas, created_at, account_move_id
+              FROM recibo
+             WHERE id_manager = %s AND cliente_idnoofit = %s
+               AND account_move_id IS NULL
+               AND estado <> 'borrador_remesa'
+             ORDER BY fecha_emision DESC, id DESC
+        """, (str(g.id_manager), str(id_noofit)))
+        return cur.fetchall()
+
+
+def _bd_recibos_filtrado(mes_str=None, estado=None, cliente_idnoofit=None):
+    """Lee recibos BD del manager actual, opcionalmente filtrados por mes/
+    estado/cliente. Excluye `account_move_id IS NOT NULL` por la misma razón
+    que arriba — el move Odoo ya los representa."""
+    where = ['id_manager = %s', 'account_move_id IS NULL',
+             # Excluir borradores de remesa: solo el tab "Recibos manuales"
+             # los muestra.
+             "estado <> 'borrador_remesa'"]
+    vals = [str(g.id_manager)]
+    if g.id_trainer:
+        # Estricto: recibo.id_trainer DEBE coincidir. Hay un backfill (mayo
+        # 2026) que pobló los 950 recibos previos vía cliente_cache, así que
+        # NULL solo ocurriría para recibos huérfanos sin cliente conocido.
+        where.append('id_trainer = %s')
+        vals.append(str(g.id_trainer))
+    if mes_str:
+        where.append('periodo = %s'); vals.append(mes_str)
+    if estado:
+        # Mapear payment_state Odoo a estado BD si llega así
+        if estado in ('paid',):
+            where.append("estado IN ('pagado','facturado')")
+        elif estado in ('not_paid',):
+            where.append("estado IN ('impagado','devuelto','emitido')")
+        else:
+            where.append('estado = %s'); vals.append(estado)
+    if cliente_idnoofit:
+        where.append('cliente_idnoofit = %s'); vals.append(str(cliente_idnoofit))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT id, cliente_idnoofit, cliente_nombre,
+                   cuota_codigo, cuota_descripcion,
+                   periodo, fecha_emision, fecha_pago, fecha_hasta, fecha_desde,
+                   periodicidad, importe_total, metodo_pago, estado,
+                   origen, notas, created_at
+              FROM recibo
+             WHERE {' AND '.join(where)}
+             ORDER BY fecha_emision DESC, id DESC
+        """, vals)
+        return cur.fetchall()
+
+
 # ── Listado por cliente (pestaña Cuotas en ClientProfile) ─────────────────────
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
 @require_feature('cuotas')
 def cuotas_cliente(id_noofit):
+    """Devuelve los recibos del cliente, unificando dos orígenes:
+      - Odoo `account.move` (recibos ya facturados / con factura oficial).
+      - BD `recibo` (recibos preemitidos o migrados que aún no se facturaron).
+    Si Odoo falla seguimos devolviendo los BD para que la ficha al menos
+    muestre algo (mejor visibilidad parcial que pantalla vacía).
+
+    Aislamiento por trainer: si el usuario impersona un trainer y el cliente
+    NO le pertenece, devolvemos lista vacía (no revelar datos del centro
+    equivocado)."""
+    if not cliente_pertenece_a_trainer(id_noofit):
+        return jsonify({'ok': True, 'recibos': []})
+    odoo_rows, odoo_error = [], None
     try:
-        recibos = get_cuotas().list_recibos_cliente(id_noofit)
-        return jsonify({'ok': True, 'recibos': [_serialize(r) for r in recibos]})
+        odoo_rows = get_cuotas().list_recibos_cliente(id_noofit)
     except Exception as e:
-        log.exception('cuotas_cliente')
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        odoo_error = str(e)
+        log.exception('cuotas_cliente:odoo')
+
+    try:
+        bd_rows = _bd_recibos_cliente(id_noofit)
+    except Exception:
+        log.exception('cuotas_cliente:bd')
+        bd_rows = []
+
+    unified = ([_serialize(r) for r in odoo_rows]
+               + [_bd_recibo_to_unified(r) for r in bd_rows])
+    # Ordenar por fecha de emisión desc — los BD usan `invoice_date` también.
+    unified.sort(key=lambda x: x.get('invoice_date') or '', reverse=True)
+    resp = {'ok': True, 'recibos': unified}
+    if odoo_error:
+        resp['warning'] = f'odoo_unavailable: {odoo_error}'
+    return jsonify(resp)
 
 
 # ── Listado filtrable (Cuotas clientes / Listado) ─────────────────────────────
@@ -115,15 +262,44 @@ def cuotas_cliente(id_noofit):
 @auth_required
 @require_feature('cuotas')
 def list_cuotas():
+    """Listado unificado de recibos (BD `recibo` + Odoo `account.move`).
+    Si Odoo cae, devolvemos al menos los BD para que el operador siga
+    teniendo visibilidad de los recibos pendientes de facturar."""
+    mes = request.args.get('mes') or None
+    estado = request.args.get('estado') or None
+    partner_id = request.args.get('partner_id', type=int)
+    cliente = request.args.get('cliente') or None  # cliente_idnoofit
+
+    odoo_rows, odoo_error = [], None
     try:
-        mes = request.args.get('mes') or None
-        estado = request.args.get('estado') or None
-        partner_id = request.args.get('partner_id', type=int)
-        recibos = get_cuotas().list_recibos_filtrado(mes, estado, partner_id)
-        return jsonify({'ok': True, 'recibos': [_serialize(r) for r in recibos]})
+        odoo_rows = get_cuotas().list_recibos_filtrado(mes, estado, partner_id)
     except Exception as e:
-        log.exception('list_cuotas')
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        odoo_error = str(e)
+        log.exception('list_cuotas:odoo')
+
+    # Aislamiento por trainer (Odoo side): account.move es manager-wide, sin
+    # id_trainer. Post-filtramos por partner_idnoofit cuyo cliente pertenece
+    # al trainer impersonado. Si no hay trainer impersonado → set None → no
+    # filtro adicional.
+    clientes_del_trainer = clientes_id_noofit_del_trainer()
+    if clientes_del_trainer is not None:
+        odoo_rows = [r for r in odoo_rows
+                     if str(r.get('partner_idnoofit') or '') in clientes_del_trainer]
+
+    try:
+        bd_rows = _bd_recibos_filtrado(mes_str=mes, estado=estado,
+                                       cliente_idnoofit=cliente)
+    except Exception:
+        log.exception('list_cuotas:bd')
+        bd_rows = []
+
+    unified = ([_serialize(r) for r in odoo_rows]
+               + [_bd_recibo_to_unified(r) for r in bd_rows])
+    unified.sort(key=lambda x: x.get('invoice_date') or '', reverse=True)
+    resp = {'ok': True, 'recibos': unified}
+    if odoo_error:
+        resp['warning'] = f'odoo_unavailable: {odoo_error}'
+    return jsonify(resp)
 
 
 # ── Preemisión: generar borradores del mes ────────────────────────────────────
