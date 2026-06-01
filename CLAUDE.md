@@ -571,6 +571,11 @@ Tras la prueba, el trainer da de alta al cliente:
 
 ## Referencias rápidas
 
+- **Modelo manager / trainer / usuario_web** (reglas inmutables de scope y
+  privilegios): `docs/MANAGER_TRAINER.md` — **LEER antes de añadir tabla o
+  endpoint nuevo**. Reglas clave: NoofitPro decide la jerarquía, manager
+  habilita módulos para sus trainers, datos cliente/cuotas nunca cruzan
+  manager, datos manager se comparten entre sus trainers.
 - Manual operativo (manager + trainers): `docs/Manual_CRM_Round.docx`
 - Arquitectura técnica + infografía: `docs/Arquitectura_round_noofit.docx`
 - Flujo dual-PC + setup nuevo PC: `docs/FLUJO_DUAL_PC.md`
