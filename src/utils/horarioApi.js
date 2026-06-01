@@ -31,7 +31,8 @@ function _headers(identity) {
     'X-Round-Token': TOKEN,
     'X-Round-Manager-Id': identity?.managerId || '',
   }
-  const tid = identity?.trainerId || _trainerOverride()
+  // Override del selector global (admin) tiene prioridad sobre identity.trainerId.
+  const tid = _trainerOverride() || identity?.trainerId
   if (tid) h['X-Round-Trainer-Id'] = tid
   return _withBearer(h)
 }

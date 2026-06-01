@@ -123,7 +123,11 @@ function headers(identity) {
     'X-Round-Manager-Id': identity.managerId || '',
   }
   // Prioridad: trainerId explícito de identity (impersonación clásica) > selector admin
-  const tid = identity.trainerId || _trainerOverride()
+  // Override del selector global (admin) tiene prioridad sobre identity.trainerId.
+  // Esto permite que un usuario_web admin vinculado a un trainer concreto pueda
+  // cambiar de centro en el selector. Si no hay override en sessionStorage,
+  // _trainerOverride() devuelve null y se usa identity.trainerId.
+  const tid = _trainerOverride() || identity.trainerId
   if (tid) h['X-Round-Trainer-Id'] = tid
   return _withBearer(h)
 }
