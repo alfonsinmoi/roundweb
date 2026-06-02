@@ -63,7 +63,6 @@ export function useAltaModo(idTrainer) {
 export function QrCentroButton({ trainerId, nombreCentro }) {
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
-  const modo = useAltaModo(trainerId)
   const [open, setOpen] = useState(false)
   const [qrPayload, setQrPayload] = useState(null)
   const [qrError, setQrError] = useState(null)
@@ -78,7 +77,10 @@ export function QrCentroButton({ trainerId, nombreCentro }) {
       .catch(e => setQrError(e.message || 'Error generando QR'))
   }, [open, identity?.managerId, trainerId, nombreCentro])
 
-  if (modo !== 'centro' && modo !== 'ambos') return null
+  // Junio 2026 — el QR del trainer se muestra SIEMPRE arriba a la derecha en
+  // Clientes (antes dependía del modo de alta 'centro'/'ambos'). Es el QR de
+  // perfil del trainer (cifrado), independiente de cómo se den de alta.
+  if (!trainerId) return null
 
   return (
     <>

@@ -325,7 +325,8 @@ function RecibosTable({ recibos, sort, toggleSort, onReload }) {
   return (
     <div style={{ width: '100%', overflowX: 'auto' }}>
       <table style={{
-        width: '100%', minWidth: 1200, borderCollapse: 'collapse', fontSize: 12,
+        width: '100%', borderCollapse: 'collapse', fontSize: 11,
+        tableLayout: 'auto',
       }}>
         <thead>
           <tr style={{ borderBottom: '1px solid var(--line)',
@@ -333,10 +334,9 @@ function RecibosTable({ recibos, sort, toggleSort, onReload }) {
             <ThSort col="cliente"      sort={sort} toggle={toggleSort}>Cliente</ThSort>
             <ThSort col="mes_ref"      sort={sort} toggle={toggleSort}>Mes</ThSort>
             <ThSort col="cuota_codigo" sort={sort} toggle={toggleSort}>Cuota</ThSort>
-            <ThSort col="periodicidad" sort={sort} toggle={toggleSort}>Periodic.</ThSort>
             <ThSort col="tipo"         sort={sort} toggle={toggleSort}>Tipo</ThSort>
             <ThSort col="amount_total" sort={sort} toggle={toggleSort}>Importe</ThSort>
-            <ThSort col="forma_pago"   sort={sort} toggle={toggleSort}>Forma pago</ThSort>
+            <ThSort col="forma_pago"   sort={sort} toggle={toggleSort}>F. pago</ThSort>
             <ThSort col="invoice_date" sort={sort} toggle={toggleSort}>Emisión</ThSort>
             <ThSort col="invoice_date_due" sort={sort} toggle={toggleSort}>Cobro</ThSort>
             <ThSort col="payment_state" sort={sort} toggle={toggleSort}>Estado</ThSort>
@@ -364,6 +364,13 @@ function Row({ r, onReload }) {
   const isModificable = isBd && (isImpagado || isDevuelto ||
                                   r.estado_bd === 'pendiente' ||
                                   r.estado_bd === 'borrador_remesa')
+  // Pagable: impagado/devuelto en Odoo, O recibo BD en estado abierto
+  // (pendiente/impagado/devuelto/borrador). Los BD llevan su estado en
+  // `estado_bd`, que isImpagado (campos Odoo) no captura → por eso el botón
+  // Pagar había desaparecido para esos recibos. (junio 2026)
+  const estadoBd = (r.estado_bd || '').toLowerCase()
+  const isPagable = isImpagado ||
+    (isBd && ['pendiente', 'impagado', 'devuelto', 'borrador_remesa'].includes(estadoBd))
   const stateColor =
     r.payment_state === 'paid'       ? 'green' :
     r.payment_state === 'reversed'   ? 'red'   :
@@ -392,7 +399,6 @@ function Row({ r, onReload }) {
                           letterSpacing: '0.04em' }}>BD</span>
         )}
       </Td>
-      <Td>{PERIODICIDAD_LABELS[r.periodicidad] || r.periodicidad || '—'}</Td>
       <Td>
         <span style={{
           fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
@@ -411,10 +417,10 @@ function Row({ r, onReload }) {
       <Td style={{ whiteSpace: 'nowrap' }}>
         <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center',
                        flexWrap: 'wrap' }}>
-          {isImpagado && <PagarReciboBtn r={r} onReload={onReload} />}
+          {isPagable && <PagarReciboBtn r={r} onReload={onReload} />}
           {isCobrado && isBd && <DevolverReciboBtn r={r} onReload={onReload} />}
           {isModificable && <ModificarReciboBtn r={r} onReload={onReload} />}
-          {!isImpagado && !(isCobrado && isBd) && !isModificable &&
+          {!isPagable && !(isCobrado && isBd) && !isModificable &&
            <span style={{ color: 'var(--text-3)' }}>—</span>}
         </div>
       </Td>

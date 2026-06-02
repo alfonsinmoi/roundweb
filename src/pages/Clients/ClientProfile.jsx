@@ -373,7 +373,9 @@ export default function ClientProfile() {
   //   "TRAINERLINK;<idCliente>" para cedeDatos=true (defecto).
   //   "cedeDatosFalse:<idCliente>:<dni>:<idTrainer>" si cedeDatos=false.
   // Hasta que el flag llegue por API, asumimos cedeDatos=true.
-  const mostrarQrFicha = altaModo === 'individual' || altaModo === 'ambos'
+  // El QR de la ficha se muestra SIEMPRE (antes dependía del modo de alta y
+  // por eso había desaparecido para algunos clientes).
+  const mostrarQrFicha = true
 
   const identity = getRoundIdentity(user)
 
