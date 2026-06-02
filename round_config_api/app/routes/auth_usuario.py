@@ -20,6 +20,7 @@ from flask import Blueprint, request, jsonify, g, current_app
 
 from ..db import get_conn
 from ..email_sender import enviar
+from ..audit_log import log_action
 from ..auth_usuario import (
     hash_password, verify_password, random_token, issue_jwt,
     audit, usuario_web_required, password_expired,
@@ -294,6 +295,13 @@ def login():
 
     token = issue_jwt(u['id'], u['id_manager'], id_trainer_for_session, u['perfil_id'])
     audit(u['id'], email, 'login_ok', f'trainer={id_trainer_for_session}')
+    # Registro del LOGIN también en el accion_log unificado (quién + cuándo).
+    log_action(
+        {'kind': 'usuario_web', 'id': u['id'], 'email': u['email'],
+         'label': f"{u['nombre'] or ''} {u['apellidos'] or ''}".strip() or u['email'],
+         'id_manager': u['id_manager'], 'id_trainer': id_trainer_for_session},
+        entidad='sesion', accion='login', entidad_id=u['id'],
+        resumen=f"Login web · {u['email']} · centro {id_trainer_for_session}")
 
     # Login automático en NoofitPro usando las credenciales del manager.
     # Esto permite al frontend usar el token NoofitPro para llamar a los

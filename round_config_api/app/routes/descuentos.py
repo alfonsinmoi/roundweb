@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
+from ..audit_log import log_action, actor_from_request
 from .. import config
 
 bp = Blueprint('descuentos', __name__)
@@ -155,6 +156,12 @@ def create():
             with get_conn() as conn2, conn2.cursor() as cur2:
                 cur2.execute("UPDATE descuento SET odoo_id=%s WHERE id=%s", (oid, row['id']))
             row['odoo_id'] = oid
+    log_action(actor_from_request(), 'descuento', 'create',
+               entidad_id=row['id'],
+               resumen=f"Alta descuento {row.get('codigo')}",
+               cambios={'codigo': row.get('codigo'), 'tipo': row.get('tipo'),
+                        'valor': d.get('valor', 0), 'unidad': row.get('unidad'),
+                        'scope': scope})
     return jsonify({'ok': True, 'descuento': _row(row)}), 201
 
 
@@ -197,6 +204,11 @@ def update(_id):
                 with get_conn() as conn2, conn2.cursor() as cur2:
                     cur2.execute("UPDATE descuento SET odoo_id=%s WHERE id=%s", (oid, r['id']))
                 r['odoo_id'] = oid
+    log_action(actor_from_request(), 'descuento', 'update',
+               entidad_id=_id,
+               resumen=f"Edición descuento {r.get('codigo')}",
+               cambios={k: d[k] for k in d if k in allowed
+                        or k in ('combo_secundarias', 'actividades_idnoofit')})
     return jsonify({'ok': True, 'descuento': _row(r)})
 
 
@@ -211,6 +223,12 @@ def delete(_id):
         n = cur.rowcount
     if r and r.get('odoo_id') and r.get('scope') == 'plantilla_manager':
         get_sync().descuento_delete(r['odoo_id'])
+    if n:
+        log_action(actor_from_request(), 'descuento', 'delete',
+                   entidad_id=_id,
+                   resumen=f"Baja descuento id={_id}",
+                   cambios={'scope': r.get('scope') if r else None,
+                            'odoo_id': r.get('odoo_id') if r else None})
     return jsonify({'ok': True, 'deleted': n})
 
 
@@ -558,6 +576,13 @@ def create_asignacion(desc_id):
         except Exception as e:
             errores.append({'cliente': cliente, 'error': str(e)})
 
+    if creadas:
+        log_action(actor_from_request(), 'descuento_asignacion', 'asignar',
+                   entidad_id=desc_id,
+                   resumen=f"Asignación descuento {desc_id} a {len(creadas)} cliente(s)",
+                   cambios={'descuento_id': desc_id, 'id_trainer': id_trainer,
+                            'clientes': [a.get('cliente_idnoofit') for a in creadas],
+                            'ya_existentes': ya_existentes})
     return jsonify({
         'ok': True,
         'creadas': creadas,
@@ -606,6 +631,12 @@ def delete_asignacion(desc_id, asig_id):
         if desc_r and desc_r.get('odoo_id'):
             get_sync().asignacion_revoke(desc_r['odoo_id'], r['cliente_idnoofit'])
 
+    if n > 0:
+        log_action(actor_from_request(), 'descuento_asignacion', 'desasignar',
+                   entidad_id=asig_id,
+                   resumen=f"Revocada asignación descuento {desc_id}",
+                   cambios={'descuento_id': desc_id,
+                            'cliente_idnoofit': r.get('cliente_idnoofit') if r else None})
     return jsonify({'ok': True, 'deleted': n})
 
 
@@ -630,4 +661,10 @@ def adoptar(_id):
             VALUES ('trainer', %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING {FIELDS}
         """, (g.id_manager, g.id_trainer, _id, p['codigo'], p['descripcion'], p['tipo'], p['valor'], p['active']))
-        return jsonify({'ok': True, 'descuento': _row(cur.fetchone())}), 201
+        nuevo = cur.fetchone()
+    log_action(actor_from_request(), 'descuento', 'create',
+               entidad_id=nuevo['id'],
+               resumen=f"Adopción plantilla descuento {p.get('codigo')} por trainer {g.id_trainer}",
+               cambios={'plantilla_origen_id': _id, 'codigo': p.get('codigo'),
+                        'tipo': p.get('tipo'), 'id_trainer': g.id_trainer})
+    return jsonify({'ok': True, 'descuento': _row(nuevo)}), 201

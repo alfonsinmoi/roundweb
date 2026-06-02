@@ -15,7 +15,7 @@ from .centros import buscar_centro, proximo_centro_round_robin, get_centros_acti
 from ..email_sender import enviar as enviar_email
 from ..email_templates import trigger as trigger_email
 from ..lead_scoring import calcular_score, color_for_score, LOST_REASONS
-from ..audit_log import log_action, actor_from_request
+from ..audit_log import log_action, actor_from_request, diff_dict
 from .. import config as cfg
 from datetime import datetime, timezone
 
@@ -256,6 +256,17 @@ def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
                          reply_to=email or None, id_manager=id_manager)
     except Exception as e:
         log.warning(f'email lead: {e}')
+
+    accion = 'form_submit' if origen == 'tally' else 'crear_lead'
+    log_action(actor_from_request(), entidad='lead', accion=accion,
+               entidad_id=str(odoo_lead_id) if odoo_lead_id else None,
+               resumen=f'Lead {origen}: {full_name} → {centro["nombre_centro"]}',
+               cambios={
+                   'nombre':   full_name,
+                   'email':    email,
+                   'telefono': telefono,
+                   'centro':   centro_slug or centro.get('slug'),
+               })
 
     return jsonify({
         'ok': True,
@@ -645,6 +656,25 @@ def update_lead(lead_id):
                     trigger_email(evento, g.id_manager, ctx)
         except Exception as e:
             log.warning(f'trigger etapa: {e}')
+
+        # Audit log de la mutación (etapa / lost / update genérico)
+        try:
+            new_stage_id = (lead.get('stage_id') or [None])[0] if lead.get('stage_id') else None
+            stage_moved = 'stage_id' in vals and new_stage_id != prev_stage_id
+            accion = 'lost' if is_lost else ('mover_etapa' if stage_moved else 'update')
+            cambios = diff_dict(
+                {'stage_id': prev_stage_id, 'lost_reason': asig.get('lost_reason')},
+                {'stage_id': new_stage_id, 'lost_reason': lost_reason or asig.get('lost_reason')},
+            )
+            resumen = (f'Lead perdido: {new_stage_name or asig.get("lost_reason") or ""}'.strip()
+                       if is_lost else
+                       (f'Lead movido a etapa {new_stage_name}' if stage_moved
+                        else 'Lead actualizado'))
+            log_action(actor_from_request(), entidad='lead', accion=accion,
+                       entidad_id=str(lead_id), resumen=resumen,
+                       cambios=cambios or None)
+        except Exception as e:
+            log.warning(f'audit update_lead: {e}')
 
         return jsonify({'ok': True, 'lead': lead})
     except Exception as e:

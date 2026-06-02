@@ -13,6 +13,7 @@ from ..odoo_alta import get_alta
 from ..db import get_conn
 from ..notif_sender import enviar_notificacion
 from ..trainer_scope import clientes_id_noofit_del_trainer, cliente_pertenece_a_trainer
+from ..audit_log import log_action, actor_from_request
 from .. import config as cfg
 
 bp = Blueprint('cuotas_clientes', __name__)
@@ -310,6 +311,10 @@ def preemision_generar(mes):
     """mes formato YYYY-MM"""
     try:
         result = get_cuotas().generar_preemision(mes)
+        log_action(actor_from_request(), 'preemision', 'preemitir',
+                   entidad_id=mes,
+                   resumen=f'Preemisión generada {mes}',
+                   cambios={'mes': mes, 'result': result})
         return jsonify({'ok': True, **result})
     except Exception as e:
         log.exception('preemision_generar')
@@ -337,6 +342,10 @@ def preemision_modificar(invoice_id):
     try:
         d = request.get_json() or {}
         result = get_cuotas().update_borrador(invoice_id, d)
+        log_action(actor_from_request(), 'preemision', 'update',
+                   entidad_id=invoice_id,
+                   resumen=f'Borrador recibo {invoice_id} modificado',
+                   cambios={'after': d})
         return jsonify({'ok': True, 'recibo': _serialize(result)})
     except ValueError as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -351,6 +360,9 @@ def preemision_modificar(invoice_id):
 def preemision_eliminar(invoice_id):
     try:
         get_cuotas().delete_borrador(invoice_id)
+        log_action(actor_from_request(), 'preemision', 'delete',
+                   entidad_id=invoice_id,
+                   resumen=f'Borrador recibo {invoice_id} eliminado')
         return jsonify({'ok': True})
     except ValueError as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -366,6 +378,10 @@ def preemision_eliminar(invoice_id):
 def emitir_remesa(mes):
     try:
         result = get_cuotas().emitir_remesa(mes)
+        log_action(actor_from_request(), 'remesa', 'emitir',
+                   entidad_id=mes,
+                   resumen=f'Remesa emitida {mes}',
+                   cambios={'mes': mes, 'result': result})
         return jsonify(result)
     except Exception as e:
         log.exception('emitir_remesa')
@@ -393,6 +409,11 @@ def enviar_factura(invoice_id):
             id_trainer=g.id_trainer,
             extra_message=mensaje,
         )
+        if result.get('ok'):
+            log_action(actor_from_request(), 'recibo', 'enviar_factura',
+                       entidad_id=invoice_id,
+                       resumen=f'Factura {invoice_id} enviada por email',
+                       cambios={'dest_email': dest})
         return jsonify(result), (200 if result.get('ok') else 400)
     except Exception as e:
         log.exception('enviar_factura')
@@ -415,6 +436,13 @@ def alta_cliente():
             id_manager=g.id_manager,
             id_trainer=g.id_trainer,
         )
+        _cli = payload.get('cliente') or {}
+        log_action(actor_from_request(), 'alta_cliente', 'alta',
+                   entidad_id=_cli.get('id_noofit') or _cli.get('idNoofit'),
+                   resumen=f"Alta cliente {_cli.get('nombre','') or ''}".strip(),
+                   cambios={'cliente': _cli.get('nombre'),
+                            'cuota': (payload.get('suscripcion') or {}).get('cuota_codigo'),
+                            'result': result})
         return jsonify(result)
     except ValueError as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -561,6 +589,10 @@ def paycomet_callback():
         except Exception as e:
             log.warning(f'paycomet_callback notif fallback: {e}')
 
+        log_action(actor_from_request(), 'recibo', 'cobrar',
+                   entidad_id=inv_id,
+                   resumen=f'Pago PayComet registrado recibo {order}',
+                   cambios={'order': order, 'invoice_id': inv_id})
         return jsonify({'ok': True, 'invoice_id': inv_id, 'paid': True})
     except Exception as e:
         log.exception('paycomet_callback')
@@ -593,6 +625,10 @@ def devoluciones():
                 log.warning(f'notif devolucion fallback: {e}')
         result['notif_enviadas'] = notificadas
 
+        log_action(actor_from_request(), 'devolucion', 'devolucion',
+                   resumen=f'Devoluciones procesadas ({len(rows)} filas)',
+                   cambios={'rows': rows,
+                            'procesadas': result.get('procesadas')})
         return jsonify({'ok': True, **result})
     except Exception as e:
         log.exception('devoluciones')

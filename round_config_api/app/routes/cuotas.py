@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
+from ..audit_log import log_action, actor_from_request
 from .. import config
 
 bp = Blueprint('cuotas', __name__)
@@ -136,6 +137,11 @@ def create_cuota():
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s RETURNING odoo_id", (odoo_id, row['id']))
             row['odoo_id'] = odoo_id
+    log_action(actor_from_request(), 'cuota', 'create',
+               entidad_id=row['id'],
+               resumen=f"Cuota creada {row.get('codigo')} (scope={scope})",
+               cambios={'codigo': row.get('codigo'), 'scope': scope,
+                        'id_trainer': id_trainer})
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)}), 201
 
 
@@ -179,6 +185,10 @@ def update_cuota(cuota_id):
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s", (new_odoo_id, row['id']))
             row['odoo_id'] = new_odoo_id
+    log_action(actor_from_request(), 'cuota', 'update',
+               entidad_id=cuota_id,
+               resumen=f"Cuota actualizada {row.get('codigo')}",
+               cambios={k: d[k] for k in allowed if k in d})
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)})
 
 
@@ -194,6 +204,11 @@ def delete_cuota(cuota_id):
             n = cur.rowcount
     if r and r.get('odoo_id'):
         get_sync().cuota_delete(r['odoo_id'])
+    if n:
+        log_action(actor_from_request(), 'cuota', 'delete',
+                   entidad_id=cuota_id,
+                   resumen='Cuota eliminada',
+                   cambios={'scope': r.get('scope') if r else None})
     return jsonify({'ok': True, 'deleted': n})
 
 
@@ -248,4 +263,9 @@ def adoptar_plantilla(cuota_id):
                 plantilla['active'],
             ))
             row = cur.fetchone()
+    log_action(actor_from_request(), 'cuota', 'create',
+               entidad_id=row['id'],
+               resumen=f"Plantilla adoptada por trainer ({row.get('codigo')})",
+               cambios={'codigo': row.get('codigo'), 'scope': 'trainer',
+                        'plantilla_origen_id': cuota_id})
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)}), 201

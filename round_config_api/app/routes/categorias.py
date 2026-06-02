@@ -13,6 +13,7 @@ import logging
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn, seed_categorias_for_manager
+from ..audit_log import log_action, actor_from_request
 
 bp = Blueprint('categorias', __name__)
 log = logging.getLogger(__name__)
@@ -73,6 +74,13 @@ def create_categoria():
                 d.get('noofit_alias'),
             ))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'categoria', 'create',
+                   entidad_id=(row or {}).get('id'),
+                   resumen=f"Categoría creada {nombre}",
+                   cambios={'nombre': nombre, 'color': d.get('color'),
+                            'puede_reservar': bool(d.get('puede_reservar', True)),
+                            'tiene_cuota': bool(d.get('tiene_cuota', False)),
+                            'activa': bool(d.get('activa', True))})
         return jsonify({'ok': True, 'categoria': row})
     except Exception as e:
         log.exception('create_categoria')
@@ -104,6 +112,10 @@ def update_categoria(cat_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'categoria', 'update',
+                   entidad_id=cat_id,
+                   resumen=f"Categoría actualizada {row.get('nombre')}",
+                   cambios={k: d[k] for k in allowed if k in d})
         return jsonify({'ok': True, 'categoria': row})
     except Exception as e:
         log.exception('update_categoria')
@@ -126,6 +138,9 @@ def delete_categoria(cat_id):
                      WHERE id_manager = %s AND id = %s
                 """, (g.id_manager, cat_id))
                 deleted = cur.rowcount
+                if deleted:
+                    log_action(actor_from_request(), 'categoria', 'delete',
+                               entidad_id=cat_id, resumen='Categoría eliminada (hard)')
                 return jsonify({'ok': True, 'deleted': deleted, 'mode': 'hard'})
             # Soft: si tiene clientes, sólo desactiva
             cur.execute("""
@@ -140,12 +155,20 @@ def delete_categoria(cat_id):
                     RETURNING *
                 """, (g.id_manager, cat_id))
                 row = cur.fetchone()
+                log_action(actor_from_request(), 'categoria', 'update',
+                           entidad_id=cat_id,
+                           resumen=f"Categoría desactivada (en uso por {n} clientes)",
+                           cambios={'activa': {'before': True, 'after': False}})
                 return jsonify({'ok': True, 'mode': 'deactivated', 'in_use': n, 'categoria': row})
             cur.execute("""
                 DELETE FROM categoria
                  WHERE id_manager = %s AND id = %s
             """, (g.id_manager, cat_id))
-            return jsonify({'ok': True, 'deleted': cur.rowcount, 'mode': 'hard'})
+            deleted = cur.rowcount
+            if deleted:
+                log_action(actor_from_request(), 'categoria', 'delete',
+                           entidad_id=cat_id, resumen='Categoría eliminada (sin uso)')
+            return jsonify({'ok': True, 'deleted': deleted, 'mode': 'hard'})
     except Exception as e:
         log.exception('delete_categoria')
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -236,7 +259,12 @@ def set_cliente_categoria(id_noofit):
                     DELETE FROM cliente_categoria
                      WHERE id_manager = %s AND cliente_idnoofit = %s
                 """, (g.id_manager, str(id_noofit)))
-                return jsonify({'ok': True, 'asignacion': None, 'removed': cur.rowcount})
+                removed = cur.rowcount
+                if removed:
+                    log_action(actor_from_request(), 'cliente_categoria', 'delete',
+                               entidad_id=str(id_noofit),
+                               resumen='Categoría desasignada del cliente')
+                return jsonify({'ok': True, 'asignacion': None, 'removed': removed})
             # Validar que la categoría existe en este manager
             cur.execute("""
                 SELECT id FROM categoria
@@ -252,6 +280,10 @@ def set_cliente_categoria(id_noofit):
                 RETURNING categoria_id
             """, (g.id_manager, str(id_noofit), int(cat_id)))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'cliente_categoria', 'asignar',
+                   entidad_id=str(id_noofit),
+                   resumen='Categoría asignada al cliente',
+                   cambios={'categoria_id': int(cat_id)})
         return jsonify({'ok': True, 'asignacion': row})
     except Exception as e:
         log.exception('set_cliente_categoria')
@@ -269,6 +301,10 @@ def del_cliente_categoria(id_noofit):
                  WHERE id_manager = %s AND cliente_idnoofit = %s
             """, (g.id_manager, str(id_noofit)))
             n = cur.rowcount
+        if n:
+            log_action(actor_from_request(), 'cliente_categoria', 'delete',
+                       entidad_id=str(id_noofit),
+                       resumen='Categoría desasignada del cliente')
         return jsonify({'ok': True, 'removed': n})
     except Exception as e:
         log.exception('del_cliente_categoria')

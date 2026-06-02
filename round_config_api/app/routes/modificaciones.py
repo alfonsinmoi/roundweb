@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
+from ..audit_log import log_action, actor_from_request
 from .. import config
 
 bp = Blueprint('modificaciones', __name__)
@@ -88,6 +89,14 @@ def create():
         with get_conn() as conn2, conn2.cursor() as cur2:
             cur2.execute("UPDATE modificacion SET odoo_id=%s WHERE id=%s", (oid, row['id']))
         row['odoo_id'] = oid
+    log_action(actor_from_request(), 'modificacion', 'create',
+               entidad_id=row['id'],
+               resumen=f"Alta modificación {row.get('tipo')} cliente {row.get('cliente_idnoofit')}",
+               cambios={'tipo': row.get('tipo'), 'valor': d.get('valor', 0),
+                        'cliente_idnoofit': row.get('cliente_idnoofit'),
+                        'cuota_id': row.get('cuota_id'),
+                        'fecha_desde': d.get('fecha_desde'),
+                        'fecha_hasta': d.get('fecha_hasta')})
     return jsonify({'ok': True, 'modificacion': _row(row)}), 201
 
 
@@ -113,6 +122,10 @@ def update(_id):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     if r.get('odoo_id'):
         get_sync().modificacion_update(r['odoo_id'], r)
+    log_action(actor_from_request(), 'modificacion', 'update',
+               entidad_id=_id,
+               resumen=f"Edición modificación id={_id}",
+               cambios={k: d[k] for k in d if k in allowed})
     return jsonify({'ok': True, 'modificacion': _row(r)})
 
 
@@ -127,4 +140,9 @@ def delete(_id):
         n = cur.rowcount
     if r and r.get('odoo_id'):
         get_sync().modificacion_delete(r['odoo_id'])
+    if n:
+        log_action(actor_from_request(), 'modificacion', 'delete',
+                   entidad_id=_id,
+                   resumen=f"Baja modificación id={_id}",
+                   cambios={'odoo_id': r.get('odoo_id') if r else None})
     return jsonify({'ok': True, 'deleted': n})

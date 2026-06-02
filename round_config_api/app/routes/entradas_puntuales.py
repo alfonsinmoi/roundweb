@@ -30,7 +30,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_alta import get_alta
-from ..audit_log import actor_from_request
+from ..audit_log import actor_from_request, log_action
 
 bp = Blueprint('entradas_puntuales', __name__)
 log = logging.getLogger(__name__)
@@ -133,6 +133,13 @@ def create_alta():
               cliente_idnoofit, d.get('cliente_nombre'), cuota_codigo,
               actividades, modo, forma_pago, precio_entrada, d.get('iban')))
         row = cur.fetchone()
+    log_action(
+        actor_from_request(), 'entrada_puntual_alta', 'alta',
+        entidad_id=row['id'] if row else None,
+        resumen='Alta cliente en cuota de entrada puntual',
+        cambios={'cliente_idnoofit': cliente_idnoofit, 'cuota_codigo': cuota_codigo,
+                 'modo': modo, 'forma_pago': forma_pago, 'precio_entrada': precio_entrada},
+    )
     return jsonify({'ok': True, 'alta': _alta_to_dict(row)}), 201
 
 
@@ -146,6 +153,13 @@ def delete_alta(alta_id):
              WHERE id=%s AND id_manager=%s
         """, (alta_id, str(g.id_manager)))
         n = cur.rowcount
+    if n:
+        log_action(
+            actor_from_request(), 'entrada_puntual_alta', 'baja',
+            entidad_id=alta_id,
+            resumen='Baja de alta de entrada puntual (activo=false)',
+            cambios={'activo': {'before': True, 'after': False}},
+        )
     return jsonify({'ok': True, 'deactivated': n})
 
 
@@ -239,6 +253,14 @@ def cobrar_evento(evt_id):
                    cobrado_at=NOW(), cobrado_por=%s
              WHERE id=%s
         """, (forma_pago, res.get('invoice_id'), actor_label, evt_id))
+    log_action(
+        actor, 'entrada_puntual_evento', 'cobrar',
+        entidad_id=evt_id,
+        resumen='Cobro entrada puntual recepción',
+        cambios={'estado': {'before': 'pendiente', 'after': 'cobrado'},
+                 'importe': importe, 'forma_pago': forma_pago,
+                 'recibo_odoo_id': res.get('invoice_id')},
+    )
     return jsonify({'ok': True, 'recibo': res})
 
 
@@ -252,6 +274,13 @@ def anular_evento(evt_id):
              WHERE id=%s AND id_manager=%s AND estado='pendiente'
         """, (evt_id, str(g.id_manager)))
         n = cur.rowcount
+    if n:
+        log_action(
+            actor_from_request(), 'entrada_puntual_evento', 'anular',
+            entidad_id=evt_id,
+            resumen='Anulación entrada puntual',
+            cambios={'estado': {'before': 'pendiente', 'after': 'anulado'}},
+        )
     return jsonify({'ok': True, 'anulados': n})
 
 
@@ -319,6 +348,15 @@ def emitir_mes():
         except Exception as e:
             log.exception('emitir_mes grupo')
             recibos.append({'cliente': grp['cliente_idnoofit'], 'error': str(e)})
+    emitidos = [r for r in recibos if r.get('invoice_id')]
+    if emitidos:
+        log_action(
+            actor_from_request(), 'entrada_puntual_evento', 'emitir_mes',
+            resumen=f'Emisión facturas mensuales entradas puntuales {mes}',
+            cambios={'mes': mes, 'recibos_emitidos': len(emitidos),
+                     'importe_total': round(sum(r.get('importe', 0) for r in emitidos), 2),
+                     'estado': {'before': 'pendiente', 'after': 'facturado'}},
+        )
     return jsonify({'ok': True, 'recibos': recibos})
 
 
@@ -334,6 +372,11 @@ def detectar():
     dias = int(d.get('dias_atras') or 7)
     try:
         n = detectar_entradas_manager(str(g.id_manager), dias_atras=dias)
+        log_action(
+            actor_from_request(), 'entrada_puntual_evento', 'detectar',
+            resumen='Detección a demanda de entradas puntuales',
+            cambios={'dias_atras': dias, 'nuevas': n},
+        )
         return jsonify({'ok': True, 'nuevas': n})
     except Exception as e:
         log.exception('detectar entradas')

@@ -10,6 +10,7 @@ import logging
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
+from ..audit_log import log_action, actor_from_request, diff_dict
 
 bp = Blueprint('centros', __name__)
 log = logging.getLogger(__name__)
@@ -110,6 +111,12 @@ def upsert(id_trainer):
         sepa_creditor_id = (d.get('sepa_creditor_id') or '').replace(' ', '').upper() or None
 
         with get_conn() as conn, conn.cursor() as cur:
+            # Leemos la fila previa para auditar QUÉ cambió (IBAN/CIF/creditor
+            # SEPA son datos fiscales sensibles que acaban en las remesas).
+            cur.execute("""SELECT * FROM centro_contacto
+                            WHERE id_manager=%s AND id_trainer=%s""",
+                        (g.id_manager, str(id_trainer)))
+            before = cur.fetchone()
             cur.execute("""
                 INSERT INTO centro_contacto
                   (id_manager, id_trainer, nombre_centro, slug, email, email_cc,
@@ -152,6 +159,12 @@ def upsert(id_trainer):
                   _json.dumps(actividades_norm),
                   iban_cobro, bic, sepa_creditor_id))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'centro_contacto',
+                   'update' if before else 'create',
+                   entidad_id=str(id_trainer),
+                   resumen='Datos centro/SEPA creados' if not before
+                           else 'Datos centro/SEPA modificados',
+                   cambios=diff_dict(before, row))
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('centros upsert')
@@ -222,6 +235,9 @@ def set_alta_modo(id_trainer):
                   f'Centro {id_trainer}', f'noreply+{id_trainer}@example.com',
                   modo))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'centro_contacto', 'update',
+                   entidad_id=str(id_trainer),
+                   resumen=f'Modo alta cliente → {row["alta_cliente_modo"]}')
         return jsonify({'ok': True, 'modo': row['alta_cliente_modo'],
                          'id_trainer': str(id_trainer)})
     except Exception as e:
@@ -241,7 +257,12 @@ def delete(id_trainer):
                 DELETE FROM centro_contacto
                  WHERE id_manager=%s AND id_trainer=%s
             """, (g.id_manager, str(id_trainer)))
-        return jsonify({'ok': True, 'deleted': cur.rowcount})
+            deleted = cur.rowcount
+        if deleted:
+            log_action(actor_from_request(), 'centro_contacto', 'delete',
+                       entidad_id=str(id_trainer),
+                       resumen='Centro/datos SEPA eliminados')
+        return jsonify({'ok': True, 'deleted': deleted})
     except Exception as e:
         log.exception('centros delete')
         return jsonify({'ok': False, 'error': str(e)}), 500

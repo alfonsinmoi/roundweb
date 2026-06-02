@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
+from ..audit_log import log_action, actor_from_request
 from .. import meta_client as mc
 
 bp = Blueprint('social', __name__)
@@ -117,6 +118,16 @@ def upsert_cuenta():
                          access_token, d.get('token_type') or 'page', expires_at,
                          bool(d.get('active', True)), d.get('notas')))
         row = cur.fetchone()
+    _campos = [k for k in ('nombre', 'fb_page_id', 'fb_page_name',
+                           'ig_business_account_id', 'ig_username',
+                           'access_token', 'token_type', 'active', 'notas')
+               if k in d]
+    log_action(actor_from_request(), 'social_cuenta',
+               'update' if existing else 'connect',
+               entidad_id=row.get('id') if row else (existing['id'] if existing else None),
+               resumen=f"{'Actualizada' if existing else 'Conectada'} cuenta Meta {red}",
+               cambios={'campos_modificados': _campos,
+                        'token_actualizado': bool(d.get('access_token'))})
     return jsonify({'ok': True, 'row': _safe_cuenta(row)})
 
 
@@ -129,6 +140,9 @@ def delete_cuenta(cuenta_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM social_cuenta WHERE id=%s AND id_manager=%s",
                     (cuenta_id, g.id_manager))
+    log_action(actor_from_request(), 'social_cuenta', 'disconnect',
+               entidad_id=cuenta_id,
+               resumen='Desconectada cuenta Meta')
     return jsonify({'ok': True})
 
 
@@ -230,6 +244,11 @@ def crear_post():
                      d.get('caption'), d.get('hashtags'), schedule_at,
                      getattr(g, 'user_email', None) or g.id_manager))
         row = cur.fetchone()
+    log_action(actor_from_request(), 'social_post', 'programar',
+               entidad_id=row.get('id') if row else None,
+               resumen=f"Post {tipo} programado para {schedule_at}",
+               cambios={'tipo': tipo, 'schedule_at': str(schedule_at),
+                        'social_cuenta_id': cuenta_id})
     return jsonify({'ok': True, 'row': row})
 
 
@@ -254,6 +273,12 @@ def update_post(post_id):
                           RETURNING *""", params)
         row = cur.fetchone()
     if not row: return jsonify({'ok': False, 'error': 'not_found_or_forbidden'}), 404
+    _campos = [k for k in ('caption', 'hashtags', 'schedule_at', 'estado', 'media_urls')
+               if k in d]
+    log_action(actor_from_request(), 'social_post', 'update',
+               entidad_id=post_id,
+               resumen='Post de agenda social editado',
+               cambios={'campos_modificados': _campos})
     return jsonify({'ok': True, 'row': row})
 
 
@@ -269,6 +294,9 @@ def delete_post(post_id):
                     params)
         n = cur.rowcount
     if not n: return jsonify({'ok': False, 'error': 'not_found_or_forbidden'}), 404
+    log_action(actor_from_request(), 'social_post', 'delete',
+               entidad_id=post_id,
+               resumen='Post de agenda social eliminado')
     return jsonify({'ok': True})
 
 
@@ -287,5 +315,8 @@ def publicar_ya(post_id):
                           RETURNING *""", params)
         row = cur.fetchone()
     if not row: return jsonify({'ok': False, 'error': 'not_found'}), 404
+    log_action(actor_from_request(), 'social_post', 'publish',
+               entidad_id=post_id,
+               resumen='Post forzado a publicación inmediata')
     return jsonify({'ok': True, 'row': row, 'mensaje':
                     'Programado para publicar en próximos 5 min (siguiente ciclo del cron)'})

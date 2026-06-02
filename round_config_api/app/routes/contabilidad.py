@@ -30,6 +30,7 @@ from werkzeug.utils import secure_filename
 from ..auth import auth_required, require_permission
 from ..odoo_guard import require_feature
 from ..db import get_conn, seed_gasto_categorias_for_manager
+from ..audit_log import log_action, actor_from_request, diff_dict
 
 bp = Blueprint('contabilidad', __name__)
 log = logging.getLogger(__name__)
@@ -138,6 +139,10 @@ def put_contab_config(id_trainer):
         # Si activo=true y aún no hay categorías, sembramos defaults
         if activo:
             seed_gasto_categorias_for_manager(g.id_manager)
+        log_action(actor_from_request(), 'contab_config',
+                   'activar' if activo else 'desactivar',
+                   entidad_id=str(id_trainer),
+                   resumen=f'Control contable {"activado" if activo else "desactivado"} para trainer {id_trainer}')
         return jsonify({'ok': True, 'config': row})
     except Exception as e:
         log.exception('put_contab_config')
@@ -186,6 +191,10 @@ def put_listado_visibilidad(id_trainer, listado_id):
                 RETURNING *
             """, (g.id_manager, str(id_trainer), listado_id, visible))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'listado_visibilidad', 'update',
+                   entidad_id=f'{id_trainer}/{listado_id}',
+                   resumen=f'Visibilidad listado {listado_id} para trainer {id_trainer} = {visible}',
+                   cambios={'visible': visible})
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('put_listado_visibilidad')
@@ -267,6 +276,10 @@ def create_categoria():
                 bool(d.get('activa', True)),
             ))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'gasto_categoria', 'create',
+                   entidad_id=row.get('id') if row else None,
+                   resumen=f'Categoría de gasto creada: {codigo} ({nombre})',
+                   cambios={'codigo': codigo, 'nombre': nombre, 'tipo': tipo})
         return jsonify({'ok': True, 'categoria': row})
     except Exception as e:
         log.exception('create_categoria')
@@ -292,6 +305,9 @@ def update_categoria(cat_id):
             return jsonify({'ok': False, 'error': 'no_fields'}), 400
         vals.extend([g.id_manager, cat_id])
         with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT * FROM gasto_categoria WHERE id_manager=%s AND id=%s",
+                        (g.id_manager, cat_id))
+            before = cur.fetchone()
             cur.execute(f"""
                 UPDATE gasto_categoria SET {', '.join(sets)}
                  WHERE id_manager=%s AND id=%s
@@ -300,6 +316,10 @@ def update_categoria(cat_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'gasto_categoria', 'update',
+                   entidad_id=cat_id,
+                   resumen=f'Categoría de gasto editada: {row.get("codigo")}',
+                   cambios=diff_dict(dict(before) if before else {}, dict(row)))
         return jsonify({'ok': True, 'categoria': row})
     except Exception as e:
         log.exception('update_categoria')
@@ -325,12 +345,20 @@ def delete_categoria(cat_id):
                     RETURNING *
                 """, (g.id_manager, cat_id))
                 row = cur.fetchone()
+                log_action(actor_from_request(), 'gasto_categoria', 'update',
+                           entidad_id=cat_id,
+                           resumen=f'Categoría de gasto desactivada (en uso por {n} documentos)',
+                           cambios={'activa': {'before': True, 'after': False}})
                 return jsonify({'ok': True, 'mode': 'deactivated', 'in_use': n, 'categoria': row})
             cur.execute("""
                 DELETE FROM gasto_categoria
                  WHERE id_manager=%s AND id=%s
             """, (g.id_manager, cat_id))
-            return jsonify({'ok': True, 'mode': 'hard', 'deleted': cur.rowcount})
+            deleted = cur.rowcount
+        log_action(actor_from_request(), 'gasto_categoria', 'delete',
+                   entidad_id=cat_id,
+                   resumen=f'Categoría de gasto borrada (id={cat_id})')
+        return jsonify({'ok': True, 'mode': 'hard', 'deleted': deleted})
     except Exception as e:
         log.exception('delete_categoria')
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -359,6 +387,10 @@ def put_categoria_visibilidad(cat_id, id_trainer):
                 RETURNING *
             """, (cat_id, str(id_trainer), visible))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'gasto_categoria_visibilidad', 'update',
+                   entidad_id=f'{cat_id}/{id_trainer}',
+                   resumen=f'Visibilidad categoría {cat_id} para trainer {id_trainer} = {visible}',
+                   cambios={'visible': visible})
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('put_categoria_visibilidad')
@@ -490,6 +522,10 @@ def upload_documento():
                     ))
                     existing = cur.fetchone()
                     revivido = True
+                log_action(actor_from_request(), 'documento_contable', 'update',
+                           entidad_id=existing['id'],
+                           resumen=f'Documento rechazado reactivado a borrador (id={existing["id"]})',
+                           cambios={'estado': {'before': 'rechazado', 'after': 'borrador'}})
             mensaje = (f'Documento ya existente (id={existing["id"]}, {existing["filename_original"]}). '
                        + ('Estaba RECHAZADO — lo he reactivado a borrador. ' if revivido else '')
                        + 'Se abre el original para que lo revises.')
@@ -538,6 +574,11 @@ def upload_documento():
             ))
             row = cur.fetchone()
         log.info(f'gasto_documento.upload id={row["id"]} size={size} hash={h[:8]}…')
+        log_action(actor_from_request(), 'documento_contable', 'create',
+                   entidad_id=row['id'],
+                   resumen=f'Documento contable subido: {f.filename}',
+                   cambios={'filename': f.filename, 'categoria_id': categoria_id,
+                            'id_trainer': id_trainer, 'importe_total': _num('importe_total')})
         return jsonify({'ok': True, 'documento': row})
     except Exception as e:
         log.exception('upload_documento')
@@ -608,6 +649,9 @@ def patch_documento(doc_id):
             return jsonify({'ok': False, 'error': 'no_fields'}), 400
         vals.extend([doc_id, g.id_manager])
         with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT * FROM gasto_documento WHERE id=%s AND id_manager=%s",
+                        (doc_id, g.id_manager))
+            before = cur.fetchone()
             cur.execute(f"""
                 UPDATE gasto_documento SET {', '.join(sets)}
                  WHERE id=%s AND id_manager=%s
@@ -616,6 +660,10 @@ def patch_documento(doc_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'documento_contable', 'update',
+                   entidad_id=doc_id,
+                   resumen=f'Metadatos de documento contable editados (id={doc_id})',
+                   cambios=diff_dict(dict(before) if before else {}, dict(row)))
         return jsonify({'ok': True, 'documento': row})
     except Exception as e:
         log.exception('patch_documento')
@@ -801,6 +849,13 @@ def escanear_documento(doc_id):
                                          for c in centros],
             }
 
+        log_action(actor_from_request(), 'documento_contable', 'escanear',
+                   entidad_id=doc_id,
+                   resumen=f'Documento escaneado por LLM (id={doc_id}, subtipo={subtipo})',
+                   cambios={'subtipo': subtipo, 'categoria_id': cat_id,
+                            'trainer_auto_asignado': nuevo_trainer,
+                            'requiere_autorizacion': requiere_auth,
+                            'confianza_llm': float(ext.get('confidence') or 0)})
         return jsonify({
             'ok': True,
             'documento': row,
@@ -922,6 +977,13 @@ def validar_documento(doc_id):
                 log.exception('crear_factura_proveedor')
                 odoo_result = {'ok': False, 'error': str(e)[:500]}
 
+        log_action(actor_from_request(), 'documento_contable', 'validar',
+                   entidad_id=doc_id,
+                   resumen=f'Documento contable validado (id={doc_id})',
+                   cambios={'estado': {'before': 'borrador', 'after': 'validado'},
+                            'doble_auth': doble_auth,
+                            'odoo_move_id': row.get('odoo_move_id'),
+                            'odoo_move_state': row.get('odoo_move_state')})
         return jsonify({
             'ok': True,
             'documento': row,
@@ -1007,6 +1069,14 @@ def desvalidar_documento(doc_id):
             """, (nota_extra, odoo_action, odoo_action, g.id_manager, doc_id))
             row = cur.fetchone()
 
+        log_action(actor_from_request(), 'documento_contable', 'a_borrador',
+                   entidad_id=doc_id,
+                   resumen=f'Documento devuelto a borrador (id={doc_id})'
+                           + (f' · motivo: {motivo}' if motivo else ''),
+                   cambios={'estado': {'before': 'validado', 'after': 'borrador'},
+                            'motivo': motivo or None,
+                            'odoo_action': odoo_action,
+                            'odoo_warning': odoo_warning})
         return jsonify({
             'ok': True,
             'documento': row,
@@ -1426,6 +1496,11 @@ def rechazar_documento(doc_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'documento_contable', 'rechazar',
+                   entidad_id=doc_id,
+                   resumen=f'Documento contable rechazado (id={doc_id})'
+                           + (f' · motivo: {motivo}' if motivo else ''),
+                   cambios={'estado': {'after': 'rechazado'}, 'motivo': motivo or None})
         return jsonify({'ok': True, 'documento': row})
     except Exception as e:
         log.exception('rechazar_documento')
@@ -1649,6 +1724,11 @@ def faltante_ignorar():
                 RETURNING *
             """, (g.id_manager, cat_id, periodo, actor, d.get('motivo')))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'gasto_faltante', 'ignorar',
+                   entidad_id=f'{cat_id}/{periodo}',
+                   resumen=f'Faltante archivado (categoría {cat_id}, periodo {periodo})',
+                   cambios={'categoria_id': cat_id, 'periodo': periodo,
+                            'motivo': d.get('motivo')})
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('faltante_ignorar')
@@ -1670,6 +1750,10 @@ def faltante_restaurar(cat_id, periodo):
                  WHERE id_manager=%s AND categoria_id=%s AND periodo=%s
             """, (g.id_manager, cat_id, periodo))
             n = cur.rowcount
+        log_action(actor_from_request(), 'gasto_faltante', 'designorar',
+                   entidad_id=f'{cat_id}/{periodo}',
+                   resumen=f'Faltante restaurado (categoría {cat_id}, periodo {periodo})',
+                   cambios={'categoria_id': cat_id, 'periodo': periodo, 'removed': n})
         return jsonify({'ok': True, 'removed': n})
     except Exception as e:
         log.exception('faltante_restaurar')
@@ -2121,6 +2205,13 @@ def banco_importar():
                     else: duplicated += 1
                 except Exception as e:
                     log.warning(f'banco_movimiento insert fallo: {e}')
+        log_action(actor_from_request(), 'banco_import', 'importar',
+                   entidad_id=doc_origen_id,
+                   resumen=f'Extracto bancario importado: {f.filename} '
+                           f'({inserted} insertadas, {duplicated} duplicadas)',
+                   cambios={'archivo': f.filename, 'parseadas': len(rows),
+                            'insertadas': inserted, 'duplicadas': duplicated,
+                            'id_trainer': request.form.get('id_trainer')})
         return jsonify({
             'ok': True,
             'archivo': f.filename,
@@ -2209,6 +2300,10 @@ def banco_movimiento_link(mov_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'banco_movimiento', 'update',
+                   entidad_id=mov_id,
+                   resumen=f'Movimiento bancario actualizado (id={mov_id})',
+                   cambios={'factura_id': factura_id, 'estado': row.get('estado')})
         return jsonify({'ok': True, 'movimiento': row})
     except Exception as e:
         log.exception('banco_movimiento_link')
@@ -2269,6 +2364,14 @@ def banco_matching():
                          WHERE id=%s AND id_manager=%s AND estado='sin_cuadrar'
                     """, (m['factura_id'], m['movimiento_id'], g.id_manager))
                     if cur.rowcount > 0: applied += 1
+        log_action(actor_from_request(), 'banco_matching', 'match',
+                   resumen=f'Matching banco ejecutado ({len(matches)} propuestos, '
+                           f'{applied} auto-aplicados)',
+                   cambios={'auto_apply': auto_apply,
+                            'movimientos_sin_cuadrar': len(movs),
+                            'facturas_disponibles': len(facs),
+                            'matches_propuestos': len(matches),
+                            'auto_aplicados': applied})
         return jsonify({
             'ok': True,
             'movimientos_sin_cuadrar': len(movs),
@@ -2311,6 +2414,11 @@ def delete_documento(doc_id):
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM gasto_documento WHERE id=%s AND id_manager=%s",
                         (doc_id, g.id_manager))
+        log_action(actor_from_request(), 'documento_contable', 'delete',
+                   entidad_id=doc_id,
+                   resumen=f'Documento contable borrado (id={doc_id})',
+                   cambios={'storage_path': row.get('storage_path'),
+                            'odoo_move_id': row.get('odoo_move_id')})
         return jsonify({'ok': True, 'deleted': True})
     except Exception as e:
         log.exception('delete_documento')

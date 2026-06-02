@@ -31,6 +31,7 @@ from flask import Blueprint, request, jsonify
 
 from ..auth import auth_required
 from ..db import get_conn
+from ..audit_log import log_action
 
 bp = Blueprint('auth_bootstrap', __name__)
 log = logging.getLogger(__name__)
@@ -131,6 +132,23 @@ def round_bootstrap():
         if row and not row.get('wcommerce_cliente_id'):
             wc_info = _try_match_wcommerce(id_manager, email)
             wc_resolved = bool(wc_info.get('matched'))
+
+    # Registro del LOGIN en accion_log — solo en login real / impersonación
+    # (viene `password`). En modo soft (restauración de sesión en cada
+    # recarga) NO se registra para no llenar el log de ruido.
+    if password:
+        actor = {
+            'kind': 'manager' if is_manager_login else 'trainer_nf',
+            'id': id_user,
+            'email': email,
+            'label': nombre or email,
+            'id_manager': id_manager,
+            'id_trainer': None if is_manager_login else id_user,
+        }
+        log_action(actor, entidad='sesion', accion='login',
+                   entidad_id=id_user,
+                   resumen=(f"Login web (NoofitPro) · {email} · "
+                            f"{'manager' if is_manager_login else 'trainer ' + id_user}"))
 
     return jsonify({
         'ok': True,
