@@ -153,6 +153,41 @@ ssh round-vps "systemctl stop odoo17 && \
   debe devolver JSON con `ok:true`.
 - Logs: `ssh round-vps "journalctl -u round_config_api -n 30 --no-pager"`.
 
+## Auditoría / logging obligatorio de endpoints (regla)
+
+**REGLA: todo endpoint NUEVO que MUTE datos (POST/PATCH/PUT/DELETE) DEBE
+registrar su uso en `accion_log`** — quién lo hizo, qué cambió, cuándo y
+desde qué IP. No es opcional: forma parte de "endpoint terminado".
+
+- Helpers en `app/audit_log.py`:
+  - `actor_from_request()` → detecta el actor (usuario_web por JWT, o
+    manager por `X-Round-Manager-Id`; resuelve email/nombre de la persona).
+  - `log_action(actor, entidad, accion, *, entidad_id=None, resumen=None, cambios=None)`
+    → inserta en `accion_log`. Es **fail-silent** (nunca rompe la petición).
+  - `diff_dict(before, after)` → `{campo: {before, after}}` solo de lo que cambia.
+- Patrón (en la rama de ÉXITO, justo antes del `return`; NO en los returns
+  de validación/error):
+
+  ```python
+  from ..audit_log import log_action, actor_from_request, diff_dict
+  ...
+  log_action(actor_from_request(), entidad='cuota', accion='update',
+             entidad_id=cuota_id, resumen='Editada cuota',
+             cambios=diff_dict(antes, despues))
+  ```
+
+- `accion`: verbo corto (`create`/`update`/`delete`/`asignar`/`cobrar`/…).
+  `entidad`: nombre estable del recurso. `entidad_id`: id afectado (u omitir).
+- **NUNCA** meter secretos en `cambios` (passwords, tokens PayComet/Meta,
+  api keys SMTP): registrar solo el NOMBRE del campo modificado
+  (p.ej. `cambios={'campos_modificados': ['api_token']}`).
+- **Login**: ya se registra en `routes/auth_usuario.py` (usuario_web) y
+  `routes/auth_bootstrap.py` (manager/trainer NoofitPro, solo login real /
+  impersonación, no en recargas). Cualquier nuevo flujo de auth lo replica.
+- Tabla destino: `accion_log` (cols `ts, id_manager, id_trainer, actor_kind,
+  actor_id, actor_email, actor_label, entidad, entidad_id, accion, resumen,
+  cambios, ip, user_agent`).
+
 ## Servicios y crones del VPS
 
 | Servicio | Frecuencia | Función |
@@ -540,6 +575,8 @@ Si algo falla → arreglar el procedimiento ANTES de la próxima desgracia.
 - ✅ Validar email RFC con la regex en `odoo_cuotas.enviar_factura_email`
   antes de enviar (rechaza emails con `_MAK` y otros inválidos).
 - ✅ Documentar nuevas tablas/endpoints en este CLAUDE.md.
+- ✅ Todo endpoint nuevo que mute datos DEBE llamar a `log_action()` en su
+  rama de éxito (ver "Auditoría / logging obligatorio de endpoints").
 
 ## Arquitectura del flujo lead → cliente → cobro
 
