@@ -8,7 +8,7 @@ import {
   TIPOS_DESCUENTO, RELACIONES_TRABAJADOR, cuotasList,
 } from '../../utils/configApi'
 import { trabajadoresList } from '../../utils/horarioApi'
-import { getClientes } from '../../utils/api'
+import { getClientes, getActividades } from '../../utils/api'
 import { coincideTexto } from '../../utils/texto'
 import { useCan } from '../../hooks/useCan'
 
@@ -870,16 +870,29 @@ function DescForm({ desc, identity, onClose, onSaved }) {
     cuota_requerida_codigo: desc.cuota_requerida_codigo || '',
     cuota_aplicada_codigo: desc.cuota_aplicada_codigo || '',
     combo_secundarias: desc.tipo === 'familiares' ? initialFamiliares : initialCombo,
+    // Filtro por actividad (solo tipo 'importe'/restar): ids de actividad
+    // NoofitPro. Vacío = aplica a cualquier cuota.
+    actividades_idnoofit: Array.isArray(desc.actividades_idnoofit)
+      ? desc.actividades_idnoofit.map(Number) : [],
   })
   const set = (k, v) => setData(d => ({ ...d, [k]: v }))
+  const [actividades, setActividades] = useState([])
 
   useEffect(() => {
     cuotasList(identity).then(arr => setCuotas(arr || [])).catch(() => setCuotas([]))
+    getActividades().then(setActividades).catch(() => setActividades([]))
   }, [identity])
+
+  const toggleActividad = (id) => setData(d => {
+    const lista = d.actividades_idnoofit || []
+    return { ...d, actividades_idnoofit: lista.includes(id)
+      ? lista.filter(x => x !== id) : [...lista, id] }
+  })
 
   const isVarias = data.tipo === 'varias_cuotas'
   const isFamiliares = data.tipo === 'familiares'
   const isFamiliarTrab = data.tipo === 'familiar_trabajador'
+  const isRestarCuota = data.tipo === 'restar_cuota'
 
   // Map cuota_codigo → entry de combo_secundarias para acceso rápido
   const comboMap = useMemo(() => {
@@ -915,6 +928,9 @@ function DescForm({ desc, identity, onClose, onSaved }) {
   async function onSubmit(e) {
     e.preventDefault()
     if (!data.codigo.trim()) { toast.error('Código obligatorio'); return }
+    if (isRestarCuota && !data.cuota_aplicada_codigo) {
+      toast.error('Elige la cuota a la que se aplica el descuento'); return
+    }
     if (isVarias) {
       if (!data.cuota_requerida_codigo) {
         toast.error('Elige la cuota principal'); return
@@ -977,11 +993,21 @@ function DescForm({ desc, identity, onClose, onSaved }) {
         }
         payload.cuota_requerida_codigo = null
         payload.precio_final           = null
+      } else if (isRestarCuota) {
+        // Restar € a UNA cuota concreta.
+        payload.cuota_requerida_codigo = null
+        payload.cuota_aplicada_codigo  = data.cuota_aplicada_codigo
+        payload.precio_final           = null
+        payload.combo_secundarias      = []
+        payload.actividades_idnoofit   = []
       } else {
         payload.cuota_requerida_codigo = null
         payload.cuota_aplicada_codigo  = null
         payload.precio_final           = null
         payload.combo_secundarias      = []
+        // Filtro por actividad solo para 'importe' (restar €).
+        payload.actividades_idnoofit = data.tipo === 'importe'
+          ? (data.actividades_idnoofit || []) : []
       }
       if (isNew) await descuentoCreate(identity, payload)
       else       await descuentoUpdate(identity, desc.id, payload)
@@ -1070,6 +1096,74 @@ function DescForm({ desc, identity, onClose, onSaved }) {
                   )}
                 </p>
               </Field>
+
+              {/* Selector de cuota única — solo para 'restar_cuota'. El
+                  descuento se resta SOLO a la cuota elegida. */}
+              {isRestarCuota && (
+                <Field label="Cuota a la que se aplica (elige una)">
+                  {cuotas.filter(c => c.active !== false).length === 0 ? (
+                    <p style={{ fontSize: 12, color: 'var(--text-3)' }}>No hay cuotas activas.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 220,
+                                  overflow: 'auto', padding: 6, border: '1px solid var(--line)',
+                                  borderRadius: 'var(--radius-sm)', background: 'var(--bg-2)' }}>
+                      {cuotas.filter(c => c.active !== false).map(c => {
+                        const sel = data.cuota_aplicada_codigo === c.codigo
+                        return (
+                          <button type="button" key={c.id || c.codigo}
+                                  onClick={() => set('cuota_aplicada_codigo', c.codigo)}
+                                  style={{
+                                    padding: '7px 12px', borderRadius: 999, fontSize: 12, cursor: 'pointer',
+                                    fontWeight: 600,
+                                    border: `1.5px solid ${sel ? 'var(--green)' : 'var(--line)'}`,
+                                    background: sel ? 'var(--green-bg)' : 'var(--bg-1)',
+                                    color: sel ? 'var(--green)' : 'var(--text-2)',
+                                  }}>
+                            {c.codigo}{c.descripcion ? ` · ${c.descripcion}` : ''}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Field>
+              )}
+
+              {/* Filtro por actividad — solo para 'importe' (restar €). Si se
+                  seleccionan actividades, el descuento solo aplica a las cuotas
+                  que incluyan alguna de ellas. Vacío = todas las cuotas. */}
+              {data.tipo === 'importe' && (
+                <Field label={`Aplicar solo a cuotas con estas actividades (${(data.actividades_idnoofit || []).length} seleccionadas)`}>
+                  <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 8px', lineHeight: 1.5 }}>
+                    Si no marcas ninguna, el descuento se resta a <strong>cualquier
+                    cuota</strong>. Si marcas alguna, <strong>solo</strong> se aplica
+                    cuando la cuota incluye al menos una de las actividades elegidas.
+                  </p>
+                  {actividades.filter(a => a.enabled !== false).length === 0 ? (
+                    <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Cargando actividades de NoofitPro…</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 200,
+                                  overflow: 'auto', padding: 6, border: '1px solid var(--line)',
+                                  borderRadius: 'var(--radius-sm)', background: 'var(--bg-2)' }}>
+                      {actividades.filter(a => a.enabled !== false).map(a => {
+                        const id = Number(a.id)
+                        const sel = (data.actividades_idnoofit || []).includes(id)
+                        return (
+                          <button type="button" key={id} onClick={() => toggleActividad(id)}
+                                  style={{
+                                    padding: '6px 11px', borderRadius: 999, fontSize: 12, cursor: 'pointer',
+                                    fontWeight: 600,
+                                    border: `1.5px solid ${sel ? 'var(--green)' : 'var(--line)'}`,
+                                    background: sel ? 'var(--green-bg)' : 'var(--bg-1)',
+                                    color: sel ? 'var(--green)' : 'var(--text-2)',
+                                  }}>
+                            {a.Nombre || a.nombre || `#${id}`}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Field>
+              )}
 
               {/* Preview: muestra cómo queda cada cuota del manager con el
                   descuento aplicado. El operador ve al instante el impacto

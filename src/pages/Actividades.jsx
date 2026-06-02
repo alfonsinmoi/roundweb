@@ -31,6 +31,8 @@ export default function Actividades() {
   const [selActDate, setSelActDate] = useState(new Date())
   const [showSemana, setShowSemana] = useState(false)
   const [semanaBase, setSemanaBase] = useState(() => getMondayOf(new Date()))
+  // Filtro de estado — por defecto solo ACTIVAS.
+  const [filtroEstado, setFiltroEstado] = useState('activas')  // 'activas'|'inactivas'|'todas'
   const toast = useToast()
 
   // Modal state for create/edit
@@ -116,8 +118,11 @@ export default function Actividades() {
       }
       closeModal()
       fetchData()
-    } catch {
-      toast.error('No se pudo guardar la actividad. Inténtalo de nuevo.')
+    } catch (err) {
+      // Mostrar el motivo real de NoofitPro para diagnosticar (antes el catch
+      // era silencioso con un mensaje genérico).
+      console.error('guardarActividad error:', err)
+      toast.error(`No se pudo guardar: ${err?.message || 'error desconocido'}`)
     } finally {
       setSaving(false)
     }
@@ -162,14 +167,44 @@ export default function Actividades() {
 
   const toggleActiva = toggleTarget ? toggleTarget.enabled !== false : false
 
+  const actsFiltradas = actividades.filter(a => {
+    const activa = a.enabled !== false
+    if (filtroEstado === 'activas') return activa
+    if (filtroEstado === 'inactivas') return !activa
+    return true
+  })
+  const nActivas = actividades.filter(a => a.enabled !== false).length
+
   return (
     <div style={{ maxWidth: 900 }}>
 
       {/* Toolbar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
-          {actividades.length} actividad{actividades.length !== 1 ? 'es' : ''}
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    marginBottom: 24, gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <p style={{ fontSize: 13, color: 'var(--text-3)' }}>
+            {actsFiltradas.length} de {actividades.length} actividad{actividades.length !== 1 ? 'es' : ''}
+          </p>
+          {/* Filtro de estado */}
+          <div style={{ display: 'inline-flex', borderRadius: 10, overflow: 'hidden',
+                        border: '1px solid var(--line)' }}>
+            {[
+              { id: 'activas',   label: `Activas (${nActivas})` },
+              { id: 'inactivas', label: `Inactivas (${actividades.length - nActivas})` },
+              { id: 'todas',     label: 'Todas' },
+            ].map(f => (
+              <button key={f.id} type="button" onClick={() => setFiltroEstado(f.id)}
+                      style={{
+                        padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        border: 'none', borderRight: f.id !== 'todas' ? '1px solid var(--line)' : 'none',
+                        background: filtroEstado === f.id ? 'var(--green-bg)' : 'var(--bg-2)',
+                        color: filtroEstado === f.id ? 'var(--green)' : 'var(--text-3)',
+                      }}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={{ display: 'flex', gap: 10 }}>
           <Btn variant="secondary" size="md" onClick={() => { setSemanaBase(getMondayOf(new Date())); setShowSemana(true) }}>
             <CalendarDays size={15} aria-hidden="true" /> Clases de la semana
@@ -182,7 +217,7 @@ export default function Actividades() {
 
       {/* Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 16 }}>
-        {actividades.map(act => {
+        {actsFiltradas.map(act => {
           const nombre = act.Nombre ?? act.nombre ?? '—'
           const color  = colorFromName(nombre)
           const activa = act.enabled !== false
@@ -308,9 +343,11 @@ export default function Actividades() {
           )
         })}
 
-        {actividades.length === 0 && (
+        {actsFiltradas.length === 0 && (
           <div style={{ gridColumn: '1 / -1', padding: '80px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 14 }}>
-            No hay actividades registradas
+            {actividades.length === 0
+              ? 'No hay actividades registradas'
+              : `No hay actividades ${filtroEstado === 'inactivas' ? 'inactivas' : 'activas'}`}
           </div>
         )}
       </div>
@@ -383,7 +420,7 @@ export default function Actividades() {
               />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)' }}>Aforo m\u00e1ximo (n\u00ba reservas)</span>
+              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)' }}>Aforo máximo (nº reservas)</span>
               <input
                 type="number"
                 min="1"
@@ -397,7 +434,7 @@ export default function Actividades() {
               />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)' }}>Tiempo antelaci\u00f3n reserva (horas)</span>
+              <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-2)' }}>Tiempo antelación reserva (horas)</span>
               <input
                 type="number"
                 min="0"

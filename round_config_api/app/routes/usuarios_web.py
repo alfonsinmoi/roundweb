@@ -67,12 +67,12 @@ def _send_reset_by_manager(usuario):
     body_text = (
         f"Hola {usuario.get('nombre') or ''},\n\n"
         f"El manager ha restablecido tu contraseña. Pulsa el enlace para crear una nueva:\n"
-        f"{link}\n\n(Válido {RESET_TTL_MINUTES} min)\n\n— Round Training Center"
+        f"{link}\n\n(Válido {RESET_TTL_MINUTES // 60} horas)\n\n— Round Training Center"
     )
     body_html = f"""<p>Hola <b>{usuario.get('nombre') or ''}</b>,</p>
 <p>El manager ha restablecido tu contraseña. Pulsa el enlace para crear una nueva:</p>
 <p><a href="{link}" style="display:inline-block;padding:10px 20px;background:#2DD4A8;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Crear nueva contraseña</a></p>
-<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES} minutos.</p>
+<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES // 60} horas.</p>
 <p style="font-size:11px;color:#aaa;margin-top:24px">— Round Training Center</p>"""
     try:
         enviar(usuario['email'], subject, body_text, body_html=body_html,

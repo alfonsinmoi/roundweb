@@ -404,6 +404,12 @@ export const PERMISSIONS = {
           borrar: { label: '✗ Borrar formulario', action: true },
         },
       },
+      actividades:         { label: 'Actividades (sincronizadas con NoofitPro)',
+        children: {
+          ver:    { label: 'Ver actividades', action: true },
+          editar: { label: 'Crear / editar / activar actividades', action: true },
+        },
+      },
       pos:                 { label: 'Terminal de Caja (POS) — catálogo',
         children: {
           productos_ver:      { label: 'Ver productos / catálogo', action: true },

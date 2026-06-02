@@ -111,13 +111,13 @@ def _send_reset_email(usuario, motivo='reset'):
         intro = 'Has solicitado restablecer tu contraseña. Pulsa el enlace para crear una nueva.'
     body_text = (
         f"Hola {usuario.get('nombre') or ''},\n\n{intro}\n\n"
-        f"Enlace (válido {RESET_TTL_MINUTES} minutos):\n{link}\n\n"
+        f"Enlace (válido {RESET_TTL_MINUTES // 60} horas):\n{link}\n\n"
         f"Si no fuiste tú, ignora este mensaje.\n\n— Round Training Center"
     )
     body_html = f"""<p>Hola <b>{usuario.get('nombre') or ''}</b>,</p>
 <p>{intro}</p>
 <p><a href="{link}" style="display:inline-block;padding:10px 20px;background:#2DD4A8;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Crear nueva contraseña</a></p>
-<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES} minutos.<br/>
+<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES // 60} horas.<br/>
 Si no fuiste tú, ignora este mensaje.</p>
 <p style="font-size:11px;color:#aaa;margin-top:24px">— Round Training Center</p>"""
     try:

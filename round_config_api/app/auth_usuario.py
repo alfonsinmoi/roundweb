@@ -32,7 +32,10 @@ JWT_REFRESH_WHEN_LESS_THAN_HOURS = 24
 
 PASSWORD_TTL_DAYS = 30
 VERIF_TTL_HOURS = 24
-RESET_TTL_MINUTES = 60
+# Junio 2026 — antes 60 min: el reset lo inicia el manager (o el flujo
+# must_change_password) y el usuario suele abrir el email más tarde → caducaba
+# y daba "enlace expirado". 24h es ventana segura (token de un solo uso).
+RESET_TTL_MINUTES = 60 * 24
 LOCK_AFTER_FAILS = 5
 LOCK_DURATION_MINUTES = 15
 

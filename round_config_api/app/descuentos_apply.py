@@ -30,13 +30,44 @@ def get_descuentos_activos(id_manager, idnoofit):
             SELECT a.id AS asig_id, a.descuento_id, a.estado AS asig_estado,
                    d.codigo, d.tipo, d.valor, d.active, d.unidad,
                    d.cuota_requerida_codigo, d.cuota_aplicada_codigo,
-                   d.precio_final, d.combo_secundarias
+                   d.precio_final, d.combo_secundarias, d.actividades_idnoofit
               FROM descuento_asignacion a
               JOIN descuento d ON d.id = a.descuento_id
              WHERE a.id_manager=%s AND a.cliente_idnoofit=%s
                AND a.estado='activa' AND d.active=TRUE
         """, (str(id_manager), str(idnoofit)))
         return cur.fetchall()
+
+
+def _cuota_actividades(id_manager, cuota_codigo):
+    """Devuelve el set de id_actividad (int) que incluye una cuota por código.
+    Usado para el filtro por actividad de los descuentos tipo 'importe'."""
+    if not cuota_codigo:
+        return set()
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT actividades_idnoofit FROM cuota
+                            WHERE id_manager=%s AND codigo=%s LIMIT 1""",
+                        (str(id_manager), cuota_codigo))
+            row = cur.fetchone()
+        acts = (row or {}).get('actividades_idnoofit') or []
+        if isinstance(acts, str):
+            import json as _json
+            try: acts = _json.loads(acts)
+            except Exception: acts = []
+        return {int(x) for x in acts if str(x).strip().lstrip('-').isdigit()}
+    except Exception:
+        log.exception('_cuota_actividades')
+        return set()
+
+
+def _norm_acts(raw):
+    """Normaliza actividades_idnoofit (JSONB list o str) a set de int."""
+    if isinstance(raw, str):
+        import json as _json
+        try: raw = _json.loads(raw)
+        except Exception: raw = []
+    return {int(x) for x in (raw or []) if str(x).strip().lstrip('-').isdigit()}
 
 
 def get_familia_de_cliente(id_manager, idnoofit):
@@ -203,9 +234,25 @@ def calcular_precio_con_descuentos(id_manager, idnoofit, cuota_codigo,
             if v > 0:
                 nuevo = round(precio * (1 - v / 100.0), 2)
                 aplica = True
+        elif tipo == 'restar_cuota':
+            # Resta un importe fijo SOLO a la cuota indicada en
+            # cuota_aplicada_codigo. Si la cuota actual no es esa, no aplica.
+            v = float(d['valor'] or 0)
+            if v > 0 and d.get('cuota_aplicada_codigo') == cuota_codigo:
+                nuevo = max(0.0, round(precio - v, 2))
+                aplica = True
         elif tipo == 'importe':
             v = float(d['valor'] or 0)
-            if v > 0:
+            # Filtro por actividad (junio 2026): si el descuento 'restar €' tiene
+            # actividades seleccionadas, solo aplica si la cuota incluye alguna
+            # de ellas. Sin actividades seleccionadas = aplica a cualquier cuota
+            # (compat retro).
+            acts_desc = _norm_acts(d.get('actividades_idnoofit'))
+            pasa_filtro = True
+            if acts_desc:
+                acts_cuota = _cuota_actividades(id_manager, cuota_codigo)
+                pasa_filtro = bool(acts_desc & acts_cuota)
+            if v > 0 and pasa_filtro:
                 nuevo = max(0.0, round(precio - v, 2))
                 aplica = True
         elif tipo == 'varias_cuotas':

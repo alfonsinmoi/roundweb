@@ -370,8 +370,24 @@ export const getActividades = () =>
 export const getCuotas = () =>
   apiGet('api/dispositivos/getCuotas').then(d => d.cuotas ?? [])
 
-export const guardarActividad = (actividad) =>
-  apiPost('api/dispositivos/guardarActividad', actividad)
+// guardarActividad: NoofitPro guarda bien pero NO devuelve mensaje='OK'
+// (devuelve la actividad u otro shape), así que apiPost lanzaba "error"
+// falso aunque la modificación se aplicaba. Usamos apiPostRaw y tratamos
+// cualquier 2xx como éxito; solo lanzamos si hay error HTTP o un mensaje
+// de error explícito.
+export const guardarActividad = async (actividad) => {
+  const r = await apiPostRaw('api/dispositivos/guardarActividad', actividad)
+  if (!r.ok) {
+    const msg = r.data?.mensaje || r.text || `Error ${r.status}`
+    throw new Error(userFriendlyError(msg, 'No se pudo guardar la actividad'))
+  }
+  const m = r.data?.mensaje
+  if (typeof m === 'string' && m && m.toUpperCase() !== 'OK' && /error|fallo|inval|no\s|deneg/i.test(m)) {
+    throw new Error(userFriendlyError(m, 'No se pudo guardar la actividad'))
+  }
+  invalidateCache('actividades')   // refrescar la lista tras crear/editar
+  return r.data ?? {}
+}
 
 export const getSensores = () => {
   try {

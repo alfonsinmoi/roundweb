@@ -10,7 +10,7 @@ bp = Blueprint('descuentos', __name__)
 FIELDS = ("id, scope, id_manager, id_trainer, plantilla_origen_id, codigo, "
           "descripcion, tipo, valor, unidad, active, odoo_id, "
           "cuota_requerida_codigo, cuota_aplicada_codigo, precio_final, "
-          "combo_secundarias, "
+          "combo_secundarias, actividades_idnoofit, "
           "created_at, updated_at")
 
 
@@ -33,6 +33,16 @@ def _row(r):
             out['combo_secundarias'] = _j.loads(cs)
         except Exception:
             out['combo_secundarias'] = []
+    # actividades_idnoofit (filtro por actividad de descuentos 'importe')
+    ai = out.get('actividades_idnoofit')
+    if ai is None:
+        out['actividades_idnoofit'] = []
+    elif isinstance(ai, str):
+        try:
+            import json as _j
+            out['actividades_idnoofit'] = _j.loads(ai)
+        except Exception:
+            out['actividades_idnoofit'] = []
     return out
 
 
@@ -123,20 +133,21 @@ def create():
         scope = 'plantilla_manager'
         id_trainer = None
     combo_json = _json_mod.dumps(d.get('combo_secundarias') or [])
+    acts_json = _json_mod.dumps(d.get('actividades_idnoofit') or [])
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""
             INSERT INTO descuento (scope, id_manager, id_trainer, plantilla_origen_id,
               codigo, descripcion, tipo, valor, unidad, active,
               cuota_requerida_codigo, cuota_aplicada_codigo, precio_final,
-              combo_secundarias)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+              combo_secundarias, actividades_idnoofit)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
             RETURNING {FIELDS}
         """, (scope, g.id_manager, id_trainer, d.get('plantilla_origen_id'),
               d['codigo'], d.get('descripcion'), d['tipo'], d.get('valor', 0),
               d.get('unidad'),
               d.get('active', True),
               d.get('cuota_requerida_codigo'), d.get('cuota_aplicada_codigo'),
-              d.get('precio_final'), combo_json))
+              d.get('precio_final'), combo_json, acts_json))
         row = cur.fetchone()
     if scope == 'plantilla_manager':
         oid = get_sync().descuento_create(row)
@@ -165,6 +176,10 @@ def update(_id):
         import json as _json_mod
         sets.append('combo_secundarias=%s::jsonb')
         params.append(_json_mod.dumps(d.get('combo_secundarias') or []))
+    if 'actividades_idnoofit' in d:
+        import json as _json_mod
+        sets.append('actividades_idnoofit=%s::jsonb')
+        params.append(_json_mod.dumps(d.get('actividades_idnoofit') or []))
     if not sets:
         return jsonify({'ok': False, 'error': 'no_changes'}), 400
     params.extend([_id, g.id_manager])

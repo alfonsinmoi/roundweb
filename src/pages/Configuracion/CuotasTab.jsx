@@ -327,25 +327,33 @@ function CuotaForm({ cuota, actividades, onClose, onSaved, identity }) {
             </div>
           </FieldGroup>
 
-          {/* Actividades NoofitPro */}
-          <FieldGroup titulo={`Actividades incluidas (${data.actividades_idnoofit.length} de ${actividades.length})`}>
-            {actividades.length === 0 ? (
-              <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Cargando actividades de NoofitPro…</p>
-            ) : (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 220, overflow: 'auto', padding: 6,
-                            border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-2)' }}>
-                {actividades.map(a => {
-                  const id = Number(a.id)
-                  return (
-                    <Chip key={id} active={data.actividades_idnoofit.includes(id)}
-                          onClick={() => toggleArray('actividades_idnoofit', id)}>
-                      {a.nombre || a.Nombre || `#${id}`}
-                    </Chip>
-                  )
-                })}
-              </div>
-            )}
-          </FieldGroup>
+          {/* Actividades NoofitPro — solo las ACTIVAS (enabled !== false).
+              Las desactivadas en Actividades no deben poder asignarse a una
+              cuota. Para quitar una actividad de prueba del selector,
+              desactívala en Configuración → Actividades. */}
+          {(() => {
+            const actsVisibles = actividades.filter(a => a.enabled !== false)
+            return (
+              <FieldGroup titulo={`Actividades incluidas (${data.actividades_idnoofit.length} de ${actsVisibles.length})`}>
+                {actividades.length === 0 ? (
+                  <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Cargando actividades de NoofitPro…</p>
+                ) : (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 220, overflow: 'auto', padding: 6,
+                                border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-2)' }}>
+                    {actsVisibles.map(a => {
+                      const id = Number(a.id)
+                      return (
+                        <Chip key={id} active={data.actividades_idnoofit.includes(id)}
+                              onClick={() => toggleArray('actividades_idnoofit', id)}>
+                          {a.nombre || a.Nombre || `#${id}`}
+                        </Chip>
+                      )
+                    })}
+                  </div>
+                )}
+              </FieldGroup>
+            )
+          })()}
 
           {/* Active */}
           <FieldGroup titulo="Estado">
@@ -396,10 +404,16 @@ function FieldGroup({ titulo, children }) {
 }
 
 function Input({ value, onChange, suffix, type = 'text', placeholder, step }) {
+  // Junio 2026 — inputs numéricos: cuando el valor es 0 mostramos el campo
+  // VACÍO con "0" de placeholder, para que el usuario teclee directamente sin
+  // tener que borrar el 0 que había delante.
+  const displayValue = (type === 'number' && (value === 0 || value === '0' || value == null))
+    ? '' : value
+  const ph = placeholder ?? (type === 'number' ? '0' : undefined)
   return (
     <div style={{ position: 'relative', display: 'flex' }}>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)}
-             placeholder={placeholder} step={step}
+      <input type={type} value={displayValue} onChange={e => onChange(e.target.value)}
+             placeholder={ph} step={step}
              style={{ flex: 1, padding: '8px 10px', borderRadius: 'var(--radius-sm)',
                       background: 'var(--bg-2)', border: '1px solid var(--line)',
                       color: 'var(--text-0)', fontSize: 13, outline: 'none',

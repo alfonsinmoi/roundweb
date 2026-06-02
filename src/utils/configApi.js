@@ -46,6 +46,7 @@ export const TIPOS_MODIFICACION = [
 export const TIPOS_DESCUENTO = [
   { id: 'porcentaje',          label: 'Descuento %' },
   { id: 'importe',             label: 'Restar €' },
+  { id: 'restar_cuota',        label: 'Restar € a una cuota' },
   { id: 'varias_cuotas',       label: 'Varias cuotas (precio combinado)' },
   { id: 'familiares',          label: 'Familiares (automático ≥2 miembros)' },
   { id: 'familiar_trabajador', label: 'Familiar de trabajador (manual)' },

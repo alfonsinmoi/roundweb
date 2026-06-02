@@ -374,7 +374,11 @@ ALTER TABLE descuento
   ADD COLUMN IF NOT EXISTS cuota_aplicada_codigo  VARCHAR(64),  -- legacy precio_combo + familiares
   ADD COLUMN IF NOT EXISTS precio_final           NUMERIC(10,2),  -- legacy precio_combo
   ADD COLUMN IF NOT EXISTS combo_secundarias      JSONB DEFAULT '[]'::jsonb,
-  ADD COLUMN IF NOT EXISTS unidad                 VARCHAR(20);  -- 'porcentaje'|'importe' (familiares)
+  ADD COLUMN IF NOT EXISTS unidad                 VARCHAR(20),  -- 'porcentaje'|'importe' (familiares)
+  -- Filtro por actividad para descuentos tipo 'importe' (restar €): si tiene
+  -- actividades, el descuento solo aplica si la cuota incluye alguna. Vacío =
+  -- aplica a cualquier cuota (compat retro). (junio 2026)
+  ADD COLUMN IF NOT EXISTS actividades_idnoofit   JSONB DEFAULT '[]'::jsonb;
 -- Ampliar tipos permitidos: precio_combo (legacy) + varias_cuotas + familiares
 DO $$
 BEGIN
@@ -385,7 +389,7 @@ BEGIN
     ALTER TABLE descuento DROP CONSTRAINT descuento_tipo_check;
   END IF;
   ALTER TABLE descuento ADD CONSTRAINT descuento_tipo_check
-    CHECK (tipo IN ('porcentaje','importe','precio_combo','varias_cuotas','familiares'));
+    CHECK (tipo IN ('porcentaje','importe','precio_combo','varias_cuotas','familiares','familiar_trabajador','restar_cuota'));
 EXCEPTION WHEN OTHERS THEN NULL;
 END$$;
 
