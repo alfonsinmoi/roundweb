@@ -29,7 +29,7 @@ import logging
 
 from flask import Blueprint, request, jsonify
 
-from ..auth import auth_required
+from ..auth import auth_required, parent_manager_si_es_trainer
 from ..db import get_conn
 from ..audit_log import log_action
 
@@ -57,6 +57,36 @@ def round_bootstrap():
     # el auto-registro: se autoregistran sin password al primer render.
     if not email:
         return jsonify({'ok': False, 'error': 'missing_email'}), 400
+
+    # ── Guard anti-manager-fantasma ──────────────────────────────────────────
+    # Si este id ya es un TRAINER de otro manager, NO creamos un manager_config
+    # para él (esto es lo que silenciosamente creó el manager 17674 de Añoreta
+    # cuando un trainer entró con login directo). Lo registramos/actualizamos
+    # como trainer de su manager padre y devolvemos ese manager.
+    parent = parent_manager_si_es_trainer(id_user)
+    if parent and parent != id_user:
+        if password:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
+                                                        noofit_email, noofit_password, activo)
+                    VALUES (%s, %s, %s, %s, TRUE)
+                    ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
+                        noofit_email    = EXCLUDED.noofit_email,
+                        noofit_password = EXCLUDED.noofit_password,
+                        activo          = TRUE,
+                        updated_at      = NOW()
+                """, (parent, id_user, email, password))
+            log_action({'kind': 'trainer_nf', 'id': id_user, 'email': email,
+                        'label': nombre or email, 'id_manager': parent, 'id_trainer': id_user},
+                       entidad='sesion', accion='login', entidad_id=id_user,
+                       resumen=(f"Login web (NoofitPro) · {email} · "
+                                f"trainer {id_user} del manager {parent}"))
+        return jsonify({
+            'ok': True, 'id_manager': parent, 'id_user': id_user,
+            'is_manager_login': False, 'remapped_to_parent': parent,
+            'mensaje': f'Trainer del manager {parent}; no se crea manager nuevo.',
+        })
 
     is_manager_login = (id_user == id_manager)
     creado_manager = False

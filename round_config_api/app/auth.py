@@ -85,6 +85,50 @@ def _load_usuario_web_from_jwt():
     return True
 
 
+def parent_manager_si_es_trainer(id_x):
+    """Si `id_x` es un trainer registrado bajo OTRO manager (fila en
+    trainer_noofit_creds con id_trainer=id_x e id_manager<>id_x), devuelve el
+    id de ese manager padre. Si no, None.
+
+    Sirve para corregir el caso de un login DIRECTO de trainer: NoofitPro
+    devuelve X-TRAINER_MANAGER=false y el frontend cae al id propio como
+    manager (p.ej. Añoreta 17674). Aquí lo reconducimos a su manager real.
+    """
+    if not id_x:
+        return None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_manager FROM trainer_noofit_creds
+                 WHERE id_trainer = %s AND id_manager <> %s AND activo = TRUE
+                 LIMIT 1
+            """, (str(id_x), str(id_x)))
+            row = cur.fetchone()
+        return str(row['id_manager']) if row and row.get('id_manager') else None
+    except Exception:
+        return None
+
+
+def _remap_trainer_as_manager():
+    """Si el id_manager recibido NO es un manager real (sin manager_config) pero
+    SÍ es un trainer conocido, operamos bajo su manager padre + ese trainer."""
+    mgr = getattr(g, 'id_manager', None)
+    if not mgr:
+        return
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM manager_config WHERE id_manager = %s", (mgr,))
+            if cur.fetchone():
+                return  # es un manager real → no tocar
+    except Exception:
+        return
+    parent = parent_manager_si_es_trainer(mgr)
+    if parent and parent != mgr:
+        if not getattr(g, 'id_trainer', None):
+            g.id_trainer = mgr
+        g.id_manager = parent
+
+
 def auth_required(fn):
     """Valida el token compartido y carga g.id_manager, g.id_trainer.
 
@@ -121,6 +165,9 @@ def auth_required(fn):
             return jsonify({'ok': False, 'error': 'invalid_manager_id'}), 400
         if g.id_trainer and not _re.fullmatch(r'\d{1,16}', g.id_trainer):
             return jsonify({'ok': False, 'error': 'invalid_trainer_id'}), 400
+
+        # Reconducir login directo de trainer a su manager real (ver helper).
+        _remap_trainer_as_manager()
 
         return fn(*args, **kwargs)
     return wrapper

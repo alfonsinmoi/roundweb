@@ -260,8 +260,25 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
   - Manager parent NoofitPro: **7673** (el "global gym manager" interno
     de NoofitPro; no se usa directamente desde Round).
   - Trainer ROUND MÁLAGA CENTRO: **17675**
-  - Trainer ROUND AÑORETA: **17674**
+  - Trainer ROUND AÑORETA: **17674** (es un TRAINER del manager 17675, NO un
+    manager propio. NoofitPro devuelve `X-TRAINER_MANAGER=false` al loguearlo).
   - id_manager interno (Round Config): **17677** (no es el de NoofitPro)
+
+  > **Login directo de trainer + remap (jun 2026).** Cuando un trainer entra
+  > con sus PROPIAS credenciales NoofitPro, loginEasy devuelve
+  > `X-TRAINER_MANAGER=false` y el frontend cae a usar el id propio como
+  > `id_manager`. Para no crear un "manager fantasma" (le pasó a Añoreta:
+  > acabó con `manager_config` 17674 y sus datos siloados), hay dos defensas
+  > en backend:
+  >   - `auth.parent_manager_si_es_trainer(id)` + `_remap_trainer_as_manager()`
+  >     en `auth_required`: si el `id_manager` recibido NO tiene `manager_config`
+  >     pero SÍ es `id_trainer` de otro manager en `trainer_noofit_creds`, la
+  >     petición se reconduce a `id_manager=<padre>` + `id_trainer=<id>`.
+  >   - `round-bootstrap`: si el que entra ya es trainer de otro manager, NO
+  >     crea `manager_config`; solo refresca sus creds bajo el manager padre.
+  > Requisito: cada trainer debe estar registrado en `trainer_noofit_creds`
+  > como `(id_manager_padre, id_trainer)`. Cada movimiento Odoo lleva además la
+  > analítica del trainer para diferenciarlos dentro de la company compartida.
 
 ## Política de scope (mayo 2026)
 
