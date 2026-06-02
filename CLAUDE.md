@@ -19,6 +19,27 @@ sobre el SaaS NoofitPro (`pro.wiemspro.com`). Este repo contiene:
 Más detalle arquitectónico en `docs/Arquitectura_round_noofit.docx` (con
 infografía) y `docs/FLUJO_DUAL_PC.md`.
 
+## ⛔ REGLA INQUEBRANTABLE — NoofitPro es la fuente de trainers y managers
+
+**Para acceder/registrarse en la web hay que tener credenciales en NoofitPro
+(usuario + contraseña). NoofitPro es la ÚNICA fuente de verdad de la jerarquía
+trainer ↔ manager. En la web NO se crean ni se modifican datos del trainer ni
+de su manager.**
+
+- El alta/identidad de un trainer o manager **solo** existe si existe en
+  NoofitPro. La web los **lee** (loginEasy + jerarquía), nunca los inventa.
+- **Prohibido** crear `manager_config` (u otra entidad de manager/trainer)
+  para un id que NoofitPro no reconozca como manager. Un login de trainer
+  (`X-TRAINER_MANAGER=false`) **no** es un manager: se reconduce a su manager
+  padre (ver `auth._remap_trainer_as_manager` y el guard de `round-bootstrap`),
+  **no** se le crea un manager propio.
+- La web no edita nombre, email, jerarquía ni credenciales NoofitPro del
+  trainer/manager. Si algo está mal, se corrige **en NoofitPro**, no en la BD
+  local ni en la UI.
+- Origen del incidente que motivó esta regla: un login directo de trainer
+  (Añoreta 17674) creó por error un `manager_config` fantasma y siloó sus
+  datos. La regla y los guards lo impiden a futuro.
+
 ## Infraestructura
 
 | Recurso | Dirección |
