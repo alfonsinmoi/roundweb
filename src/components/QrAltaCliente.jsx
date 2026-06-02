@@ -152,7 +152,7 @@ export function QrFichaCliente({ cliente, trainerId, compact = false }) {
 }
 
 
-function QrModal({ title, subtitle, payload, error, showPayloadText, onClose }) {
+export function QrModal({ title, subtitle, payload, error, showPayloadText, onClose }) {
   return (
     <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
          style={{ position: 'fixed', inset: 0, zIndex: 700,

@@ -1,16 +1,22 @@
-// Badge fijo top-right que muestra el centro en el que el usuario está
-// trabajando. NO permite cambiar — para cambiar de centro hay que hacer
-// logout y volver a entrar. Esto evita errores como editar datos del
-// centro equivocado por accidente.
+// Badge top-right del header: muestra el CENTRO/TRAINER activo de la sesión
+// y el USUARIO logueado (nombre o email). Al hacer click abre el QR del
+// trainer activo (el mismo QR cifrado de captación del centro).
 //
-// Datos:
-//   - Trainer id de la sesión actual (de getRoundIdentity).
-//   - nombre_centro desde centro_contacto (refresco cada 60s).
-//   - Si el usuario es manager sin impersonar trainer → "Todos los centros".
+// "Trainer activo":
+//   - usuario_web / impersonación → identity.trainerId.
+//   - manager cuyo id ES también un centro (caso Round: manager==trainer)
+//     → identity.managerId.
+//   - manager puro sin centro propio → null → "Todos los centros" (sin QR).
+//
+// nombre_centro se lee de centro_contacto (refresco cada 60s). El cambio de
+// centro sigue requiriendo logout (este badge NO cambia de centro, solo
+// informa y muestra el QR).
 import { useEffect, useMemo, useState } from 'react'
-import { Building2 } from 'lucide-react'
+import { Building2, QrCode } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { getRoundIdentity, centrosList } from '../utils/configApi'
+import { cifrarQrTrainer } from '../utils/qrCifrado'
+import { QrModal } from './QrAltaCliente'
 
 const POLL_MS = 60_000
 
@@ -18,6 +24,9 @@ export default function CentroBadge() {
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const [centros, setCentros] = useState([])
+  const [open, setOpen] = useState(false)
+  const [qrPayload, setQrPayload] = useState(null)
+  const [qrError, setQrError] = useState(null)
 
   useEffect(() => {
     if (!identity?.managerId) return
@@ -31,35 +40,89 @@ export default function CentroBadge() {
 
   if (!identity?.managerId) return null
 
-  const tid = identity.trainerId ? String(identity.trainerId) : null
+  // Trainer activo: el de la sesión (impersonación / usuario_web) o, si es
+  // manager, su propio centro (solo si su id aparece como centro real).
+  const sessionTid = identity.trainerId ? String(identity.trainerId) : null
+  const managerIsCentro = !sessionTid && identity.managerId
+    && centros.some(x => String(x.id_trainer) === String(identity.managerId))
+  const activeTid = sessionTid || (managerIsCentro ? String(identity.managerId) : null)
+
   let nombre = 'Todos los centros'
-  if (tid) {
-    const c = centros.find(x => String(x.id_trainer) === tid)
-    nombre = c?.nombre_centro
-      || (identity.trainerName && identity.trainerName !== `Centro ${tid}` ? identity.trainerName : null)
-      || `Centro ${tid}`
+  if (activeTid) {
+    const c = centros.find(x => String(x.id_trainer) === activeTid)
+    nombre = c?.nombre_centro || `Centro ${activeTid}`
+  }
+
+  const userLabel = `${user?.nombre || ''} ${user?.apellidos || ''}`.trim()
+    || user?.email || ''
+
+  const clickable = !!activeTid
+
+  const abrirQr = () => {
+    if (!clickable) return
+    setQrPayload(null); setQrError(null); setOpen(true)
+    cifrarQrTrainer(activeTid, identity.managerId, nombre)
+      .then(setQrPayload)
+      .catch(e => setQrError(e.message || 'Error generando QR'))
+  }
+
+  const inner = (
+    <>
+      <Building2 size={18} aria-hidden="true" style={{ flexShrink: 0 }} />
+      <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15,
+                     minWidth: 0, textAlign: 'left' }}>
+        <span style={{ maxWidth: 240, overflow: 'hidden',
+                       textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {nombre}
+        </span>
+        {userLabel && (
+          <span style={{ fontSize: 11, fontWeight: 500, opacity: 0.8,
+                         maxWidth: 240, overflow: 'hidden',
+                         textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {userLabel}
+          </span>
+        )}
+      </span>
+      {clickable && <QrCode size={16} aria-hidden="true" style={{ flexShrink: 0, opacity: 0.8 }} />}
+    </>
+  )
+
+  const baseStyle = {
+    display: 'inline-flex', alignItems: 'center', gap: 10,
+    padding: '6px 16px', borderRadius: 14,
+    background: activeTid ? 'var(--green-bg)' : 'var(--bg-2)',
+    border: `1.5px solid ${activeTid ? 'var(--green)' : 'var(--line)'}`,
+    color: activeTid ? 'var(--green)' : 'var(--text-2)',
+    fontFamily: 'Outfit, var(--font-display), sans-serif',
+    fontWeight: 700, fontSize: 15, letterSpacing: '0.01em',
+    userSelect: 'none',
   }
 
   return (
-    <div role="status"
-         aria-label={`Centro activo: ${nombre}`}
-         title="Para cambiar de centro, cierra sesión y vuelve a entrar."
-         style={{
-           display: 'inline-flex', alignItems: 'center', gap: 10,
-           padding: '8px 16px', borderRadius: 14,
-           background: tid ? 'var(--green-bg)' : 'var(--bg-2)',
-           border: `1.5px solid ${tid ? 'var(--green)' : 'var(--line)'}`,
-           color: tid ? 'var(--green)' : 'var(--text-2)',
-           fontFamily: 'Outfit, var(--font-display), sans-serif',
-           fontWeight: 700, fontSize: 16, lineHeight: 1.1,
-           letterSpacing: '0.01em',
-           userSelect: 'none', cursor: 'default',
-         }}>
-      <Building2 size={18} aria-hidden="true" />
-      <span style={{ maxWidth: 260, overflow: 'hidden',
-                     textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {nombre}
-      </span>
-    </div>
+    <>
+      {clickable ? (
+        <button onClick={abrirQr}
+                aria-label={`Centro activo: ${nombre} · ${userLabel}. Ver QR del centro`}
+                title="Ver el QR de captación del centro"
+                style={{ ...baseStyle, cursor: 'pointer' }}>
+          {inner}
+        </button>
+      ) : (
+        <div role="status"
+             aria-label={`Centro activo: ${nombre}${userLabel ? ' · ' + userLabel : ''}`}
+             title="Para cambiar de centro, cierra sesión y vuelve a entrar."
+             style={{ ...baseStyle, cursor: 'default' }}>
+          {inner}
+        </div>
+      )}
+      {open && (
+        <QrModal title={`QR del centro · ${nombre}`}
+                 subtitle="El cliente lo escanea con mynoofit y se da de alta vinculándose al centro."
+                 payload={qrPayload}
+                 error={qrError}
+                 showPayloadText={false}
+                 onClose={() => setOpen(false)} />
+      )}
+    </>
   )
 }
