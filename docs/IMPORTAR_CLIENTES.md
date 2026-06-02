@@ -10,7 +10,7 @@ Cada vez que se importa hay errores recurrentes: emails malformados, DNIs
 inválidos, IBANs sin formato ES, cuotas duplicadas, IDs NoofitPro que no
 son los que NoofitPro devuelve, partners Odoo duplicados… Este proceso
 captura todos los pitfalls reales encontrados en importaciones previas
-(la primera grande: Round Añoreta, junio 2026, 333 clientes).
+(la primera grande: Round Añoreta, junio 2026, 333 clientes — 13 pitfalls documentados).
 
 ---
 
@@ -291,7 +291,70 @@ analytic… mucha lógica que puede romper. Guardar las cuotas en
 formal después con el endpoint `/api/cuotas/alta-cliente` o el modal
 "Alta ERP" del frontend (1 click por cliente).
 
-### 🐛 Pitfall #10 — Credenciales NoofitPro del trainer correcto
+### 🐛 Pitfall #10 — NoofitPro ignora silenciosamente nombres de campo no estándar
+
+**Síntoma:** llamas a `clientePlusv2` con un payload que tiene `tlf`,
+`birthday`, `direccion`, `cp`, `sexo`, `poblacion` y la API devuelve 200 OK,
+pero al releer el cliente esos campos están en `null`. Crees que se han
+guardado y solo se han guardado los nombres "core" que NoofitPro reconoce
+(`name`, `surname`, `email`, `dni`).
+
+**Nombres correctos del payload NoofitPro:**
+
+| ❌ Lo que parece intuitivo | ✅ Lo que NoofitPro espera |
+|---|---|
+| `tlf`, `phone` | `cellPhone` |
+| `birthday`, `fecha_nacimiento` | `birthdate` |
+| `direccion`, `calle` | `address` |
+| `cp` | `postal_code` |
+| `sexo`, `sex` | `gender` (valores `'M'` / `'F'`) |
+| `poblacion`, `city` | `town` (pero ver pitfall #12 — solo lectura) |
+
+**Solución:** revisa siempre un cliente ya rellenado en NoofitPro (con
+`getClienteSimple`) y usa **exactamente** los nombres de campo que ves. No
+inventes ni traduzcas al español.
+
+### 🐛 Pitfall #11 — Timezone bug en `birthdate` (NoofitPro almacena -1 día)
+
+**Síntoma:** mandas `birthdate: '1965-10-18'` (ISO YYYY-MM-DD). NoofitPro
+guarda y devuelve `'1965-10-17'`. La fecha se desplaza **un día atrás**
+porque el backend NoofitPro convierte string→timestamp asumiendo UTC y al
+releer en zona horaria del servidor (Madrid +1/+2) pierde un día.
+
+**Solución:** sumar 1 día antes de enviar.
+
+```python
+import datetime as dt
+def fecha_mas_uno(iso):
+    if not iso: return None
+    return (dt.date.fromisoformat(iso) + dt.timedelta(days=1)).isoformat()
+
+payload['birthdate'] = fecha_mas_uno('1965-10-18')   # → '1965-10-19'
+# NoofitPro recibe 19, lo desplaza a 18 al guardar, y la web muestra 18 ✓
+```
+
+### 🐛 Pitfall #12 — Campo `town` es solo lectura vía `clientePlusv2`
+
+**Síntoma:** envías `town: 'Málaga'` y la API devuelve 200, pero al releer
+el campo está en `null`. Probaste con/sin ñ, con `city`, con `population`,
+con `localidad` — ninguno funciona vía este endpoint.
+
+**Explicación:** parece que `town` se rellena solo desde la app mobile o
+desde el dashboard pro, no vía `clientePlusv2`. No lo intentes.
+
+**Solución:** concatenar la población en el campo `address`:
+
+```python
+full_address = domicilio
+if poblacion:
+    full_address = f'{domicilio}, {poblacion}'.strip(', ')
+payload['address'] = full_address
+```
+
+Es feo pero no se pierde el dato. La población queda visible en cualquier
+listado o detalle del cliente.
+
+### 🐛 Pitfall #13 — Credenciales NoofitPro del trainer correcto
 
 Para que el cliente quede en NoofitPro **dentro del espacio del trainer**
 (no del manager raíz), hay que loguearse con la cuenta NoofitPro de ese
