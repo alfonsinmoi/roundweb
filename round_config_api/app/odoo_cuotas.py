@@ -357,7 +357,14 @@ class OdooCuotas:
                                    ('invoice_date','<=',str(fin))])
 
     def list_recibos_filtrado(self, mes_str=None, estado=None, partner_id=None):
-        domain = [('move_type','=','out_invoice'),('round_subscription_id','!=',False)]
+        # Mostramos recibos de cuota: los emitidos por el flujo round
+        # (round_subscription_id) Y los importados a Odoo como facturas
+        # sueltas con ref 'RB-<recibo_id>' (p.ej. la migración de recibos
+        # Añoreta 2026-06, que no tienen round.subscription). El post-filtro
+        # por trainer (partner_idnoofit ∈ cliente_cache) los aísla por centro.
+        domain = [('move_type','=','out_invoice'),
+                  '|', ('round_subscription_id','!=',False),
+                       ('ref','=like','RB-%')]
         if mes_str:
             inicio, fin = self._periodos_mes(mes_str)
             domain += [('invoice_date','>=',str(inicio)),('invoice_date','<=',str(fin))]

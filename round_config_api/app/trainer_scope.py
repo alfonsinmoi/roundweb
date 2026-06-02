@@ -86,6 +86,27 @@ def clientes_id_noofit_del_trainer(id_manager=None, id_trainer=None):
         return {str(r['id']) for r in cur.fetchall()}
 
 
+def clientes_id_noofit_del_manager(id_manager=None):
+    """Set de id_noofit (= cliente_cache.id) que pertenecen a ESTE manager.
+
+    Sirve para aislar resultados de Odoo cuando varios managers comparten la
+    MISMA company Odoo (p.ej. 17674 Añoreta y 17675 Málaga comparten company 3):
+    el `company_id` que inyecta OdooCuotas no los separa, así que filtramos por
+    los clientes del manager para que un manager no vea recibos de otro.
+
+    Devuelve None (= no filtrar) si no hay manager o si el manager no tiene
+    clientes en cache — así una cache vacía/sin sincronizar no oculta todo.
+    """
+    id_manager = id_manager or getattr(g, 'id_manager', None)
+    if not id_manager:
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM cliente_cache WHERE id_manager = %s",
+                    (str(id_manager),))
+        ids = {str(r['id']) for r in cur.fetchall()}
+    return ids or None
+
+
 def cliente_pertenece_a_trainer(cliente_idnoofit):
     """Devuelve True si el cliente_idnoofit dado pertenece al trainer
     impersonado (o si no hay trainer impersonado → siempre True).

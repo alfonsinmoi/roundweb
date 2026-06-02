@@ -12,7 +12,8 @@ from ..odoo_cuotas import get_cuotas
 from ..odoo_alta import get_alta
 from ..db import get_conn
 from ..notif_sender import enviar_notificacion
-from ..trainer_scope import clientes_id_noofit_del_trainer, cliente_pertenece_a_trainer
+from ..trainer_scope import (clientes_id_noofit_del_trainer, cliente_pertenece_a_trainer,
+                             clientes_id_noofit_del_manager)
 from ..audit_log import log_action, actor_from_request
 from .. import config as cfg
 
@@ -277,6 +278,15 @@ def list_cuotas():
     except Exception as e:
         odoo_error = str(e)
         log.exception('list_cuotas:odoo')
+
+    # Aislamiento por MANAGER (siempre): varios managers pueden compartir la
+    # misma company Odoo (p.ej. 17674 Añoreta y 17675 Málaga → company 3), así
+    # que el company_id no los separa. Filtramos por los clientes del manager
+    # para que un manager NO vea recibos de otro aunque compartan compañía.
+    clientes_del_manager = clientes_id_noofit_del_manager()
+    if clientes_del_manager is not None:
+        odoo_rows = [r for r in odoo_rows
+                     if str(r.get('partner_idnoofit') or '') in clientes_del_manager]
 
     # Aislamiento por trainer (Odoo side): account.move es manager-wide, sin
     # id_trainer. Post-filtramos por partner_idnoofit cuyo cliente pertenece
