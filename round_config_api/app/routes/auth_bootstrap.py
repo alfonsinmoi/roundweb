@@ -88,6 +88,49 @@ def round_bootstrap():
             'mensaje': f'Trainer del manager {parent}; no se crea manager nuevo.',
         })
 
+    # ── Blindaje vía jerarquía NoofitPro (trainer DESCONOCIDO localmente) ────
+    # Si id_user NO es ya un manager Round y comparte grupo NoofitPro
+    # (getTrainersByManager) con un manager Round YA existente, entonces es un
+    # trainer de ese grupo → reconducir, NUNCA crear un manager fantasma.
+    # NoofitPro no expone rol manager/trainer (managerId=distribuidor para
+    # todos), pero el conjunto de "hermanos" sí identifica el grupo.
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM manager_config WHERE id_manager = %s", (id_user,))
+        id_user_es_manager = cur.fetchone() is not None
+    if not id_user_es_manager and password:
+        from ..noofit_client import hermanos_trainer_ids
+        hermanos = hermanos_trainer_ids(email, password)
+        hermanos.discard(id_user)
+        if hermanos:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""SELECT id_manager FROM manager_config
+                                WHERE id_manager = ANY(%s) ORDER BY id_manager LIMIT 1""",
+                            (list(hermanos),))
+                row = cur.fetchone()
+            if row and str(row['id_manager']) != id_user:
+                mgr_padre = str(row['id_manager'])
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
+                                                            noofit_email, noofit_password, activo)
+                        VALUES (%s, %s, %s, %s, TRUE)
+                        ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
+                            noofit_email    = EXCLUDED.noofit_email,
+                            noofit_password = EXCLUDED.noofit_password,
+                            activo          = TRUE, updated_at = NOW()
+                    """, (mgr_padre, id_user, email, password))
+                log_action({'kind': 'trainer_nf', 'id': id_user, 'email': email,
+                            'label': nombre or email, 'id_manager': mgr_padre, 'id_trainer': id_user},
+                           entidad='sesion', accion='login', entidad_id=id_user,
+                           resumen=(f"Login web (NoofitPro) · {email} · trainer {id_user} "
+                                    f"del manager {mgr_padre} (jerarquía NoofitPro)"))
+                return jsonify({
+                    'ok': True, 'id_manager': mgr_padre, 'id_user': id_user,
+                    'is_manager_login': False, 'remapped_to_parent': mgr_padre,
+                    'mensaje': (f'Trainer del grupo del manager {mgr_padre} (jerarquía '
+                                f'NoofitPro); no se crea manager nuevo.'),
+                })
+
     is_manager_login = (id_user == id_manager)
     creado_manager = False
     creado_trainer = False

@@ -111,6 +111,32 @@ def _auth_headers(token, manager):
     }
 
 
+def hermanos_trainer_ids(email, password):
+    """Conjunto de id (str) de los trainers que comparten manager NoofitPro
+    (endpoint `getTrainersByManager`) para las credenciales dadas.
+
+    En NoofitPro todos los centros de un mismo cliente (p.ej. los 4 ROUND
+    bajo el distribuidor 7673) son "hermanos": getTrainersByManager devuelve
+    el mismo grupo para cualquiera de ellos. Sirve para el blindaje
+    anti-manager-fantasma de `round-bootstrap`: si el que entra es hermano de
+    un manager Round ya existente, es un trainer de ese grupo, no un manager.
+
+    Devuelve set() si el login o la llamada fallan (el llamador hace fallback
+    a su lógica local — nunca rompe el bootstrap).
+    """
+    try:
+        tok, mgr = _login(email, password)
+        r = requests.get(f'{BASE}/api/dispositivos/getTrainersByManager',
+                         headers=_auth_headers(tok, mgr or 'true'),
+                         timeout=15, verify=False)
+        r.raise_for_status()
+        ents = (r.json() or {}).get('entrenadores') or []
+        return {str(e.get('id')) for e in ents if e.get('id') is not None}
+    except Exception as e:
+        log.warning(f'hermanos_trainer_ids({email}): {e}')
+        return set()
+
+
 def get_token():
     """Devuelve token cacheado o renueva si está cerca de expirar."""
     with _lock:

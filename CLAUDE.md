@@ -29,10 +29,22 @@ de su manager.**
 - El alta/identidad de un trainer o manager **solo** existe si existe en
   NoofitPro. La web los **lee** (loginEasy + jerarquía), nunca los inventa.
 - **Prohibido** crear `manager_config` (u otra entidad de manager/trainer)
-  para un id que NoofitPro no reconozca como manager. Un login de trainer
-  (`X-TRAINER_MANAGER=false`) **no** es un manager: se reconduce a su manager
-  padre (ver `auth._remap_trainer_as_manager` y el guard de `round-bootstrap`),
-  **no** se le crea un manager propio.
+  para un id que sea en realidad un trainer de un manager Round ya existente.
+  Se reconduce a su manager padre, **no** se le crea un manager propio.
+  Doble blindaje en `round-bootstrap`:
+    1. **Registro local**: `auth.parent_manager_si_es_trainer` /
+       `_remap_trainer_as_manager` — si el id ya consta como trainer de otro
+       manager en `trainer_noofit_creds`, se reconduce a ese padre.
+    2. **Jerarquía NoofitPro** (trainer desconocido localmente):
+       `noofit_client.hermanos_trainer_ids` (`getTrainersByManager`) devuelve
+       el grupo de centros "hermanos" del cliente NoofitPro; si alguno ya es
+       manager Round (`manager_config`), el que entra es trainer de ese grupo
+       → se reconduce, nunca se crea fantasma.
+  ⚠️ OJO: `X-TRAINER_MANAGER` **NO** distingue manager de trainer (NoofitPro
+  devuelve `false` para todos los centros Round, que cuelgan del distribuidor
+  7673). `entrenador.managerId` también es 7673 para todos. La única señal de
+  agrupación es `getTrainersByManager`; la jerarquía Round (qué centro es el
+  "manager") es una decisión **local** (`manager_config`), no de NoofitPro.
 - La web no edita nombre, email, jerarquía ni credenciales NoofitPro del
   trainer/manager. Si algo está mal, se corrige **en NoofitPro**, no en la BD
   local ni en la UI.
