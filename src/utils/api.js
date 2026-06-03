@@ -99,6 +99,53 @@ function getSignal(key) {
   return controller.signal
 }
 
+// ── Estado de NoofitPro (proxy /wiemspro) ───────────────────────────────────
+// Todas las llamadas de este módulo van a NoofitPro. Con un timeout detectamos
+// "lento/caído" y avisamos a la UI vía evento global (NoofitStatusBanner lo
+// escucha). Así un trainer ya verificado sigue gestionando los datos LOCALES
+// de Round (van por otro backend) aunque NoofitPro no responda, y se le avisa
+// al consultar datos que sí dependen de NoofitPro.
+const NOOFIT_TIMEOUT_MS = 15000
+
+function _emitNoofitStatus(ok, reason) {
+  try {
+    window.dispatchEvent(new CustomEvent('round.noofit-status',
+      { detail: { ok, reason: reason || null, ts: Date.now() } }))
+  } catch { /* SSR / no window */ }
+}
+
+// fetch a NoofitPro con timeout + detección de caída. Combina el signal de
+// cancelación por abortKey (navegación) con un timeout. Emite el estado.
+async function _fetchNF(url, init = {}, abortKey) {
+  let signal
+  try {
+    const timeoutSig = AbortSignal.timeout(NOOFIT_TIMEOUT_MS)
+    if (abortKey) {
+      const keySig = getSignal(abortKey)
+      signal = (typeof AbortSignal.any === 'function')
+        ? AbortSignal.any([keySig, timeoutSig]) : timeoutSig
+    } else {
+      signal = timeoutSig
+    }
+  } catch { signal = getSignal(abortKey) }  // navegadores sin AbortSignal.timeout
+  try {
+    const res = await fetch(url, { ...init, signal })
+    // 502/503/504 = gateway/proxy: NoofitPro no disponible
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      _emitNoofitStatus(false, `http_${res.status}`)
+    } else {
+      _emitNoofitStatus(true)  // respondió → NoofitPro operativo
+    }
+    return res
+  } catch (e) {
+    const name = e?.name || ''
+    const isTimeout = name === 'TimeoutError'
+    const isManualAbort = name === 'AbortError' && !isTimeout  // cancelado por navegación
+    if (!isManualAbort) _emitNoofitStatus(false, isTimeout ? 'timeout' : 'network')
+    throw e
+  }
+}
+
 // Helper: chequea status 401 y, si parece auth expirado, redirige a /login
 // devolviendo true para que el caller pueda interrumpir el flujo.
 async function _checkAuthExpired(res) {
@@ -114,12 +161,10 @@ async function _checkAuthExpired(res) {
 
 export async function apiGet(path, { abortKey } = {}) {
   const { token, manager } = getSession()
-  const signal = getSignal(abortKey)
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'GET',
     headers: authHeaders(token, manager),
-    signal,
-  })
+  }, abortKey)
   if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
@@ -129,12 +174,10 @@ export async function apiGet(path, { abortKey } = {}) {
 
 export async function apiGetRaw(path, { abortKey } = {}) {
   const { token, manager } = getSession()
-  const signal = getSignal(abortKey)
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'GET',
     headers: authHeaders(token, manager),
-    signal,
-  })
+  }, abortKey)
   if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   return res.json()
@@ -152,13 +195,11 @@ function stripNulls(obj) {
 
 export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } = {}) {
   const { token, manager } = getSession()
-  const signal = getSignal(abortKey)
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'POST',
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(stripNulls(body)),
-    signal,
-  })
+  }, abortKey)
   if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
@@ -170,7 +211,7 @@ export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } =
 // poder leer el error real del backend en el caller.
 export async function apiPostRaw(path, body = {}, extraHeaders = {}) {
   const { token, manager } = getSession()
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'POST',
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(stripNulls(body)),
@@ -195,7 +236,7 @@ export async function apiDeleteRaw(path, body = null) {
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json' },
   }
   if (body) init.body = JSON.stringify(stripNulls(body))
-  const res = await fetch(`${BASE}/${path}`, init)
+  const res = await _fetchNF(`${BASE}/${path}`, init)
   let body_text = ''
   try { body_text = await res.text() } catch {}
   if (res.status === 401 && isAuthExpiredResponse(res.status, body_text)) {

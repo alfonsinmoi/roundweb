@@ -7,6 +7,7 @@ import ErrorBoundary from './ErrorBoundary'
 import BannerNuevosClientes from './BannerNuevosClientes'
 import BannerNoRegistrado from './BannerNoRegistrado'
 import UpdateAvailableBanner from './UpdateAvailableBanner'
+import NoofitStatusBanner from './NoofitStatusBanner'
 import NotasBanner from './notas/NotasBanner'
 import BannerTrimestre from './BannerTrimestre'
 import EntradasPendientesBanner from './EntradasPendientesBanner'
@@ -72,6 +73,7 @@ export default function Layout() {
             hay nueva build desplegada para que el usuario recargue.
             Los otros banners pueden quedarse debajo. */}
         <UpdateAvailableBanner />
+        <NoofitStatusBanner />
         <BannerNoRegistrado />
         <BannerTrimestre />
         <NotasBanner />
