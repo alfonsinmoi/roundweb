@@ -111,6 +111,25 @@ def _auth_headers(token, manager):
     }
 
 
+def credenciales_validas(email, password):
+    """True solo si NoofitPro ACEPTA (email, password) en loginEasy.
+
+    NoofitPro es la única autoridad de las credenciales de manager/trainer.
+    Round solo cachea (en trainer_noofit_creds / manager_config) la copia que
+    NoofitPro valida — nunca un valor sin verificar. Si NoofitPro la rechaza
+    (401) o está inalcanzable, devolvemos False y el llamador NO debe pisar la
+    copia buena que ya tuviera guardada.
+    """
+    if not email or not password:
+        return False
+    try:
+        tok, _ = _login(email, password)
+        return bool(tok)
+    except Exception as e:
+        log.warning(f'credenciales_validas({email}): {e}')
+        return False
+
+
 def hermanos_trainer_ids(email, password):
     """Conjunto de id (str) de los trainers que comparten manager NoofitPro
     (endpoint `getTrainersByManager`) para las credenciales dadas.

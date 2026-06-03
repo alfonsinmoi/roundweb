@@ -58,6 +58,19 @@ def round_bootstrap():
     if not email:
         return jsonify({'ok': False, 'error': 'missing_email'}), 400
 
+    # ── NoofitPro es la ÚNICA autoridad de las credenciales ──────────────────
+    # Round solo CACHEA la contraseña NoofitPro (para que los syncs/crons se
+    # reautentiquen). Por eso solo la persistimos si NoofitPro la VALIDA
+    # (loginEasy 200). Si no valida (stale/errónea/NF caído), NUNCA pisamos la
+    # copia buena que ya hubiera → evita corromper creds y tumbar el sync de un
+    # centro. Regla documentada en CLAUDE.md.
+    from ..noofit_client import credenciales_validas
+    password_valida = bool(password) and credenciales_validas(email, password)
+    pw_store = password if password_valida else None
+    if password and not password_valida:
+        log.warning(f'round-bootstrap: NoofitPro NO valida la contraseña de '
+                    f'{email} (id_user={id_user}); no se sobrescriben las creds.')
+
     # ── Guard anti-manager-fantasma ──────────────────────────────────────────
     # Si este id ya es un TRAINER de otro manager, NO creamos un manager_config
     # para él (esto es lo que silenciosamente creó el manager 17674 de Añoreta
@@ -65,7 +78,7 @@ def round_bootstrap():
     # como trainer de su manager padre y devolvemos ese manager.
     parent = parent_manager_si_es_trainer(id_user)
     if parent and parent != id_user:
-        if password:
+        if password_valida:
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
@@ -73,10 +86,11 @@ def round_bootstrap():
                     VALUES (%s, %s, %s, %s, TRUE)
                     ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
                         noofit_email    = EXCLUDED.noofit_email,
-                        noofit_password = EXCLUDED.noofit_password,
+                        noofit_password = COALESCE(EXCLUDED.noofit_password, trainer_noofit_creds.noofit_password),
                         activo          = TRUE,
                         updated_at      = NOW()
-                """, (parent, id_user, email, password))
+                """, (parent, id_user, email, pw_store))
+        if password:
             log_action({'kind': 'trainer_nf', 'id': id_user, 'email': email,
                         'label': nombre or email, 'id_manager': parent, 'id_trainer': id_user},
                        entidad='sesion', accion='login', entidad_id=id_user,
@@ -116,9 +130,9 @@ def round_bootstrap():
                         VALUES (%s, %s, %s, %s, TRUE)
                         ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
                             noofit_email    = EXCLUDED.noofit_email,
-                            noofit_password = EXCLUDED.noofit_password,
+                            noofit_password = COALESCE(EXCLUDED.noofit_password, trainer_noofit_creds.noofit_password),
                             activo          = TRUE, updated_at = NOW()
-                    """, (mgr_padre, id_user, email, password))
+                    """, (mgr_padre, id_user, email, pw_store))
                 log_action({'kind': 'trainer_nf', 'id': id_user, 'email': email,
                             'label': nombre or email, 'id_manager': mgr_padre, 'id_trainer': id_user},
                            entidad='sesion', accion='login', entidad_id=id_user,
@@ -148,14 +162,14 @@ def round_bootstrap():
         """, (id_manager,
               nombre or f'Manager {id_manager}',
               email if is_manager_login else None,
-              (password or None) if is_manager_login else None))
+              pw_store if is_manager_login else None))
         creado_manager = cur.fetchone() is not None
 
         # Si ya existía y es el manager principal, actualizar nombre y
         # creds (creds solo si nos las pasaron — no pisar con NULL si
         # vino el bootstrap soft sin password).
         if not creado_manager and is_manager_login:
-            if password:
+            if password_valida:
                 cur.execute("""
                     UPDATE manager_config
                        SET noofit_email = %s,
@@ -163,7 +177,7 @@ def round_bootstrap():
                            nombre = COALESCE(NULLIF(nombre,''), %s),
                            activo = TRUE
                      WHERE id_manager = %s
-                """, (email, password,
+                """, (email, pw_store,
                       nombre or f'Manager {id_manager}', id_manager))
             else:
                 cur.execute("""
@@ -173,10 +187,11 @@ def round_bootstrap():
                      WHERE id_manager = %s
                 """, (nombre or f'Manager {id_manager}', id_manager))
 
-    # 2) trainer_noofit_creds — solo escribimos creds si tenemos password
-    # (modo bootstrap fresh tras login). En modo soft sin password, no
-    # tocamos esta tabla (no podemos guardar creds inválidas).
-    if password:
+    # 2) trainer_noofit_creds — solo escribimos creds si NoofitPro valida la
+    # contraseña (password_valida). En modo soft (sin password) o si NoofitPro
+    # la rechaza, no tocamos la tabla: nunca guardamos ni pisamos con creds que
+    # NoofitPro no acepta (regla: NoofitPro es la autoridad).
+    if password_valida:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
@@ -185,11 +200,11 @@ def round_bootstrap():
                 VALUES (%s, %s, %s, %s, TRUE)
                 ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
                     noofit_email    = EXCLUDED.noofit_email,
-                    noofit_password = EXCLUDED.noofit_password,
+                    noofit_password = COALESCE(EXCLUDED.noofit_password, trainer_noofit_creds.noofit_password),
                     activo          = TRUE,
                     updated_at      = NOW()
                 RETURNING (xmax = 0) AS inserted
-            """, (id_manager, id_user, email, password))
+            """, (id_manager, id_user, email, pw_store))
             r = cur.fetchone()
             creado_trainer = bool(r and r.get('inserted'))
 

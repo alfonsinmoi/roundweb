@@ -48,6 +48,16 @@ de su manager.**
 - La web no edita nombre, email, jerarquía ni credenciales NoofitPro del
   trainer/manager. Si algo está mal, se corrige **en NoofitPro**, no en la BD
   local ni en la UI.
+- **Credenciales NoofitPro = solo cache, y solo si NoofitPro las valida.**
+  `trainer_noofit_creds.noofit_password` / `manager_config.noofit_password` son
+  una COPIA cacheada (la web la necesita para que los syncs/crons se
+  reautentiquen contra NoofitPro). Regla al incorporar/loguear un manager o
+  trainer: **`round-bootstrap` solo persiste/actualiza esa contraseña si
+  NoofitPro la VALIDA** (`noofit_client.credenciales_validas` → loginEasy 200).
+  Si NoofitPro la rechaza o está caído, **NUNCA** se pisa la copia buena que ya
+  hubiera (UPSERT con `COALESCE(EXCLUDED.noofit_password, …)`). Así un valor
+  stale/erróneo no corrompe las creds ni tumba el sync de un centro. La
+  contraseña NoofitPro la gestiona NoofitPro; la web solo cachea lo que NF acepta.
 - Origen del incidente que motivó esta regla: un login directo de trainer
   (Añoreta 17674) creó por error un `manager_config` fantasma y siloó sus
   datos. La regla y los guards lo impiden a futuro.
