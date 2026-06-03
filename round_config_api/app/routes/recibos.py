@@ -30,7 +30,7 @@ from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from ..trainer_scope import (
     apply_trainer_filter_direct, apply_trainer_filter_via_cache,
-    cliente_pertenece_a_trainer,
+    cliente_pertenece_a_trainer, trainer_bloquea,
 )
 
 bp = Blueprint('recibos', __name__)
@@ -141,6 +141,8 @@ def get_recibo(rid):
                     (str(g.id_manager), rid))
         r = cur.fetchone()
     if not r:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(r['id_trainer']):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     return jsonify({'ok': True, 'recibo': r})
 
@@ -273,6 +275,8 @@ def update_recibo(rid):
         r = cur.fetchone()
         if not r:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(r['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         estado = r['estado']
         editable_full = estado in ('borrador_remesa', 'pendiente',
                                     'impagado', 'devuelto')
@@ -368,10 +372,12 @@ def delete_recibo(rid):
     impagado / cancelado. Los pagados o facturados NO se borran (mantener
     trazabilidad)."""
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT estado, account_move_id FROM recibo WHERE id_manager=%s AND id=%s",
+        cur.execute("SELECT estado, account_move_id, id_trainer FROM recibo WHERE id_manager=%s AND id=%s",
                     (str(g.id_manager), rid))
         r = cur.fetchone()
         if not r:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(r['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         if r['estado'] in ('pagado', 'facturado') or r['account_move_id']:
             return jsonify({'ok': False, 'error': 'no_borrable',
@@ -417,13 +423,15 @@ def marcar_pagado(rid):
     # para evitar race "dos cobros simultáneos → 2 payments Odoo".
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""SELECT importe_total, cliente_nombre, cliente_idnoofit,
-                              estado, account_payment_id
+                              estado, account_payment_id, id_trainer
                          FROM recibo
                         WHERE id_manager=%s AND id=%s
                         FOR UPDATE""",
                     (str(g.id_manager), rid))
         rec = cur.fetchone()
         if not rec:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(rec['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
 
         # Sprint 7 C2 — guardia explícita anti-doble-cobro
@@ -622,6 +630,11 @@ def marcar_pagado(rid):
 def marcar_impagado(rid):
     actor = actor_from_request()
     with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id_trainer FROM recibo WHERE id_manager=%s AND id=%s",
+                    (str(g.id_manager), rid))
+        guard = cur.fetchone()
+        if not guard or trainer_bloquea(guard['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""
             UPDATE recibo SET estado='impagado', fecha_pago=NULL, updated_by=%s
              WHERE id_manager=%s AND id=%s
@@ -657,11 +670,13 @@ def marcar_devuelto(rid):
     actor_label = actor.get('label') or actor.get('email')
 
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT id, cliente_idnoofit, account_payment_id, estado, intentos_cobro
+        cur.execute("""SELECT id, cliente_idnoofit, account_payment_id, estado, intentos_cobro, id_trainer
                          FROM recibo WHERE id_manager=%s AND id=%s""",
                     (str(g.id_manager), rid))
         r = cur.fetchone()
     if not r:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(r['id_trainer']):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
 
     pago_anulado = False
@@ -742,11 +757,13 @@ def generar_link_pago(rid):
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""SELECT id, cliente_idnoofit, importe_total, estado,
-                              link_pago_token, link_pago_pagado_at
+                              link_pago_token, link_pago_pagado_at, id_trainer
                          FROM recibo WHERE id_manager=%s AND id=%s""",
                     (str(g.id_manager), rid))
         r = cur.fetchone()
     if not r:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(r['id_trainer']):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     if r['estado'] in ('pagado', 'facturado', 'cancelado'):
         return jsonify({'ok': False, 'error': 'estado_no_permite_link',
@@ -813,13 +830,16 @@ def list_cliente(id_noofit):
     silenciosamente: dejar claro que no existe en su contexto)."""
     if not cliente_pertenece_a_trainer(id_noofit):
         return jsonify({'ok': True, 'recibos': []})
+    where = ['id_manager = %s', 'cliente_idnoofit = %s']
+    vals = [str(g.id_manager), id_noofit]
+    apply_trainer_filter_direct(where, vals, include_nulls=False)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""
             SELECT {_select_recibo_cols()}
               FROM recibo
-             WHERE id_manager=%s AND cliente_idnoofit=%s
+             WHERE {' AND '.join(where)}
              ORDER BY fecha_emision DESC, id DESC
-        """, (str(g.id_manager), id_noofit))
+        """, vals)
         rows = cur.fetchall()
     return jsonify({'ok': True, 'recibos': rows})
 

@@ -12,7 +12,7 @@ import datetime as dt
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from ..trainer_scope import cliente_pertenece_a_trainer
@@ -52,6 +52,7 @@ def list_by_cliente(id_noofit):
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_permission('cuotas_clientes.cambiar_forma_pago')
 def create_forma_pago():
     """Crea nueva forma de pago. Si hay una activa, la cierra primero.
     body = {
@@ -68,6 +69,9 @@ def create_forma_pago():
     forma = d.get('forma_pago')
     if not cli:
         return jsonify({'ok': False, 'error': 'cliente_idnoofit_required'}), 400
+    # Aislamiento por trainer: el cliente debe pertenecer al trainer impersonado.
+    if not cliente_pertenece_a_trainer(cli):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
     if forma not in FORMAS_VALIDAS:
         return jsonify({'ok': False, 'error': f'forma_pago_invalid (acepta: {sorted(FORMAS_VALIDAS)})'}), 400
 
@@ -124,12 +128,23 @@ def create_forma_pago():
 
 @bp.route('/<int:fid>/cancel', methods=['POST'])
 @auth_required
+@require_permission('cuotas_clientes.cambiar_forma_pago')
 def cancel_forma_pago(fid):
     """Cancela la forma de pago sin reemplazo. El cliente queda sin forma activa."""
     d = request.get_json() or {}
     fecha = d.get('fecha_fin') or dt.date.today().isoformat()
     actor = actor_from_request()
     with get_conn() as conn, conn.cursor() as cur:
+        # Aislamiento por trainer: resolver el cliente de la fila y validar.
+        cur.execute("""
+            SELECT cliente_idnoofit FROM forma_pago_cliente
+             WHERE id_manager=%s AND id=%s
+        """, (str(g.id_manager), fid))
+        owner = cur.fetchone()
+        if not owner:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if not cliente_pertenece_a_trainer(owner['cliente_idnoofit']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""
             UPDATE forma_pago_cliente
                SET estado='cancelada', fecha_fin=%s, motivo_cambio=%s, updated_by=%s

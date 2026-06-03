@@ -24,10 +24,11 @@ import logging
 from functools import wraps
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..auth_usuario import usuario_web_required, decode_jwt
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
+from ..trainer_scope import cliente_pertenece_a_trainer, trainer_bloquea
 
 bp = Blueprint('notas', __name__)
 log = logging.getLogger(__name__)
@@ -95,7 +96,11 @@ def list_notas_cliente(idnoofit):
 
 @bp.route('/cliente/<idnoofit>', methods=['POST'])
 @either_auth
+@require_permission('crm.notas.crear_nota')
 def create_nota(idnoofit):
+    # Aislamiento por trainer: el cliente debe pertenecer al trainer impersonado.
+    if not cliente_pertenece_a_trainer(idnoofit):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
     d = request.get_json() or {}
     contenido = (d.get('contenido') or '').strip()
     if not contenido:
@@ -142,6 +147,7 @@ def create_nota(idnoofit):
 
 @bp.route('/enviar', methods=['POST'])
 @either_auth
+@require_permission('crm.notas.crear_nota')
 def enviar_nota_a_receptores():
     """Envía una nota a uno o varios receptores (trabajadores o clientes).
 
@@ -298,7 +304,15 @@ def enviar_nota_a_receptores():
 
 @bp.route('/<int:nid>', methods=['PATCH'])
 @either_auth
+@require_permission('crm.notas.editar_nota')
 def update_nota(nid):
+    # Aislamiento por trainer: la nota debe pertenecer al trainer impersonado.
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id_trainer FROM cliente_nota WHERE id_manager=%s AND id=%s",
+                    (str(g.id_manager), nid))
+        owner = cur.fetchone()
+    if not owner or trainer_bloquea(owner['id_trainer']):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
     d = request.get_json() or {}
     sets, vals = [], []
     if 'contenido' in d:
@@ -337,9 +351,16 @@ def update_nota(nid):
 
 @bp.route('/<int:nid>/archivar', methods=['POST'])
 @either_auth
+@require_permission('crm.notas.cerrar_nota')
 def archivar_nota(nid):
     actor = actor_from_request()
     with get_conn() as conn, conn.cursor() as cur:
+        # Aislamiento por trainer.
+        cur.execute("SELECT id_trainer FROM cliente_nota WHERE id_manager=%s AND id=%s",
+                    (str(g.id_manager), nid))
+        owner = cur.fetchone()
+        if not owner or trainer_bloquea(owner['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""
             UPDATE cliente_nota
                SET estado='archivada', archived_at=NOW(),
@@ -356,6 +377,7 @@ def archivar_nota(nid):
 
 @bp.route('/<int:nid>/recordatorio', methods=['POST'])
 @either_auth
+@require_permission('crm.notas.recordatorio')
 def recordar_nota(nid):
     """body: {horas: 24}  o  {hasta: 'YYYY-MM-DDTHH:MM'}"""
     d = request.get_json() or {}
@@ -369,6 +391,12 @@ def recordar_nota(nid):
     else:
         return jsonify({'ok': False, 'error': 'horas_or_hasta_required'}), 400
     with get_conn() as conn, conn.cursor() as cur:
+        # Aislamiento por trainer.
+        cur.execute("SELECT id_trainer FROM cliente_nota WHERE id_manager=%s AND id=%s",
+                    (str(g.id_manager), nid))
+        owner = cur.fetchone()
+        if not owner or trainer_bloquea(owner['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""
             UPDATE cliente_nota
                SET estado='recordatorio', recordatorio_hasta=%s
@@ -384,6 +412,7 @@ def recordar_nota(nid):
 
 @bp.route('/<int:nid>/responder', methods=['POST'])
 @either_auth
+@require_permission('crm.notas.responder')
 def responder_nota(nid):
     """Crea una nota hija (parent_id=nid) y, si se pide, marca la padre como 'contestada'."""
     d = request.get_json() or {}
@@ -393,10 +422,13 @@ def responder_nota(nid):
     by = _actor_label_for_insert()
 
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT cliente_idnoofit, cliente_nombre, asignada_a_usuario_id, asignada_a_email, asignada_a_label, created_by_id, created_by_email, created_by_label
+        cur.execute("""SELECT id_trainer, cliente_idnoofit, cliente_nombre, asignada_a_usuario_id, asignada_a_email, asignada_a_label, created_by_id, created_by_email, created_by_label
                          FROM cliente_nota WHERE id_manager=%s AND id=%s""", (str(g.id_manager), nid))
         parent = cur.fetchone()
         if not parent: return jsonify({'ok': False, 'error': 'parent_not_found'}), 404
+        # Aislamiento por trainer: la nota padre debe pertenecer al trainer impersonado.
+        if trainer_bloquea(parent['id_trainer']):
+            return jsonify({'ok': False, 'error': 'parent_not_found'}), 404
         # La respuesta se asigna inversamente (al que mandó la nota original) si no se especifica
         asignada_a = d.get('asignada_a_usuario_id', parent['created_by_id'])
         asignada_email = parent['created_by_email'] if asignada_a == parent['created_by_id'] else None
@@ -432,8 +464,15 @@ def responder_nota(nid):
 
 @bp.route('/<int:nid>', methods=['DELETE'])
 @either_auth
+@require_permission('crm.notas.borrar_nota')
 def delete_nota(nid):
     with get_conn() as conn, conn.cursor() as cur:
+        # Aislamiento por trainer.
+        cur.execute("SELECT id_trainer FROM cliente_nota WHERE id_manager=%s AND id=%s",
+                    (str(g.id_manager), nid))
+        owner = cur.fetchone()
+        if not owner or trainer_bloquea(owner['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("DELETE FROM cliente_nota WHERE id_manager=%s AND id=%s RETURNING cliente_idnoofit",
                     (str(g.id_manager), nid))
         row = cur.fetchone()

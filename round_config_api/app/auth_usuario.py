@@ -143,6 +143,16 @@ def usuario_web_required(fn):
         # para que el usuario pueda al menos acceder al cambio de password.
 
         g.usuario_web = row
+        # g.perfil: para que @require_permission funcione también en endpoints
+        # con @usuario_web_required / @either_auth (antes solo se cargaba en
+        # @auth_required, así que un require_permission ahí se saltaba con
+        # g.perfil=None → control total). Mismo shape que auth._load_usuario_web_from_jwt.
+        g.perfil = {
+            'id': row.get('perfil_id'),
+            'nombre': row.get('perfil_nombre'),
+            'is_admin': bool(row.get('perfil_is_admin')),
+            'permisos': row.get('permisos') or {},
+        }
         g.id_manager = row['id_manager']
         # Trainer activo en esta sesión: el que el usuario eligió al login
         # (claim `trn` del JWT) — no el default de la fila DB. Cuando el

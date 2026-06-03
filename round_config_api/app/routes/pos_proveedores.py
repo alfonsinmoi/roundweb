@@ -23,6 +23,7 @@ from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from ..validators import validate_nif_cif_nie
+from ..trainer_scope import trainer_bloquea
 
 bp = Blueprint('pos_proveedores', __name__)
 log = logging.getLogger(__name__)
@@ -99,6 +100,8 @@ def detalle_proveedor(fid):
                     (fid, str(g.id_manager)))
         r = cur.fetchone()
     if not r:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(r['id_trainer']):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     return jsonify({'ok': True, 'factura': _row_json(r)})
 
@@ -209,11 +212,13 @@ def editar_proveedor(fid):
     """
     d = request.get_json() or {}
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT estado, sync_status FROM pos_factura_proveedor
+        cur.execute("""SELECT estado, sync_status, id_trainer FROM pos_factura_proveedor
                         WHERE id=%s AND id_manager=%s""",
                     (fid, str(g.id_manager)))
         r = cur.fetchone()
         if not r:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(r['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         if r['estado'] == 'anulada':
             return jsonify({'ok': False, 'error': 'anulada_no_editable'}), 400
@@ -256,11 +261,13 @@ def editar_proveedor(fid):
 def anular_proveedor(fid):
     motivo = (request.get_json() or {}).get('motivo') or 'anulación'
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT estado, odoo_move_id FROM pos_factura_proveedor
+        cur.execute("""SELECT estado, odoo_move_id, id_trainer FROM pos_factura_proveedor
                         WHERE id=%s AND id_manager=%s FOR UPDATE""",
                     (fid, str(g.id_manager)))
         r = cur.fetchone()
         if not r:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(r['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         if r['estado'] == 'anulada':
             return jsonify({'ok': False, 'error': 'ya_anulada'}), 400
@@ -297,6 +304,15 @@ def anular_proveedor(fid):
 @require_permission('tpv.proveedores.crear')
 def sync_proveedor_endpoint(fid):
     """Reintenta sync con Odoo. Idempotente."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id_trainer FROM pos_factura_proveedor
+                        WHERE id=%s AND id_manager=%s""",
+                    (fid, str(g.id_manager)))
+        r = cur.fetchone()
+    if not r:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(r['id_trainer']):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
     from ..odoo_proveedores_sync import sync_factura_proveedor
     res = sync_factura_proveedor(g.id_manager, fid)
     return jsonify(res)

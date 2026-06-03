@@ -236,6 +236,7 @@ def wc_check():
 
 @bp.route('/wcommerce-cliente', methods=['PATCH', 'PUT'])
 @auth_required
+@require_permission('manager_odoo.editar_id_wcommerce')
 def set_wcommerce_cliente():
     """Permite (al admin del manager) introducir/cambiar manualmente el id
     de cliente en wcommerce."""
@@ -411,6 +412,7 @@ def get_solicitud_despliegue():
 
 @bp.route('/solicitud-despliegue', methods=['POST'])
 @auth_required
+@require_permission('configuracion.suscripciones.activar')
 def post_solicitud_despliegue():
     """Crea una solicitud nueva. Solo permitida si:
       - el manager tiene tipoPago='S' (verificable on-demand) o ya lo tenía guardado
@@ -675,6 +677,7 @@ def get_trainers_contabilidad():
 
 @bp.route('/trainers-contabilidad/<id_trainer>', methods=['PATCH'])
 @auth_required
+@require_permission('manager_odoo.trainers_contabilidad_editar')
 def patch_trainer_contabilidad(id_trainer):
     """Cambia el modo del trainer (`heredar=true|false`).
 
@@ -800,6 +803,7 @@ def admin_get_solicitud(sol_id):
 
 @bp.route('/admin/solicitudes-despliegue/<int:sol_id>/reintentar', methods=['POST'])
 @auth_required
+@require_permission('manager_odoo.reintentar_solicitud_admin')
 def admin_reintentar_solicitud(sol_id):
     """Re-ejecuta el provisioner sobre una solicitud en estado pendiente
     con motivo_rechazo. Útil cuando el primer intento falló por un error

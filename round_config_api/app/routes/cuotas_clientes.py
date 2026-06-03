@@ -317,6 +317,7 @@ def list_cuotas():
 @bp.route('/preemision/<mes>', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('economico.cuotas_mensuales.validar_preemision')
 def preemision_generar(mes):
     """mes formato YYYY-MM"""
     try:
@@ -347,6 +348,7 @@ def preemision_listar(mes):
 @bp.route('/preemision/recibo/<int:invoice_id>', methods=['PATCH'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('economico.cuotas_mensuales.editar_preemision')
 def preemision_modificar(invoice_id):
     """Modificar un borrador: precio, fecha vencimiento, notas."""
     try:
@@ -367,6 +369,7 @@ def preemision_modificar(invoice_id):
 @bp.route('/preemision/recibo/<int:invoice_id>', methods=['DELETE'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('economico.cuotas_mensuales.borrar_preemision')
 def preemision_eliminar(invoice_id):
     try:
         get_cuotas().delete_borrador(invoice_id)
@@ -385,6 +388,7 @@ def preemision_eliminar(invoice_id):
 @bp.route('/emitir/<mes>', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('economico.cuotas_mensuales.emitir_mes')
 def emitir_remesa(mes):
     try:
         result = get_cuotas().emitir_remesa(mes)
@@ -433,6 +437,7 @@ def enviar_factura(invoice_id):
 @bp.route('/alta-cliente', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('cuotas_clientes.asignar')
 def alta_cliente():
     """Crea cliente + suscripción + recibo alta + procesa pago en Odoo.
     Body: {cliente: {...}, suscripcion: {...}, alta: {...}}

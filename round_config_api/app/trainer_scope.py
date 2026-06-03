@@ -86,6 +86,23 @@ def clientes_id_noofit_del_trainer(id_manager=None, id_trainer=None):
         return {str(r['id']) for r in cur.fetchall()}
 
 
+def trainer_bloquea(row_id_trainer):
+    """Para endpoints de DETALLE/MUTACIÓN por id: devuelve True si hay un
+    `g.id_trainer` fijado (usuario_web atado a un centro) y NO coincide con el
+    `id_trainer` de la fila → el endpoint debe responder 404/403 en vez de
+    exponer/mutar el recurso de otro trainer.
+
+    Si no hay trainer fijado (manager bare) → False (no bloquea).
+    `row_id_trainer` NULL en la fila → se bloquea para un trainer concreto
+    (un recurso sin trainer no pertenece a un centro específico); cámbialo a
+    medida si algún recurso NULL debe ser visible para todos.
+    """
+    tid = getattr(g, 'id_trainer', None)
+    if not tid:
+        return False
+    return str(row_id_trainer or '') != str(tid)
+
+
 def clientes_id_noofit_del_manager(id_manager=None):
     """Set de id_noofit (= cliente_cache.id) que pertenecen a ESTE manager.
 

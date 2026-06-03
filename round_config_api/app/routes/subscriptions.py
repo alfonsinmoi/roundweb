@@ -16,7 +16,7 @@ import datetime as dt
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..audit_log import log_action, actor_from_request
 from ..odoo_guard import require_feature
 
@@ -150,6 +150,7 @@ def list_by_cliente(id_noofit):
 @bp.route('/', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('cuotas_clientes.asignar')
 def create_subscription():
     """Crea una nueva subscription para el cliente.
     body = {
@@ -170,6 +171,11 @@ def create_subscription():
     cuota_id = d.get('cuota_id')
     if not cliente_idnoofit or not cuota_id:
         return jsonify({'ok': False, 'error': 'cliente_idnoofit y cuota_id requeridos'}), 400
+
+    # Aislamiento por trainer: el cliente debe pertenecer al trainer impersonado.
+    from ..trainer_scope import cliente_pertenece_a_trainer
+    if not cliente_pertenece_a_trainer(cliente_idnoofit):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
 
     try:
         o = _odoo()
@@ -279,6 +285,7 @@ def create_subscription():
 @bp.route('/<int:sid>/replace', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('cuotas_clientes.reemplazar')
 def replace_subscription(sid):
     """Cierra la subscription <sid> (fecha_fin=hoy, estado=cancelada) y crea
     una nueva con los datos del body. Mantiene histórico estricto.
@@ -338,6 +345,7 @@ def replace_subscription(sid):
 @bp.route('/<int:sid>/cancel', methods=['POST'])
 @auth_required
 @require_feature('cuotas')
+@require_permission('cuotas_clientes.cancelar')
 def cancel_subscription(sid):
     """Cancela una subscription sin crear sustituto.
     body = {motivo?: str, fecha_corte?: YYYY-MM-DD}"""

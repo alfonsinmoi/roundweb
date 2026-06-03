@@ -30,6 +30,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission, resolve_trainer_target
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
+from ..trainer_scope import trainer_bloquea
 
 bp = Blueprint('pos_caja', __name__)
 log = logging.getLogger(__name__)
@@ -288,6 +289,8 @@ def caja_detalle(cid):
         row = cur.fetchone()
     if not row:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(row['id_trainer']):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
     return jsonify({'ok': True, 'cierre': _row_json(row)})
 
 
@@ -317,6 +320,8 @@ def caja_reabrir(cid):
                     (cid, str(g.id_manager)))
         row = cur.fetchone()
         if not row:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(row['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         # Marcar reopen y borrar — el audit_log + el resumen en
         # log_action preservan trazabilidad histórica.

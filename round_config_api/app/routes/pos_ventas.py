@@ -27,6 +27,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission, resolve_trainer_target
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
+from ..trainer_scope import trainer_bloquea
 
 bp = Blueprint('pos_ventas', __name__)
 log = logging.getLogger(__name__)
@@ -358,6 +359,8 @@ def detalle_venta(vid):
         cab = cur.fetchone()
         if not cab:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(cab['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""SELECT * FROM pos_venta_linea
                         WHERE venta_id = %s ORDER BY id""", (vid,))
         lineas = cur.fetchall()
@@ -551,6 +554,14 @@ def force_reset_sync(vid):
     search-by-ref los recuperará.
     """
     with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id_trainer FROM pos_venta
+                        WHERE id=%s AND id_manager=%s""",
+                    (vid, str(g.id_manager)))
+        chk = cur.fetchone()
+        if not chk:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(chk['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
         cur.execute("""UPDATE pos_venta
                           SET sync_status='pending', sync_error=NULL,
                               sync_attempted_at=NOW(), updated_at=NOW()
@@ -580,12 +591,14 @@ def sync_odoo(vid):
     # Comprobar estado primero
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""SELECT estado, sync_status, odoo_move_id,
-                              odoo_refund_move_id, recibo_id
+                              odoo_refund_move_id, recibo_id, id_trainer
                          FROM pos_venta
                         WHERE id=%s AND id_manager=%s""",
                     (vid, str(g.id_manager)))
         v = cur.fetchone()
     if not v:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if trainer_bloquea(v['id_trainer']):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     # Caso 1: venta anulada con move tradicional → out_refund
     if v['estado'] == 'anulada' and v['odoo_move_id']:
@@ -618,6 +631,8 @@ def anular_venta(vid):
                     (vid, str(g.id_manager)))
         v = cur.fetchone()
         if not v:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if trainer_bloquea(v['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         if v['estado'] == 'anulada':
             return jsonify({'ok': False, 'error': 'ya_anulada'}), 400

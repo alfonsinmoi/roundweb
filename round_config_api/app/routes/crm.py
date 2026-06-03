@@ -7,7 +7,7 @@
 import os, json, logging, re, time
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..odoo_guard import require_feature
 from ..db import get_conn
 from ..odoo_cuotas import get_cuotas
@@ -419,6 +419,7 @@ def lead_tally():
 @bp.route('/lead-manual', methods=['POST'])
 @auth_required
 @require_feature('crm')
+@require_permission('crm.lead_manual.crear_manual')
 def crear_lead_manual():
     """Crea un lead a mano desde el ERP. Mismos campos que el público pero
     con auth de manager + origen='manual_erp'. Sin honeypot/rate-limit."""
@@ -543,6 +544,7 @@ def crear_lead_manual():
 @bp.route('/leads/<int:lead_id>', methods=['PATCH'])
 @auth_required
 @require_feature('crm')
+@require_permission('crm.leads.editar_lead')
 def update_lead(lead_id):
     """Actualiza un lead (etapa, prioridad, notas...).
     Body: { stage_id?, priority?, description?, name?, notes?, lost_reason_id? }
