@@ -68,6 +68,57 @@ def _noofit_login_with_manager_creds(id_manager: str):
         logging.getLogger(__name__).warning(f'noofit_login error: {e}')
         return None, None
 
+
+def _noofit_login_raw(email: str, password: str):
+    """loginEasy con email+password en claro. (token, trainer_manager) o (None,None)."""
+    try:
+        body = {
+            'email': email,
+            'appVersion': NOOFIT_APP_VERSION,
+            'password': hashlib.md5(password.encode()).hexdigest().upper(),
+        }
+        r = requests.post(f'{NOOFIT_BASE}/account/loginEasy',
+                          json=body, headers={'Content-Type': 'application/json'},
+                          verify=False, timeout=20)
+        if r.status_code != 200:
+            return None, None
+        return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', '')
+    except Exception as e:
+        logging.getLogger(__name__).warning(f'noofit_login_raw error: {e}')
+        return None, None
+
+
+def _noofit_login_for_session(id_manager: str, id_trainer=None):
+    """Token NoofitPro para la sesión de un usuario_web.
+
+    Prioriza las credenciales del TRAINER del centro activo (token scoped a
+    ese centro) y cae a las del manager si no hay creds de trainer o el login
+    falla. Así un usuario_web ve en las pantallas NoofitPro (monitores,
+    clases, agenda, etc.) SOLO los datos de su centro, no los de todo el
+    manager. Un usuario_web representa a un trainer.
+    """
+    if id_trainer:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    SELECT noofit_email, noofit_password
+                      FROM trainer_noofit_creds
+                     WHERE id_manager=%s AND id_trainer=%s AND activo=TRUE
+                       AND noofit_email IS NOT NULL AND noofit_password IS NOT NULL
+                     LIMIT 1
+                """, (str(id_manager), str(id_trainer)))
+                row = cur.fetchone()
+            if row:
+                tok, mgr = _noofit_login_raw(row['noofit_email'], row['noofit_password'])
+                if tok:
+                    return tok, mgr
+                logging.getLogger(__name__).warning(
+                    f'noofit trainer-creds login falló (mgr={id_manager} trn={id_trainer}) → fallback manager')
+        except Exception as e:
+            logging.getLogger(__name__).warning(f'noofit trainer-creds error: {e}')
+    # Fallback: creds del manager (cubre usuarios corporativos sin trainer fijo).
+    return _noofit_login_with_manager_creds(id_manager)
+
 bp = Blueprint('auth_usuario', __name__)
 log = logging.getLogger(__name__)
 
@@ -307,7 +358,7 @@ def login():
     # Esto permite al frontend usar el token NoofitPro para llamar a los
     # endpoints clásicos (clientes, clases, etc.) sin que el usuario_web
     # tenga que conocer credenciales NoofitPro.
-    nf_token, nf_manager = _noofit_login_with_manager_creds(u['id_manager'])
+    nf_token, nf_manager = _noofit_login_for_session(u['id_manager'], id_trainer_for_session)
 
     return jsonify({
         'ok': True,
