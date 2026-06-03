@@ -30,6 +30,11 @@ from ..auth_usuario import (
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 NOOFIT_BASE = 'https://pro.wiemspro.com/wiemspro'
 NOOFIT_APP_VERSION = '1.8.39'
+# Timeout corto para el login NoofitPro durante el login web: si NoofitPro
+# está caído/lento NO debe bloquear el acceso del trainer ya verificado (sus
+# datos Round van por otro backend). El token NoofitPro queda null y la web
+# avisa al consultar datos de NoofitPro.
+NF_LOGIN_TIMEOUT = 7
 
 
 def _noofit_login_with_manager_creds(id_manager: str):
@@ -60,7 +65,7 @@ def _noofit_login_with_manager_creds(id_manager: str):
         }
         r = requests.post(f'{NOOFIT_BASE}/account/loginEasy',
                           json=body, headers={'Content-Type': 'application/json'},
-                          verify=False, timeout=20)
+                          verify=False, timeout=NF_LOGIN_TIMEOUT)
         if r.status_code != 200:
             return None, None
         return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', '')
@@ -70,7 +75,13 @@ def _noofit_login_with_manager_creds(id_manager: str):
 
 
 def _noofit_login_raw(email: str, password: str):
-    """loginEasy con email+password en claro. (token, trainer_manager) o (None,None)."""
+    """loginEasy con email+password en claro.
+
+    Devuelve (token, trainer_manager, network_ok):
+      - network_ok=False → NoofitPro inalcanzable (timeout/conexión): no merece
+        la pena reintentar con otras creds, fallaría igual.
+      - network_ok=True  → hubo respuesta HTTP (aunque sea 401 por creds malas).
+    """
     try:
         body = {
             'email': email,
@@ -79,13 +90,16 @@ def _noofit_login_raw(email: str, password: str):
         }
         r = requests.post(f'{NOOFIT_BASE}/account/loginEasy',
                           json=body, headers={'Content-Type': 'application/json'},
-                          verify=False, timeout=20)
+                          verify=False, timeout=NF_LOGIN_TIMEOUT)
         if r.status_code != 200:
-            return None, None
-        return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', '')
+            return None, None, True
+        return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', ''), True
+    except requests.exceptions.RequestException as e:
+        logging.getLogger(__name__).warning(f'noofit_login_raw NF inalcanzable: {e}')
+        return None, None, False
     except Exception as e:
         logging.getLogger(__name__).warning(f'noofit_login_raw error: {e}')
-        return None, None
+        return None, None, True
 
 
 def _noofit_login_for_session(id_manager: str, id_trainer=None):
@@ -109,9 +123,13 @@ def _noofit_login_for_session(id_manager: str, id_trainer=None):
                 """, (str(id_manager), str(id_trainer)))
                 row = cur.fetchone()
             if row:
-                tok, mgr = _noofit_login_raw(row['noofit_email'], row['noofit_password'])
+                tok, mgr, net_ok = _noofit_login_raw(row['noofit_email'], row['noofit_password'])
                 if tok:
                     return tok, mgr
+                if not net_ok:
+                    # NoofitPro caído: el fallback al manager también fallaría.
+                    # No esperamos otro timeout — el login web sigue sin token NF.
+                    return None, None
                 logging.getLogger(__name__).warning(
                     f'noofit trainer-creds login falló (mgr={id_manager} trn={id_trainer}) → fallback manager')
         except Exception as e:
