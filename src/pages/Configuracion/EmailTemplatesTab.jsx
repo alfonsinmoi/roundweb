@@ -39,7 +39,7 @@ export default function EmailTemplatesTab({ identity: identityProp }) {
   }
   useEffect(() => { load() }, [identity.managerId])
 
-  if (isImpersonating) {
+  if (isImpersonating || user?.kind === 'usuario_web') {
     return (
       <Card style={{ padding: 32, textAlign: 'center' }}>
         <AlertCircle size={32} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }} />

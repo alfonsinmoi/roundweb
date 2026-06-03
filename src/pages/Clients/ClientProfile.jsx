@@ -315,6 +315,13 @@ export default function ClientProfile() {
   // requiere el permiso correspondiente y el de cancelarla otro distinto.
   const canProgramarBaja = useCan('clientes.baja_programada.programar')
   const canCancelarBajaProg = useCan('clientes.baja_programada.cancelar_programacion')
+  // Gates UI acciones de la hero card / pestaña notificaciones.
+  const canArchivar     = useCan('clientes.archivar')
+  const canCrearUw      = useCan('configuracion.usuarios_web.crear')
+  const canNotificar    = useCan('clientes.notificar')
+  // TODO(perms): no existe en el catálogo una clave para "Generar recibo
+  // manual" ni para "Desvincular cliente". Quedan sin gate fino hasta que se
+  // añadan al catálogo (reportado).
 
   const [confirmArchivar, setConfirmArchivar] = useState(false)
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
@@ -731,7 +738,7 @@ export default function ClientProfile() {
               Si ya existe, mostramos en su lugar un botón "Gestionar" que
               lleva a Configuración → Usuarios web filtrado por su email
               (deep-link). */}
-          {esTrabajador && !usuarioWebAsociado && (
+          {esTrabajador && !usuarioWebAsociado && canCrearUw && (
             <Btn variant="secondary" size="sm" onClick={() => setCrearUwOpen(true)}
                  disabled={!!actionLoading || !cliente.email}
                  title={cliente.email
@@ -747,16 +754,18 @@ export default function ClientProfile() {
               <UserCog size={13} aria-hidden="true" /> Gestionar usuario web
             </Btn>
           )}
-          <Btn variant="secondary" size="sm" onClick={handleArchivar} disabled={!!actionLoading}>
-            {actionLoading === 'archivar'
-              ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
-              : <Archive size={13} aria-hidden="true" />}
-            {cliente.enabled === false
-              ? ' Reactivar'
-              : bajaPendiente
-                ? ' Cancelar baja prog.'
-                : ' Inactivar'}
-          </Btn>
+          {canArchivar && (
+            <Btn variant="secondary" size="sm" onClick={handleArchivar} disabled={!!actionLoading}>
+              {actionLoading === 'archivar'
+                ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                : <Archive size={13} aria-hidden="true" />}
+              {cliente.enabled === false
+                ? ' Reactivar'
+                : bajaPendiente
+                  ? ' Cancelar baja prog.'
+                  : ' Inactivar'}
+            </Btn>
+          )}
           <Btn variant="danger" size="sm" onClick={() => setConfirmDesvincular(true)} disabled={!!actionLoading}>
             {actionLoading === 'desvincular'
               ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
@@ -1283,9 +1292,11 @@ function TabNotificaciones({ cliente }) {
               <Bell size={16} aria-hidden="true" /> Notificaciones recibidas
             </span>
           </SectionTitle>
-          <Btn variant="primary" size="sm" onClick={() => setModalNuevo(true)}>
-            <Send size={13} /> Notificar
-          </Btn>
+          {canNotificar && (
+            <Btn variant="primary" size="sm" onClick={() => setModalNuevo(true)}>
+              <Send size={13} /> Notificar
+            </Btn>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>

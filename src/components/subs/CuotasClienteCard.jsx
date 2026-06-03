@@ -15,6 +15,7 @@ import {
 import Modal from '../Modal'
 import IBANInput from '../IBANInput'
 import { validarIBAN } from '../../utils/validators'
+import { useCan } from '../../hooks/useCan'
 
 const PERIODICIDADES = [
   { id: 'mensual', label: 'Mensual' },
@@ -45,6 +46,10 @@ export default function CuotasClienteCard({ cliente }) {
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const toast = useToast()
+  // Gates UI suscripciones del cliente.
+  const canAsignar = useCan('cuotas_clientes.asignar')
+  const canCancelar = useCan('cuotas_clientes.cancelar')
+  const canCambiarFormaPago = useCan('cuotas_clientes.cambiar_forma_pago')
   const [subs, setSubs] = useState([])
   const [cuotas, setCuotas] = useState([])
   const [descuentos, setDescuentos] = useState([])
@@ -97,9 +102,11 @@ export default function CuotasClienteCard({ cliente }) {
           <strong style={{ fontSize: 12, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Cuotas
           </strong>
-          <Btn size="sm" variant="primary" onClick={() => setEditing({ mode: 'create' })}>
-            <Plus size={11} /> Asignar nueva cuota
-          </Btn>
+          {canAsignar && (
+            <Btn size="sm" variant="primary" onClick={() => setEditing({ mode: 'create' })}>
+              <Plus size={11} /> Asignar nueva cuota
+            </Btn>
+          )}
         </div>
 
         {loading ? (
@@ -118,6 +125,7 @@ export default function CuotasClienteCard({ cliente }) {
               const precio = precioCuota(cuota, s.periodicidad)
               return (
                 <SubRow key={s.id} sub={s} cuota={cuota} precio={precio}
+                        canCancelar={canCancelar}
                         onEdit={() => setEditing({ mode: 'replace', sid: s.id, sub: s })}
                         onCancel={async () => {
                           const motivo = window.prompt('Motivo de cancelación (opcional):') || ''
@@ -147,9 +155,11 @@ export default function CuotasClienteCard({ cliente }) {
                             display: 'flex', alignItems: 'center', gap: 6 }}>
             <CreditCard size={12} aria-hidden="true" /> Forma de pago
           </strong>
-          <Btn size="sm" variant="primary" onClick={() => setEditingFP(true)}>
-            <Edit2 size={11} /> Cambiar
-          </Btn>
+          {canCambiarFormaPago && (
+            <Btn size="sm" variant="primary" onClick={() => setEditingFP(true)}>
+              <Edit2 size={11} /> Cambiar
+            </Btn>
+          )}
         </div>
         {(() => {
           const activa = formasPago.find(f => f.estado === 'activa')
@@ -271,7 +281,7 @@ export default function CuotasClienteCard({ cliente }) {
 }
 
 
-function SubRow({ sub, cuota, precio, onEdit, onCancel }) {
+function SubRow({ sub, cuota, precio, onEdit, onCancel, canCancelar = true }) {
   return (
     <div style={{
       padding: '12px 14px', borderRadius: 10,
@@ -302,9 +312,11 @@ function SubRow({ sub, cuota, precio, onEdit, onCancel }) {
       <Btn size="sm" variant="secondary" onClick={onEdit}>
         <Edit2 size={11} /> Editar
       </Btn>
-      <Btn size="sm" variant="secondary" onClick={onCancel}>
-        <XIcon size={11} /> Cancelar
-      </Btn>
+      {canCancelar && (
+        <Btn size="sm" variant="secondary" onClick={onCancel}>
+          <XIcon size={11} /> Cancelar
+        </Btn>
+      )}
     </div>
   )
 }

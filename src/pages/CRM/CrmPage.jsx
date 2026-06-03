@@ -10,6 +10,7 @@ import {
   crmLostReasons, crmFunnel, leadManualCreate,
 } from '../../utils/configApi'
 import Modal from '../../components/Modal'
+import { useCan } from '../../hooks/useCan'
 
 const SCORE_COLOR = {
   green: { bg: 'var(--green-bg)',  fg: 'var(--green)',  border: 'var(--green-border)'  },
@@ -22,6 +23,9 @@ export default function CrmPage() {
   const { user, isImpersonating } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const toast = useToast()
+  // Gates UI: mover lead entre etapas (drag&drop) y crear lead manual.
+  const canMoverLead = useCan('crm.leads.mover_etapa')
+  const canCrearLeadManual = useCan('crm.lead_manual.crear_manual')
   const [leads, setLeads] = useState([])
   const [stages, setStages] = useState([])
   const [centros, setCentros] = useState([])
@@ -91,6 +95,7 @@ export default function CrmPage() {
 
   async function moveTo(lead, stageId, lostReason = null) {
     setDraggingId(null); setHoverStageId(null)
+    if (!canMoverLead) return
     if (!lead.lead?.id || stageId === lead.lead?.stage_id?.[0]) return
     if (stageId === '_sin_etapa' || stageId === 'placeholder') return
     const stageIdInt = parseInt(stageId, 10)
@@ -157,10 +162,12 @@ export default function CrmPage() {
           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
             {leadsFiltered.length} lead{leadsFiltered.length !== 1 ? 's' : ''}
           </span>
-          <Btn size="sm" variant="primary" onClick={() => setCrearLeadOpen(true)}
-               title="Registrar un lead presencial (alguien que ha venido al gimnasio sin pasar por la web)">
-            <Plus size={13} /> Nuevo lead
-          </Btn>
+          {canCrearLeadManual && (
+            <Btn size="sm" variant="primary" onClick={() => setCrearLeadOpen(true)}
+                 title="Registrar un lead presencial (alguien que ha venido al gimnasio sin pasar por la web)">
+              <Plus size={13} /> Nuevo lead
+            </Btn>
+          )}
           <Btn size="sm" variant="secondary" onClick={() => setShowFunnel(s => !s)}>
             <BarChart3 size={13} /> {showFunnel ? 'Ocultar' : 'Ver'} embudo
           </Btn>
@@ -233,6 +240,7 @@ export default function CrmPage() {
                                             isImpersonating={isImpersonating}
                                             draggingId={draggingId}
                                             setDraggingId={setDraggingId}
+                                            canMover={canMoverLead}
                                             fullName={fullName} formatDate={formatDate}
                                             trainerName={trainerName} />)}
                   {items.length === 0 && (
@@ -268,7 +276,7 @@ export default function CrmPage() {
 }
 
 
-function LeadCard({ l, isImpersonating, draggingId, setDraggingId, fullName, formatDate, trainerName }) {
+function LeadCard({ l, isImpersonating, draggingId, setDraggingId, canMover = true, fullName, formatDate, trainerName }) {
   const score = l.score ?? 0
   const color = SCORE_COLOR[l.score_color || 'gray']
   const warn = l.warning_sin_contactar
@@ -276,13 +284,13 @@ function LeadCard({ l, isImpersonating, draggingId, setDraggingId, fullName, for
   const qual = l.qualification || {}
 
   return (
-    <div draggable
-         onDragStart={e => { setDraggingId(l.odoo_lead_id); e.dataTransfer.setData('lead-id', String(l.odoo_lead_id)) }}
-         onDragEnd={() => setDraggingId(null)}
+    <div draggable={canMover}
+         onDragStart={canMover ? (e => { setDraggingId(l.odoo_lead_id); e.dataTransfer.setData('lead-id', String(l.odoo_lead_id)) }) : undefined}
+         onDragEnd={canMover ? (() => setDraggingId(null)) : undefined}
          style={{
            background: 'var(--bg-2)',
            border: warn ? '1px solid var(--red-border)' : '1px solid var(--line)',
-           borderRadius: 10, padding: 12, cursor: 'grab',
+           borderRadius: 10, padding: 12, cursor: canMover ? 'grab' : 'default',
            opacity: draggingId === l.odoo_lead_id ? 0.4 : 1,
            position: 'relative',
          }}>

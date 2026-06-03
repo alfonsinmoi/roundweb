@@ -138,6 +138,7 @@ export default function ClientList() {
   // Sistema nuevo: catálogo de categorías + asignación cliente↔categoría
   const { categorias, getCategoria } = useCategoriasMap()
   const canExportarExcel = useCan('clientes.exportar_excel')
+  const canCrearCliente  = useCan('clientes.crear')
 
   const filtered = useMemo(() => clientes.filter(c => {
     // Búsqueda case+accent-insensitive. "Jimenez" matchea "Jiménez",
@@ -293,9 +294,11 @@ export default function ClientList() {
             <QrCentroButton trainerId={String(identity.trainerId)}
                             nombreCentro={identity.trainerName} />
           )}
-          <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
-            <Plus size={15} aria-hidden="true" /> Nuevo cliente
-          </Btn>
+          {canCrearCliente && (
+            <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
+              <Plus size={15} aria-hidden="true" /> Nuevo cliente
+            </Btn>
+          )}
         </div>
 
         {(() => {
