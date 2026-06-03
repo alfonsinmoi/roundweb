@@ -149,7 +149,8 @@ def _filter_by_trainer(items, id_trainer, key='idTrainer'):
 
 # ─── Cache de clientes en BD local ─────────────────────────────────────────
 
-def _upsert_clientes(id_manager: str, clientes: list, *, full_sync: bool):
+def _upsert_clientes(id_manager: str, clientes: list, *, full_sync: bool,
+                     solo_id_trainer: str = None):
     """UPSERT masivo en cliente_cache. Devuelve nº de clientes escritos.
 
     `full_sync=True`  → además, BORRA de cliente_cache los ids del manager
@@ -192,10 +193,19 @@ def _upsert_clientes(id_manager: str, clientes: list, *, full_sync: bool):
                 json.dumps(c, ensure_ascii=False, default=str),
             ))
         if full_sync and ids_actuales:
-            cur.execute("""
-                DELETE FROM cliente_cache
-                 WHERE id_manager=%s AND id <> ALL(%s)
-            """, (str(id_manager), list(ids_actuales)))
+            if solo_id_trainer:
+                # Sync de UN solo trainer → solo purgamos clientes obsoletos de
+                # ESE trainer; los de otros trainers del manager se respetan
+                # (antes el DELETE era manager-wide y borraba los demás centros).
+                cur.execute("""
+                    DELETE FROM cliente_cache
+                     WHERE id_manager=%s AND id_trainer=%s AND id <> ALL(%s)
+                """, (str(id_manager), str(solo_id_trainer), list(ids_actuales)))
+            else:
+                cur.execute("""
+                    DELETE FROM cliente_cache
+                     WHERE id_manager=%s AND id <> ALL(%s)
+                """, (str(id_manager), list(ids_actuales)))
         cur.execute("""
             INSERT INTO cliente_cache_sync (id_manager, synced_at, n_clientes, ultima_falla)
             VALUES (%s, NOW(), %s, NULL)
@@ -317,7 +327,11 @@ def _sync_clientes_manager(id_manager: str, id_trainer: str = None):
         return {'ok': False, 'n_clientes': 0, 'n_cuentas_ok': 0,
                 'n_cuentas': len(creds), 'error': '; '.join(fallos)}
 
-    n = _upsert_clientes(id_manager, list(todos_dict.values()), full_sync=full)
+    # Si el sync es de un solo trainer (id_trainer dado), el DELETE de
+    # full_sync debe limitarse a ese trainer — no borrar los clientes de los
+    # otros centros del manager.
+    n = _upsert_clientes(id_manager, list(todos_dict.values()), full_sync=full,
+                         solo_id_trainer=(str(id_trainer) if id_trainer else None))
     if fallos:
         log.warning(f'_sync_clientes_manager {id_manager}: parciales, fallos={fallos}')
     return {'ok': True, 'n_clientes': n,
