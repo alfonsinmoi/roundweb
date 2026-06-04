@@ -52,10 +52,21 @@ def _row(r):
 def list_():
     with get_conn() as conn, conn.cursor() as cur:
         if g.id_trainer:
-            cur.execute(f"""SELECT {FIELDS} FROM descuento
-                WHERE id_manager=%s AND (scope='plantilla_manager'
-                  OR (scope='trainer' AND id_trainer=%s))
-                ORDER BY scope, codigo""", (g.id_manager, g.id_trainer))
+            # Para un trainer: sus descuentos adoptados (scope='trainer') + las
+            # plantillas del manager que AÚN NO haya adoptado. Si ya adoptó una
+            # plantilla (tiene copia trainer con el mismo codigo), NO mostramos
+            # también la plantilla → evita que el descuento salga dos veces al
+            # asignarlo a un cliente.
+            cur.execute(f"""SELECT {FIELDS} FROM descuento d
+                WHERE id_manager=%s AND (
+                    (scope='trainer' AND id_trainer=%s)
+                    OR (scope='plantilla_manager'
+                        AND NOT EXISTS (SELECT 1 FROM descuento t
+                                         WHERE t.id_manager=d.id_manager
+                                           AND t.scope='trainer' AND t.id_trainer=%s
+                                           AND t.codigo=d.codigo)))
+                ORDER BY scope, codigo""",
+                (g.id_manager, g.id_trainer, g.id_trainer))
         else:
             cur.execute(f"""SELECT {FIELDS} FROM descuento
                 WHERE id_manager=%s ORDER BY scope, id_trainer NULLS FIRST, codigo""",

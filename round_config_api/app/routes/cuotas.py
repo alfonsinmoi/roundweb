@@ -60,13 +60,21 @@ def list_cuotas():
     with get_conn() as conn:
         with conn.cursor() as cur:
             if g.id_trainer:
+                # Cuotas del trainer (adoptadas) + plantillas del manager que
+                # AÚN NO haya adoptado. Si ya adoptó una plantilla (copia
+                # trainer con mismo codigo), no mostramos también la plantilla
+                # → evita que la cuota salga dos veces.
                 cur.execute(f"""
-                    SELECT {SELECT_FIELDS} FROM cuota
+                    SELECT {SELECT_FIELDS} FROM cuota c
                     WHERE id_manager = %s
-                      AND (scope = 'plantilla_manager'
-                           OR (scope = 'trainer' AND id_trainer = %s))
+                      AND ((scope = 'trainer' AND id_trainer = %s)
+                           OR (scope = 'plantilla_manager'
+                               AND NOT EXISTS (SELECT 1 FROM cuota t
+                                                WHERE t.id_manager=c.id_manager
+                                                  AND t.scope='trainer' AND t.id_trainer=%s
+                                                  AND t.codigo=c.codigo)))
                     ORDER BY scope, codigo
-                """, (g.id_manager, g.id_trainer))
+                """, (g.id_manager, g.id_trainer, g.id_trainer))
             else:
                 cur.execute(f"""
                     SELECT {SELECT_FIELDS} FROM cuota
