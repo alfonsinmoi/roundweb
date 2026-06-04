@@ -13,10 +13,10 @@ const STORAGE_KEY = 'round_session'
 // — si falla no rompemos el login (los siguientes endpoints fallarán con
 // 403 odoo_not_enabled o mostrarán el banner "no registrado" cuando toque).
 const ROUND_API_TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
-function _roundBootstrap(payload) {
-  if (!ROUND_API_TOKEN) return  // no hay token compartido configurado
+async function _roundBootstrap(payload) {
+  if (!ROUND_API_TOKEN) return null  // no hay token compartido configurado
   try {
-    fetch('/api/auth/round-bootstrap', {
+    const r = await fetch('/api/auth/round-bootstrap', {
       method: 'POST',
       headers: {
         'X-Round-Token': ROUND_API_TOKEN,
@@ -24,23 +24,18 @@ function _roundBootstrap(payload) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
-    }).then(r => r.json())
-      .then(d => {
-        // Tras un bootstrap exitoso (haya o no creado fila nueva),
-        // invalidamos la cache de odoo-status y notificamos a los hooks
-        // suscritos para que recarguen y oculten el banner "no registrado"
-        // sin necesitar recargar la página.
-        try {
-          const key = `round.odoo_status:${payload.id_manager}`
-          sessionStorage.removeItem(key)
-        } catch { /* noop */ }
-        try {
-          window.dispatchEvent(new CustomEvent('round.odoo-status-changed',
-                                                { detail: { id_manager: payload.id_manager } }))
-        } catch { /* noop */ }
-      })
-      .catch(() => { /* silencioso */ })
-  } catch { /* noop */ }
+    })
+    const d = await r.json().catch(() => null)
+    // El backend resuelve el TENANT (id_manager) y el ROL (id_trainer) por el
+    // flag X-TRAINER_MANAGER. Usamos el tenant resuelto para invalidar caches.
+    const mid = (d && d.id_manager) ? d.id_manager : payload.id_manager
+    try { sessionStorage.removeItem(`round.odoo_status:${mid}`) } catch { /* noop */ }
+    try {
+      window.dispatchEvent(new CustomEvent('round.odoo-status-changed',
+                                            { detail: { id_manager: mid } }))
+    } catch { /* noop */ }
+    return d
+  } catch { return null }
 }
 
 export function AuthProvider({ children }) {
@@ -206,23 +201,36 @@ export function AuthProvider({ children }) {
     try {
       const { token, manager } = await loginEasy(email, password)
       const entrenador = await getEntrenador(token, manager)
-      const userData = buildUserData(token, manager, entrenador, email)
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(userData))
-      setUser(userData)
-      // Auto-registro en Round (multimanager). Fire-and-forget — si falla
-      // el banner "manager no registrado" lo avisará en próximas pantallas.
-      // Usamos getRoundIdentity (que filtra booleanos disfrazados de NF y
-      // cae a entrenador.id) para tener el id_manager REAL — sin esto,
-      // los managers nativos llegaban a BD como id_manager='true'/'false'.
-      const identity = getRoundIdentity(userData)
-      _roundBootstrap({
-        id_user: String(entrenador?.id ?? identity.managerId),
-        id_manager: identity.managerId,
+      // X-TRAINER_MANAGER: "true" = MANAGER (ve todos los centros del grupo),
+      // "false" = TRAINER (scopeado a su propio centro). Es un BOOLEANO, no un id.
+      const esManager = ['true', '1', 'yes'].includes(String(manager).trim().toLowerCase())
+      const idUser = String(entrenador?.id ?? '')
+      // El backend resuelve el TENANT (id_manager) desde trainer_noofit_creds y
+      // el ROL desde el flag. Esperamos su respuesta para fijar la identidad real
+      // (sin esto, un trainer entraba como "su propio manager" y veía datos de
+      // otros centros del grupo — caso roundmalagacentro/Añoreta).
+      const boot = await _roundBootstrap({
+        id_user: idUser,
+        id_manager: idUser,            // pista; el backend lo recalcula
+        es_manager: esManager,
         email, password,
         nombre: entrenador?.name
                   ? `${entrenador.name} ${entrenador.surname || ''}`.trim()
                   : null,
       })
+      // Cuenta NoofitPro que NO pertenece a ningún manager Round (p.ej. cuenta
+      // de otro gimnasio ajeno) → no se le crea tenant; se rechaza el acceso.
+      if (boot && boot.ok === false && boot.error === 'trainer_sin_manager') {
+        return { ok: false, error: boot.mensaje
+                 || 'Tu cuenta NoofitPro no pertenece a ningún manager de Round.' }
+      }
+      const userData = buildUserData(token, manager, entrenador, email, {
+        roundManagerId: (boot && boot.id_manager) ? String(boot.id_manager) : null,
+        roundTrainerId: (boot && boot.id_trainer) ? String(boot.id_trainer) : null,
+        esManager,
+      })
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(userData))
+      setUser(userData)
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err.message ?? 'Credenciales incorrectas' }
@@ -237,24 +245,32 @@ export function AuthProvider({ children }) {
       invalidateCache(); abortRequests(); clearPersistedCache()
       const { token, manager } = await loginEasy(trainerEmail, password)
       const entrenador = await getEntrenador(token, manager)
+      const esManager = ['true', '1', 'yes'].includes(String(manager).trim().toLowerCase())
+      const idUser = String(entrenador?.id ?? '')
       const originalSession = user.originalSession ?? {
         token: user.token, manager: user.manager, email: user.email,
         nombre: user.nombre, apellidos: user.apellidos, imgUrl: user.imgUrl,
         id: user.id, entrenador: user.entrenador,
+        roundManagerId: user.roundManagerId, roundTrainerId: user.roundTrainerId,
+        esManager: user.esManager,
       }
-      const newUser = { ...buildUserData(token, manager, entrenador, trainerEmail), originalSession }
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(newUser))
-      setUser(newUser)
-      // Auto-registrar al trainer impersonado en trainer_noofit_creds
-      const identity = getRoundIdentity(newUser)
-      _roundBootstrap({
-        id_user: String(entrenador?.id ?? identity.managerId),
-        id_manager: identity.managerId,
+      // Registrar/resolver al trainer impersonado (el backend devuelve tenant + rol).
+      const boot = await _roundBootstrap({
+        id_user: idUser,
+        id_manager: idUser,
+        es_manager: esManager,
         email: trainerEmail, password,
         nombre: entrenador?.name
                   ? `${entrenador.name} ${entrenador.surname || ''}`.trim()
                   : null,
       })
+      const newUser = { ...buildUserData(token, manager, entrenador, trainerEmail, {
+        roundManagerId: (boot && boot.id_manager) ? String(boot.id_manager) : null,
+        roundTrainerId: (boot && boot.id_trainer) ? String(boot.id_trainer) : null,
+        esManager,
+      }), originalSession }
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(newUser))
+      setUser(newUser)
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err.message ?? 'Credenciales incorrectas' }
@@ -265,7 +281,11 @@ export function AuthProvider({ children }) {
     if (!user?.originalSession) return
     const orig = user.originalSession
     invalidateCache(); clearPersistedCache()
-    const restoredUser = { ...buildUserData(orig.token, orig.manager, orig.entrenador, orig.email), originalSession: null }
+    const restoredUser = { ...buildUserData(orig.token, orig.manager, orig.entrenador, orig.email, {
+      roundManagerId: orig.roundManagerId || null,
+      roundTrainerId: orig.roundTrainerId || null,
+      esManager: orig.esManager,
+    }), originalSession: null }
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(restoredUser))
     setUser(restoredUser)
   }, [user])

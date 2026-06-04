@@ -40,11 +40,35 @@ de su manager.**
        el grupo de centros "hermanos" del cliente NoofitPro; si alguno ya es
        manager Round (`manager_config`), el que entra es trainer de ese grupo
        → se reconduce, nunca se crea fantasma.
-  ⚠️ OJO: `X-TRAINER_MANAGER` **NO** distingue manager de trainer (NoofitPro
-  devuelve `false` para todos los centros Round, que cuelgan del distribuidor
-  7673). `entrenador.managerId` también es 7673 para todos. La única señal de
-  agrupación es `getTrainersByManager`; la jerarquía Round (qué centro es el
-  "manager") es una decisión **local** (`manager_config`), no de NoofitPro.
+  ✅ **CORRECCIÓN (jun 2026, verificado contra NoofitPro): `X-TRAINER_MANAGER`
+  SÍ distingue manager de trainer.** En `loginEasy`, la cabecera devuelve el
+  string **`"true"` = MANAGER** y **`"false"` = TRAINER**. Verificado cuenta a
+  cuenta del grupo ROUND:
+    - `roundgestion@noofit.com` (17677) → **`true`** = MANAGER del grupo.
+    - `roundmalagacentro` (17675), `roundanoreta` (17674), 17676 → **`false`** = trainers.
+  Olvidar la palabra "distribuidor": el modelo es **solo manager(`true`) /
+  trainer(`false`)**. El flag es un BOOLEANO, NO un id (no usarlo como managerId).
+  El grupo lo da `getTrainersByManager` (hermanos); dentro del grupo, el manager
+  es el miembro con flag `true`. (La regla vieja "no distingue / false para todos"
+  era ERRÓNEA: solo se habían probado las cuentas trainer, nunca el manager.)
+  Interpretación robusta: `esManager = str(flag).lower() in ('true','1')`.
+- **Manager del grupo ROUND = `17677` (roundgestion). Trainers = `17674`
+  (Añoreta), `17675` (Málaga), `17676`.** La identidad de sesión se resuelve por
+  el flag: manager(`true`) → ve todos los centros del grupo; trainer(`false`) →
+  scopeado a su propio centro.
+- **Solo una cuenta MANAGER (`true`) puede dar de alta un tenant nuevo**
+  (`manager_config`). Un `false` desconocido se reconduce a su manager (o se
+  rechaza), NUNCA crea tenant. Esto cierra el agujero por el que CUALQUIER cuenta
+  NoofitPro del mundo creaba un tenant Round solo con loguearse (incidente
+  fantasma 16702: `martincerverahugo@gmail.com`, trainer de OTRO manager ajeno,
+  creó un tenant Round con 49 clientes ajenos al loguearse con sus creds NF).
+- **REGLA al crear un `usuario_web`: el email NO puede existir ya en NoofitPro.**
+  Antes de crear el usuario_web hay que CONSULTAR NoofitPro; si el email está
+  ocupado (es una cuenta NoofitPro), se RECHAZA y se pide otro email. Motivo: si
+  un usuario_web comparte email con una cuenta NoofitPro real (aunque sea de otro
+  manager ajeno), esa persona puede entrar a Round con sus creds NF y crear un
+  tenant fantasma (caso Hugo 16702). El usuario_web es cuenta NATIVA de Round; su
+  email debe ser exclusivo de Round.
 - La web no edita nombre, email, jerarquía ni credenciales NoofitPro del
   trainer/manager. Si algo está mal, se corrige **en NoofitPro**, no en la BD
   local ni en la UI.

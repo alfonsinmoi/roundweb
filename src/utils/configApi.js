@@ -93,6 +93,16 @@ export function getRoundIdentity(user) {
       trainerId: user.id_trainer ? String(user.id_trainer) : null,
     }
   }
+  // NoofitPro: si el backend (round-bootstrap) resolvió la identidad —tenant +
+  // rol por X-TRAINER_MANAGER (manager `true` / trainer `false`)— es la fuente
+  // de verdad. roundManagerId = tenant; roundTrainerId = null para el manager
+  // (ve todos los centros del grupo) o su propio id para el trainer (scopeado).
+  if (user.roundManagerId) {
+    return {
+      managerId: String(user.roundManagerId),
+      trainerId: user.roundTrainerId ? String(user.roundTrainerId) : null,
+    }
+  }
   if (user.originalSession) {
     const o = user.originalSession
     return {
@@ -102,7 +112,7 @@ export function getRoundIdentity(user) {
   }
   return {
     managerId: String(pickId(user.manager, user.id)),
-    trainerId: null,   // Manager directo NoofitPro: opera con plantillas
+    trainerId: null,   // fallback (sin bootstrap): manager directo NoofitPro
   }
 }
 

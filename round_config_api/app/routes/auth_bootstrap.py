@@ -42,12 +42,16 @@ log = logging.getLogger(__name__)
 def round_bootstrap():
     d = request.get_json(silent=True) or {}
     id_user    = str(d.get('id_user') or '').strip()
-    id_manager = str(d.get('id_manager') or '').strip()
+    id_manager_hint = str(d.get('id_manager') or '').strip()  # pista frontend (no autoritativa)
     email      = (d.get('email') or '').strip().lower() or None
     password   = (d.get('password') or '').strip() or None
     nombre     = (d.get('nombre') or '').strip() or None
+    # X-TRAINER_MANAGER de loginEasy: "true"=MANAGER, "false"=TRAINER (jun 2026,
+    # verificado contra NoofitPro). El flag decide el ROL; el TENANT se resuelve
+    # de trainer_noofit_creds, NO del frontend.
+    es_manager = str(d.get('es_manager', '')).strip().lower() in ('true', '1', 'yes')
 
-    if not id_user or not id_manager:
+    if not id_user:
         return jsonify({'ok': False, 'error': 'missing_ids'}), 400
     # Email obligatorio (lo tenemos siempre). Password opcional: si falta,
     # creamos placeholder de manager_config sin creds NF. Los crons que
@@ -71,184 +75,155 @@ def round_bootstrap():
         log.warning(f'round-bootstrap: NoofitPro NO valida la contraseña de '
                     f'{email} (id_user={id_user}); no se sobrescriben las creds.')
 
-    # ── Guard anti-manager-fantasma ──────────────────────────────────────────
-    # Si este id ya es un TRAINER de otro manager, NO creamos un manager_config
-    # para él (esto es lo que silenciosamente creó el manager 17674 de Añoreta
-    # cuando un trainer entró con login directo). Lo registramos/actualizamos
-    # como trainer de su manager padre y devolvemos ese manager.
-    parent = parent_manager_si_es_trainer(id_user)
-    if parent and parent != id_user:
-        if password_valida:
-            with get_conn() as conn, conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
-                                                        noofit_email, noofit_password, activo)
-                    VALUES (%s, %s, %s, %s, TRUE)
-                    ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
-                        noofit_email    = EXCLUDED.noofit_email,
-                        noofit_password = COALESCE(EXCLUDED.noofit_password, trainer_noofit_creds.noofit_password),
-                        activo          = TRUE,
-                        updated_at      = NOW()
-                """, (parent, id_user, email, pw_store))
-        if password:
-            log_action({'kind': 'trainer_nf', 'id': id_user, 'email': email,
-                        'label': nombre or email, 'id_manager': parent, 'id_trainer': id_user},
-                       entidad='sesion', accion='login', entidad_id=id_user,
-                       resumen=(f"Login web (NoofitPro) · {email} · "
-                                f"trainer {id_user} del manager {parent}"))
-        return jsonify({
-            'ok': True, 'id_manager': parent, 'id_user': id_user,
-            'is_manager_login': False, 'remapped_to_parent': parent,
-            'mensaje': f'Trainer del manager {parent}; no se crea manager nuevo.',
-        })
+    # ── Resolución de identidad (jun 2026): manager(true)/trainer(false) ─────
+    # El TENANT (id_manager) NO se toma del frontend: se resuelve de
+    # trainer_noofit_creds (prefiriendo un manager padre != id_user). El ROL lo
+    # decide X-TRAINER_MANAGER (es_manager): manager → id_trainer=None (ve todo
+    # el grupo); trainer → id_trainer=id_user (scopeado a su propio centro).
+    tenant = _tenant_desde_creds(id_user)
+    remapped = bool(tenant and tenant != id_user)
+    if tenant is None:
+        if es_manager:
+            tenant = id_user                  # manager nuevo → su propio tenant
+        else:
+            # Trainer DESCONOCIDO y NO es manager: buscar su grupo Round (hermanos
+            # NoofitPro). Si no pertenece a ningún manager Round → NO crear tenant
+            # fantasma (refuerzo anti-fantasma; incidente Hugo 16702: cuenta de
+            # otro manager ajeno que se logueó y creó un tenant Round con 49
+            # clientes ajenos).
+            tenant = _tenant_via_hermanos(id_user, email, password) if password else None
+            if tenant is None:
+                log.warning(f'round-bootstrap RECHAZO fantasma: id_user={id_user} '
+                            f'({email}) es trainer (flag false) sin manager Round.')
+                return jsonify({'ok': False, 'error': 'trainer_sin_manager',
+                                'mensaje': ('Esta cuenta NoofitPro no pertenece a ningún '
+                                            'manager de Round. Pide acceso como usuario web.')}), 409
+            remapped = True
 
-    # ── Blindaje vía jerarquía NoofitPro (trainer DESCONOCIDO localmente) ────
-    # Si id_user NO es ya un manager Round y comparte grupo NoofitPro
-    # (getTrainersByManager) con un manager Round YA existente, entonces es un
-    # trainer de ese grupo → reconducir, NUNCA crear un manager fantasma.
-    # NoofitPro no expone rol manager/trainer (managerId=distribuidor para
-    # todos), pero el conjunto de "hermanos" sí identifica el grupo.
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM manager_config WHERE id_manager = %s", (id_user,))
-        id_user_es_manager = cur.fetchone() is not None
-    if not id_user_es_manager and password:
-        from ..noofit_client import hermanos_trainer_ids
-        hermanos = hermanos_trainer_ids(email, password)
-        hermanos.discard(id_user)
-        if hermanos:
-            with get_conn() as conn, conn.cursor() as cur:
-                cur.execute("""SELECT id_manager FROM manager_config
-                                WHERE id_manager = ANY(%s) ORDER BY id_manager LIMIT 1""",
-                            (list(hermanos),))
-                row = cur.fetchone()
-            if row and str(row['id_manager']) != id_user:
-                mgr_padre = str(row['id_manager'])
-                with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
-                                                            noofit_email, noofit_password, activo)
-                        VALUES (%s, %s, %s, %s, TRUE)
-                        ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
-                            noofit_email    = EXCLUDED.noofit_email,
-                            noofit_password = COALESCE(EXCLUDED.noofit_password, trainer_noofit_creds.noofit_password),
-                            activo          = TRUE, updated_at = NOW()
-                    """, (mgr_padre, id_user, email, pw_store))
-                log_action({'kind': 'trainer_nf', 'id': id_user, 'email': email,
-                            'label': nombre or email, 'id_manager': mgr_padre, 'id_trainer': id_user},
-                           entidad='sesion', accion='login', entidad_id=id_user,
-                           resumen=(f"Login web (NoofitPro) · {email} · trainer {id_user} "
-                                    f"del manager {mgr_padre} (jerarquía NoofitPro)"))
-                return jsonify({
-                    'ok': True, 'id_manager': mgr_padre, 'id_user': id_user,
-                    'is_manager_login': False, 'remapped_to_parent': mgr_padre,
-                    'mensaje': (f'Trainer del grupo del manager {mgr_padre} (jerarquía '
-                                f'NoofitPro); no se crea manager nuevo.'),
-                })
-
-    is_manager_login = (id_user == id_manager)
+    id_trainer_res = None if es_manager else id_user
+    es_dueno_tenant = es_manager and (tenant == id_user)
     creado_manager = False
     creado_trainer = False
-    wc_resolved = False
+    wc_info = {}
 
-    # 1) manager_config — INSERT si no existe; UPDATE creds si el que se
-    # loguea ES el manager principal Y tenemos password (login fresh).
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO manager_config (id_manager, nombre, noofit_email,
-                                         noofit_password, activo)
-            VALUES (%s, %s, %s, %s, TRUE)
-            ON CONFLICT (id_manager) DO NOTHING
-            RETURNING id_manager
-        """, (id_manager,
-              nombre or f'Manager {id_manager}',
-              email if is_manager_login else None,
-              pw_store if is_manager_login else None))
-        creado_manager = cur.fetchone() is not None
+    # 1) manager_config — SOLO un manager (flag true) que sea dueño del tenant
+    # crea/refresca el tenant. Un trainer NUNCA crea manager_config.
+    if es_dueno_tenant:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO manager_config (id_manager, nombre, noofit_email,
+                                             noofit_password, activo)
+                VALUES (%s, %s, %s, %s, TRUE)
+                ON CONFLICT (id_manager) DO NOTHING
+                RETURNING id_manager
+            """, (tenant, nombre or f'Manager {tenant}', email, pw_store))
+            creado_manager = cur.fetchone() is not None
+            if not creado_manager:
+                if password_valida:
+                    cur.execute("""UPDATE manager_config
+                                      SET noofit_email=%s, noofit_password=%s,
+                                          nombre=COALESCE(NULLIF(nombre,''),%s), activo=TRUE
+                                    WHERE id_manager=%s""",
+                                (email, pw_store, nombre or f'Manager {tenant}', tenant))
+                else:
+                    cur.execute("""UPDATE manager_config
+                                      SET nombre=COALESCE(NULLIF(nombre,''),%s), activo=TRUE
+                                    WHERE id_manager=%s""",
+                                (nombre or f'Manager {tenant}', tenant))
 
-        # Si ya existía y es el manager principal, actualizar nombre y
-        # creds (creds solo si nos las pasaron — no pisar con NULL si
-        # vino el bootstrap soft sin password).
-        if not creado_manager and is_manager_login:
-            if password_valida:
-                cur.execute("""
-                    UPDATE manager_config
-                       SET noofit_email = %s,
-                           noofit_password = %s,
-                           nombre = COALESCE(NULLIF(nombre,''), %s),
-                           activo = TRUE
-                     WHERE id_manager = %s
-                """, (email, pw_store,
-                      nombre or f'Manager {id_manager}', id_manager))
-            else:
-                cur.execute("""
-                    UPDATE manager_config
-                       SET nombre = COALESCE(NULLIF(nombre,''), %s),
-                           activo = TRUE
-                     WHERE id_manager = %s
-                """, (nombre or f'Manager {id_manager}', id_manager))
-
-    # 2) trainer_noofit_creds — solo escribimos creds si NoofitPro valida la
-    # contraseña (password_valida). En modo soft (sin password) o si NoofitPro
-    # la rechaza, no tocamos la tabla: nunca guardamos ni pisamos con creds que
-    # NoofitPro no acepta (regla: NoofitPro es la autoridad).
+    # 2) trainer_noofit_creds — registrar al que entra como (tenant, id_user) si
+    # NoofitPro validó las creds (regla: solo cacheamos lo que NF acepta).
     if password_valida:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO trainer_noofit_creds (id_manager, id_trainer,
-                                                    noofit_email, noofit_password,
-                                                    activo)
+                                                    noofit_email, noofit_password, activo)
                 VALUES (%s, %s, %s, %s, TRUE)
                 ON CONFLICT (id_manager, id_trainer) DO UPDATE SET
                     noofit_email    = EXCLUDED.noofit_email,
                     noofit_password = COALESCE(EXCLUDED.noofit_password, trainer_noofit_creds.noofit_password),
-                    activo          = TRUE,
-                    updated_at      = NOW()
+                    activo          = TRUE, updated_at = NOW()
                 RETURNING (xmax = 0) AS inserted
-            """, (id_manager, id_user, email, pw_store))
+            """, (tenant, id_user, email, pw_store))
             r = cur.fetchone()
             creado_trainer = bool(r and r.get('inserted'))
 
-    # 3) Match wcommerce automático — SOLO si:
-    #    a) es el manager principal el que se loguea (no un trainer)
-    #    b) wcommerce_cliente_id sigue NULL (no se ha resuelto antes)
-    wc_info = {}
-    if is_manager_login:
+    # 3) Match wcommerce — solo el dueño del tenant, si wcommerce_cliente_id NULL
+    if es_dueno_tenant:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""SELECT wcommerce_cliente_id FROM manager_config
-                            WHERE id_manager = %s""", (id_manager,))
+                            WHERE id_manager = %s""", (tenant,))
             row = cur.fetchone()
         if row and not row.get('wcommerce_cliente_id'):
-            wc_info = _try_match_wcommerce(id_manager, email)
-            wc_resolved = bool(wc_info.get('matched'))
+            wc_info = _try_match_wcommerce(tenant, email)
 
-    # Registro del LOGIN en accion_log — solo en login real / impersonación
-    # (viene `password`). En modo soft (restauración de sesión en cada
-    # recarga) NO se registra para no llenar el log de ruido.
+    # Registro del LOGIN en accion_log — solo login real (viene password).
     if password:
         actor = {
-            'kind': 'manager' if is_manager_login else 'trainer_nf',
-            'id': id_user,
-            'email': email,
-            'label': nombre or email,
-            'id_manager': id_manager,
-            'id_trainer': None if is_manager_login else id_user,
+            'kind': 'manager' if es_manager else 'trainer_nf',
+            'id': id_user, 'email': email, 'label': nombre or email,
+            'id_manager': tenant, 'id_trainer': id_trainer_res,
         }
-        log_action(actor, entidad='sesion', accion='login',
-                   entidad_id=id_user,
+        log_action(actor, entidad='sesion', accion='login', entidad_id=id_user,
                    resumen=(f"Login web (NoofitPro) · {email} · "
-                            f"{'manager' if is_manager_login else 'trainer ' + id_user}"))
+                            f"{'manager' if es_manager else 'trainer ' + id_user} · "
+                            f"tenant {tenant}" + (' (reconducido)' if remapped else '')))
 
     return jsonify({
         'ok': True,
-        'id_manager': id_manager,
+        'id_manager': tenant,
+        'id_trainer': id_trainer_res,
+        'es_manager': es_manager,
+        'is_manager_login': es_manager,
         'id_user': id_user,
-        'is_manager_login': is_manager_login,
+        'remapped_to_parent': tenant if remapped else None,
         'creado_manager': creado_manager,
         'creado_trainer': creado_trainer,
         'wc_match': wc_info,
-        'mensaje': ('Manager registrado en Round.'
-                    if creado_manager else 'Manager ya estaba registrado.'),
+        'mensaje': ('Manager registrado en Round.' if creado_manager
+                    else (f'Trainer reconducido al manager {tenant}.' if remapped
+                          else 'Identidad resuelta.')),
     })
+
+
+def _tenant_desde_creds(id_user):
+    """Tenant (id_manager Round) al que pertenece `id_user` según
+    trainer_noofit_creds. Prefiere un manager padre (id_manager != id_user)
+    sobre la fila "self" (id_manager == id_user). Devuelve None si no consta."""
+    if not id_user:
+        return None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_manager FROM trainer_noofit_creds
+                 WHERE id_trainer = %s AND activo = TRUE
+                 ORDER BY (id_manager = %s) ASC, id_manager ASC
+                 LIMIT 1
+            """, (str(id_user), str(id_user)))
+            row = cur.fetchone()
+        return str(row['id_manager']) if row and row.get('id_manager') else None
+    except Exception:
+        return None
+
+
+def _tenant_via_hermanos(id_user, email, password):
+    """Para un trainer DESCONOCIDO localmente: si comparte grupo NoofitPro
+    (getTrainersByManager) con un manager Round ya existente, devuelve ese
+    manager. None si no pertenece a ningún grupo Round."""
+    try:
+        from ..noofit_client import hermanos_trainer_ids
+        hermanos = hermanos_trainer_ids(email, password)
+        hermanos.discard(str(id_user))
+        if not hermanos:
+            return None
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT id_manager FROM manager_config
+                            WHERE id_manager = ANY(%s) ORDER BY id_manager LIMIT 1""",
+                        (list(hermanos),))
+            row = cur.fetchone()
+        return str(row['id_manager']) if row and row.get('id_manager') else None
+    except Exception:
+        return None
 
 
 def _try_match_wcommerce(id_manager, email):
