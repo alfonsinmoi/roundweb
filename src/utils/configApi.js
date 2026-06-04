@@ -412,6 +412,24 @@ export const bajaProgramadaList = (identity, incluirEjecutadas = false) =>
     identity).then(d => d.bajas || [])
 
 
+// ── Inactividad temporal (pausa con fecha inicio/fin) ────────────────────
+// La pestaña vive en /api/clientes (no /api/config). Endpoints:
+//   GET    /api/clientes/<id>/inactivo-temporal  → null o { id, fecha_inicio, fecha_fin, motivo, estado, ... }
+//   POST   /api/clientes/<id>/inactivo-temporal  → crea (si fecha_inicio<=hoy ejecuta)
+//   DELETE /api/clientes/<id>/inactivo-temporal  → cancela/termina la pausa activa
+//   GET    /api/clientes/inactivo-temporal       → lista pausas activas del manager
+export const temporalInactivoGet = (identity, clienteId) =>
+  _requestRoot('GET', `/api/clientes/${clienteId}/inactivo-temporal`, identity)
+    .then(d => d.pausa)
+export const temporalInactivoCreate = (identity, clienteId, datos) =>
+  _requestRoot('POST', `/api/clientes/${clienteId}/inactivo-temporal`, identity, datos)
+export const temporalInactivoCancel = (identity, clienteId) =>
+  _requestRoot('DELETE', `/api/clientes/${clienteId}/inactivo-temporal`, identity)
+export const temporalInactivoList = (identity) =>
+  _requestRoot('GET', `/api/clientes/inactivo-temporal`, identity)
+    .then(d => d.items || [])
+
+
 // ── Canales de captación (mapping UTM → canal con nombre) ────────────────
 export const canalesList = (identity, incluirInactivos = false) =>
   _request('GET',

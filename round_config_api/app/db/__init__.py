@@ -819,6 +819,44 @@ CREATE INDEX IF NOT EXISTS idx_baja_prog_fecha
 CREATE INDEX IF NOT EXISTS idx_baja_prog_manager
   ON cliente_baja_programada (id_manager, fecha_baja);
 
+-- Inactividad TEMPORAL del cliente (pausa con fecha de inicio y fin + motivo).
+-- A diferencia de la baja programada (desactivación permanente en una fecha),
+-- aquí el cliente se archiva en NoofitPro al llegar `fecha_inicio` y se
+-- reactiva automáticamente al pasar `fecha_fin`. Durante la ventana se comporta
+-- como inactivo (no reserva/asiste — lo bloquea NoofitPro con enabled=false — y
+-- no se le emite cuota).
+CREATE TABLE IF NOT EXISTS cliente_inactivo_temporal (
+  id                  SERIAL PRIMARY KEY,
+  id_manager          VARCHAR(64) NOT NULL,
+  cliente_idnoofit    VARCHAR(64) NOT NULL,
+  cliente_nombre      VARCHAR(240),
+  cliente_email       VARCHAR(160),
+  fecha_inicio        DATE NOT NULL,
+  fecha_fin           DATE NOT NULL,
+  -- baja_medica | lesion | vacaciones | cambio_trabajo_domicilio | otros
+  motivo              VARCHAR(40) NOT NULL,
+  motivo_detalle      TEXT,
+  -- programada | en_curso | finalizada | cancelada
+  estado              VARCHAR(20) NOT NULL DEFAULT 'programada',
+  -- estado NoofitPro (enabled) ANTES de pausar, para restaurarlo al terminar
+  -- y NO reactivar por error a quien ya estaba inactivo.
+  enabled_anterior    BOOLEAN,
+  aplicado_inicio_at  TIMESTAMPTZ,   -- cuándo se archivó en NF
+  aplicado_fin_at     TIMESTAMPTZ,   -- cuándo se reactivó en NF
+  error               TEXT,
+  creada_por_email    VARCHAR(160),
+  creada_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (fecha_fin >= fecha_inicio)
+);
+-- Solo una pausa ACTIVA (programada o en curso) por cliente.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inactivo_temporal_activa_unica
+  ON cliente_inactivo_temporal (id_manager, cliente_idnoofit)
+  WHERE estado IN ('programada', 'en_curso');
+CREATE INDEX IF NOT EXISTS idx_inactivo_temporal_fechas
+  ON cliente_inactivo_temporal (estado, fecha_inicio, fecha_fin);
+CREATE INDEX IF NOT EXISTS idx_inactivo_temporal_manager
+  ON cliente_inactivo_temporal (id_manager, cliente_idnoofit);
+
 
 -- ─── CLIENTE GYMPASS (extensión local — NoofitPro no persiste gympassId) ────
 CREATE TABLE IF NOT EXISTS cliente_gympass (

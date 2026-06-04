@@ -197,6 +197,19 @@ def generar(mes):
             """, (str(g.id_manager), primer_dia))
             inactivos_dia_1 = {str(r['cliente_idnoofit']) for r in cur.fetchall()}
 
+        # Clientes con INACTIVIDAD TEMPORAL cuya ventana SOLAPA el mes a emitir
+        # → no se les emite cuota (regla: no cobrar ningún mes que la pausa
+        # toque). Overlap: inicio <= último día del mes Y fin >= primer día.
+        import calendar as _cal
+        ultimo_dia = dt.date(target_y, target_m, _cal.monthrange(target_y, target_m)[1])
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT cliente_idnoofit FROM cliente_inactivo_temporal
+                 WHERE id_manager = %s AND estado <> 'cancelada'
+                   AND fecha_inicio <= %s AND fecha_fin >= %s
+            """, (str(g.id_manager), ultimo_dia, primer_dia))
+            inactivos_temporal = {str(r['cliente_idnoofit']) for r in cur.fetchall()}
+
         # Cache local NoofitPro: estado real de cada cliente.
         #   - cliente_cache.enabled = TRUE  → en alta en NF
         #   - cliente_cache.enabled = FALSE → archivado (inactivo) en NF
@@ -221,6 +234,7 @@ def generar(mes):
         por_cliente = defaultdict(list)
         canonico_por_idn = {}    # idnoofit → partner_id canónico (menor id)
         skipped_baja = 0
+        skipped_temporal = 0
         skipped_inactivo_nf = 0
         skipped_desvinculado = 0
         for s in subs:
@@ -232,6 +246,9 @@ def generar(mes):
             if not idnoofit: continue
             if idnoofit in inactivos_dia_1:
                 skipped_baja += 1
+                continue
+            if idnoofit in inactivos_temporal:
+                skipped_temporal += 1
                 continue
             # Cliente_cache: comprueba estado real en NoofitPro.
             if idnoofit not in cache_idnoofit_enabled:

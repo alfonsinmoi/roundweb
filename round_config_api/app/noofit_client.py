@@ -505,6 +505,31 @@ def archivar_cliente_as_trainer(cliente_id, motivo, trainer_email, trainer_passw
         return False
 
 
+def reactivar_cliente_as_trainer(cliente_id, trainer_email, trainer_password):
+    """Reactiva (enabled=True) un cliente del espacio de un TRAINER. Espejo de
+    `archivar_cliente_as_trainer`. Devuelve True si reactivó (o ya estaba
+    activo), False si no lo encontró o falló."""
+    try:
+        tok, mgr = _login_as(trainer_email, trainer_password)
+        r = _request_as(tok, mgr, 'GET', '/api/dispositivos/getClienteSimple')
+        r.raise_for_status()
+        clis = ((r.json() or {}).get('clientes')) or []
+        cli = next((c for c in clis if c.get('id') == int(cliente_id)), None)
+        if not cli:
+            log.warning(f'reactivar_cliente_as_trainer {cliente_id}: no en espacio del trainer')
+            return False
+        if cli.get('enabled') is True:
+            return True  # ya activo (idempotente)
+        body = [{**cli, 'enabled': True, 'motivoArchivado': None, 'toSend': False}]
+        r2 = _request_as(tok, mgr, 'POST', '/api/dispositivos/clientePlusv2', json=body)
+        r2.raise_for_status()
+        log.info(f'cliente {cliente_id} reactivado en NoofitPro como trainer {trainer_email}')
+        return True
+    except Exception as e:
+        log.exception(f'reactivar_cliente_as_trainer {cliente_id} ({trainer_email}): {e}')
+        return False
+
+
 def reservar_clase(sala_id, cliente_id, nombre_cliente=''):
     """Apunta a un cliente en una sala (clase)."""
     body = {

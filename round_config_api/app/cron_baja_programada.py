@@ -158,7 +158,46 @@ def main():
                 total_fail += 1
 
     log.info(f'TOTAL: ejecutadas={total_ejec}  fallos={total_fail}')
-    return 0 if total_fail == 0 else 2
+
+    # ── Inactividad temporal: aplicar inicio (archivar) y fin (reactivar) ────
+    rc_temp = _procesar_inactivo_temporal()
+    return 0 if (total_fail == 0 and rc_temp == 0) else 2
+
+
+def _procesar_inactivo_temporal():
+    """Aplica las transiciones por fecha de las pausas temporales:
+      - programada con fecha_inicio <= hoy  → archivar (aplicar_inicio)
+      - en_curso   con fecha_fin    <  hoy  → reactivar (aplicar_fin)
+    aplicar_inicio/aplicar_fin resuelven las creds NoofitPro por cliente.
+    Si falla (NF caído), deja el registro como está → se reintenta mañana."""
+    from .routes.inactivo_temporal import aplicar_inicio, aplicar_fin
+    today = dt.date.today()
+    fail = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT * FROM cliente_inactivo_temporal
+                        WHERE estado='programada' AND fecha_inicio <= %s
+                        ORDER BY fecha_inicio, id""", (today,))
+        a_iniciar = cur.fetchall()
+        cur.execute("""SELECT * FROM cliente_inactivo_temporal
+                        WHERE estado='en_curso' AND fecha_fin < %s
+                        ORDER BY fecha_fin, id""", (today,))
+        a_terminar = cur.fetchall()
+    log.info(f'INACTIVO TEMPORAL: a_iniciar={len(a_iniciar)} a_terminar={len(a_terminar)}')
+    for row in a_iniciar:
+        try:
+            ok, err = aplicar_inicio(row)
+            if ok: log.info(f'  ▶ pausa {row["id"]} cliente={row["cliente_idnoofit"]} INICIADA')
+            else:  fail += 1; log.warning(f'  ✗ pausa {row["id"]} inicio: {err}')
+        except Exception as e:
+            fail += 1; log.exception(f'  ✗ pausa {row["id"]} inicio: {e}')
+    for row in a_terminar:
+        try:
+            ok, err = aplicar_fin(row)
+            if ok: log.info(f'  ◀ pausa {row["id"]} cliente={row["cliente_idnoofit"]} FINALIZADA')
+            else:  fail += 1; log.warning(f'  ✗ pausa {row["id"]} fin: {err}')
+        except Exception as e:
+            fail += 1; log.exception(f'  ✗ pausa {row["id"]} fin: {e}')
+    return 0 if fail == 0 else 2
 
 
 if __name__ == '__main__':

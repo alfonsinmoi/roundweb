@@ -8,6 +8,7 @@ import {
   BarChart3, TrendingUp, TrendingDown, Clock, Users, Download, Code, Copy, Check,
   Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2, Receipt, RefreshCw,
   QrCode, Bell, MessageCircle, Zap, UserCog, History, StickyNote, ShoppingBag,
+  PauseCircle,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
@@ -41,10 +42,21 @@ import DescuentosClienteCard from '../../components/subs/DescuentosClienteCard'
 import ModificacionesClienteCard from '../../components/subs/ModificacionesClienteCard'
 import FamiliaresClienteCard from '../../components/subs/FamiliaresClienteCard'
 import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate,
-         bajaProgramadaGet, bajaProgramadaCreate, bajaProgramadaCancel } from '../../utils/configApi'
+         bajaProgramadaGet, bajaProgramadaCreate, bajaProgramadaCancel,
+         temporalInactivoGet, temporalInactivoCreate, temporalInactivoCancel } from '../../utils/configApi'
 import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
+
+// Motivos de inactividad temporal (pausa). Keys = lo que espera el backend.
+const MOTIVOS_PAUSA = [
+  ['baja_medica', 'Baja médica'],
+  ['lesion', 'Lesión'],
+  ['vacaciones', 'Vacaciones'],
+  ['cambio_trabajo_domicilio', 'Cambio de trabajo/domicilio'],
+  ['otros', 'Otros'],
+]
+const MOTIVO_PAUSA_LABEL = Object.fromEntries(MOTIVOS_PAUSA)
 
 // Tab "Datos ERP" eliminado: la gestión de cuotas/descuentos/forma de pago
 // del cliente vive ahora en "Datos personales → Cuota y fechas" (componente
@@ -370,6 +382,15 @@ export default function ClientProfile() {
   // Baja programada pendiente cargada del backend (null si no hay).
   const [bajaPendiente, setBajaPendiente] = useState(null)
   const [confirmCancelarBaja, setConfirmCancelarBaja] = useState(false)
+  // ── Inactividad temporal (pausa) ──────────────────────────────────────
+  // Pausa activa del cliente (estado programada|en_curso) o null.
+  const [pausaActiva, setPausaActiva] = useState(null)
+  const [pausaModal, setPausaModal] = useState(false)
+  const [pausaInicio, setPausaInicio] = useState('')
+  const [pausaFin, setPausaFin] = useState('')
+  const [pausaMotivo, setPausaMotivo] = useState('')
+  const [pausaDetalle, setPausaDetalle] = useState('')
+  const [confirmCancelarPausa, setConfirmCancelarPausa] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
   // Modo "Alta de cliente" del trainer al que pertenece este cliente.
   // Si modo='centro', el QR de la ficha NO se muestra (solo el del centro
@@ -404,6 +425,16 @@ export default function ClientProfile() {
     bajaProgramadaGet(identity, id)
       .then(b => { if (!cancel) setBajaPendiente(b || null) })
       .catch(() => { if (!cancel) setBajaPendiente(null) })
+    return () => { cancel = true }
+  }, [id, identity?.managerId])
+
+  // Cargar pausa (inactividad temporal) activa del cliente (si la hay).
+  useEffect(() => {
+    if (!id || !identity?.managerId) return
+    let cancel = false
+    temporalInactivoGet(identity, id)
+      .then(p => { if (!cancel) setPausaActiva(p || null) })
+      .catch(() => { if (!cancel) setPausaActiva(null) })
     return () => { cancel = true }
   }, [id, identity?.managerId])
 
@@ -537,6 +568,65 @@ export default function ClientProfile() {
       toast.success('Baja programada cancelada')
     } catch (e) {
       toast.error('Error al cancelar: ' + (e.body?.error || e.message))
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  // ── Inactividad temporal (pausa) ────────────────────────────────────
+  const abrirPausaModal = () => {
+    const hoy = new Date().toISOString().slice(0, 10)
+    setPausaInicio(hoy)
+    setPausaFin('')
+    setPausaMotivo('')
+    setPausaDetalle('')
+    setPausaModal(true)
+  }
+
+  const doCrearPausa = async () => {
+    if (!pausaInicio || !pausaFin) { toast.error('Indica fecha de inicio y fin'); return }
+    if (pausaFin < pausaInicio) { toast.error('La fecha de fin debe ser igual o posterior al inicio'); return }
+    if (!pausaMotivo) { toast.error('Elige un motivo'); return }
+    setPausaModal(false)
+    setActionLoading('pausa')
+    try {
+      const r = await temporalInactivoCreate(identity, cliente.id, {
+        fecha_inicio: pausaInicio,
+        fecha_fin: pausaFin,
+        motivo: pausaMotivo,
+        motivo_detalle: pausaMotivo === 'otros' ? (pausaDetalle || null) : null,
+        cliente_nombre: `${cliente.name || ''} ${cliente.surname || ''}`.trim(),
+        cliente_email: cliente.email || null,
+      })
+      setPausaActiva(r.pausa)
+      if (r.aplicada_inmediato) {
+        // Refrescar el cliente para reflejar enabled=false en NoofitPro.
+        const refreshed = (await getClientes()).find(c => String(c.id) === String(id))
+        if (refreshed) setCliente(refreshed)
+      }
+      const nAnulados = r.recibos_anulados || 0
+      toast.success(nAnulados > 0
+        ? `Pausa creada. ${nAnulados} recibo(s) sin pagar anulado(s).`
+        : 'Pausa creada correctamente.')
+    } catch (e) {
+      toast.error('Error al crear la pausa: ' + (e.body?.error || e.message))
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  const doCancelarPausa = async () => {
+    setConfirmCancelarPausa(false)
+    setActionLoading('pausa')
+    try {
+      await temporalInactivoCancel(identity, cliente.id)
+      setPausaActiva(null)
+      // El cliente puede haber sido reactivado en NoofitPro al terminar.
+      const refreshed = (await getClientes()).find(c => String(c.id) === String(id))
+      if (refreshed) setCliente(refreshed)
+      toast.success('Pausa cancelada/terminada')
+    } catch (e) {
+      toast.error('Error al cancelar la pausa: ' + (e.body?.error || e.message))
     } finally {
       setActionLoading('')
     }
@@ -766,6 +856,21 @@ export default function ClientProfile() {
                   : ' Inactivar'}
             </Btn>
           )}
+          {/* Inactividad temporal (pausa con fecha de inicio/fin). Reusa el
+              mismo permiso que la baja programada (clientes.archivar). */}
+          {canArchivar && (
+            <Btn variant="secondary" size="sm"
+                 onClick={() => pausaActiva ? setConfirmCancelarPausa(true) : abrirPausaModal()}
+                 disabled={!!actionLoading}
+                 title={pausaActiva
+                   ? 'Cancelar/terminar la pausa activa de este cliente'
+                   : 'Pausar temporalmente al cliente entre dos fechas'}>
+              {actionLoading === 'pausa'
+                ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                : <PauseCircle size={13} aria-hidden="true" />}
+              {pausaActiva ? ' Cancelar pausa' : ' Inactividad temporal'}
+            </Btn>
+          )}
           <Btn variant="danger" size="sm" onClick={() => setConfirmDesvincular(true)} disabled={!!actionLoading}>
             {actionLoading === 'desvincular'
               ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
@@ -778,6 +883,31 @@ export default function ClientProfile() {
       {/* Banner rojo de impagados — aparece JUSTO bajo la hero card si hay
           1+ recibos en estado impagado/devuelto. Click navega a tab Recibos. */}
       <ImpagadoBanner recibos={recibosImpagados} onClick={() => setTab('cuotas')} />
+
+      {/* Banner ámbar de pausa (inactividad temporal) activa. */}
+      {pausaActiva && (
+        <div role="status" style={{
+          margin: '0 0 16px', padding: '14px 18px', borderRadius: 14,
+          background: 'rgba(251,191,36,0.10)',
+          border: '1.5px solid rgba(251,191,36,0.4)',
+          display: 'flex', alignItems: 'center', gap: 10,
+          fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
+        }}>
+          <PauseCircle size={16} aria-hidden="true" style={{ color: 'var(--amber, #d97706)', flexShrink: 0 }} />
+          <span>
+            <strong style={{ color: 'var(--amber, #d97706)' }}>
+              Inactividad temporal {pausaActiva.estado === 'en_curso' ? 'en curso' : 'programada'}
+            </strong>
+            {' · '}{MOTIVO_PAUSA_LABEL[pausaActiva.motivo] || pausaActiva.motivo || '—'}
+            {pausaActiva.motivo === 'otros' && pausaActiva.motivo_detalle
+              ? ` (${pausaActiva.motivo_detalle})` : ''}
+            {' · '}
+            {(() => { try { return new Date(pausaActiva.fecha_inicio).toLocaleDateString('es-ES') } catch { return pausaActiva.fecha_inicio } })()}
+            {' → '}
+            {(() => { try { return new Date(pausaActiva.fecha_fin).toLocaleDateString('es-ES') } catch { return pausaActiva.fecha_fin } })()}
+          </span>
+        </div>
+      )}
 
       {/* Tabs. La pestaña "Recibos" depende de Odoo (lee `cuotas/cliente/<id>`
           que toca account.move). Sin Odoo desplegado la ocultamos del
@@ -1057,6 +1187,107 @@ export default function ClientProfile() {
         variant="primary"
         onConfirm={doCancelarBaja}
         onCancel={() => setConfirmCancelarBaja(false)}
+      />
+
+      {/* ── Modal: inactividad temporal (pausa) ──────────────────────── */}
+      <Modal open={pausaModal} onClose={() => setPausaModal(false)}
+             title="Inactividad temporal"
+             subtitle={cliente ? `${cliente.name} ${cliente.surname}` : ''} maxWidth={480}>
+        <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label htmlFor="pausa-inicio" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                Fecha de inicio *
+              </label>
+              <input id="pausa-inicio" type="date" value={pausaInicio}
+                     onChange={e => setPausaInicio(e.target.value)}
+                     style={{
+                       width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                       background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                     }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label htmlFor="pausa-fin" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                Fecha de fin *
+              </label>
+              <input id="pausa-fin" type="date" value={pausaFin} min={pausaInicio || undefined}
+                     onChange={e => setPausaFin(e.target.value)}
+                     style={{
+                       width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                       background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                     }} />
+            </div>
+          </div>
+          {pausaInicio && pausaFin && pausaFin < pausaInicio && (
+            <p style={{ fontSize: 12, color: 'var(--red)', marginTop: -8 }}>
+              La fecha de fin debe ser igual o posterior al inicio.
+            </p>
+          )}
+          <div>
+            <label htmlFor="pausa-motivo" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+              Motivo *
+            </label>
+            <select id="pausa-motivo" value={pausaMotivo}
+                    onChange={e => setPausaMotivo(e.target.value)}
+                    style={{
+                      width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                      background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                    }}>
+              <option value="">— Elige un motivo —</option>
+              {MOTIVOS_PAUSA.map(([k, l]) => (
+                <option key={k} value={k}>{l}</option>
+              ))}
+            </select>
+          </div>
+          {pausaMotivo === 'otros' && (
+            <div>
+              <label htmlFor="pausa-detalle" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                Detalle del motivo
+              </label>
+              <input id="pausa-detalle" type="text" value={pausaDetalle}
+                     onChange={e => setPausaDetalle(e.target.value)}
+                     placeholder="Especifica el motivo..."
+                     className="form-input"
+                     style={{
+                       width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                       background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                     }} />
+            </div>
+          )}
+          <p style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Si la fecha de inicio es hoy o anterior, el cliente se marca inactivo
+            de inmediato y los recibos sin pagar del periodo se anulan. Al llegar
+            la fecha de fin se reactiva automáticamente.
+          </p>
+        </div>
+        <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" size="md" onClick={() => setPausaModal(false)}
+               disabled={!!actionLoading}>Cancelar</Btn>
+          {canArchivar && (
+            <Btn variant="primary" size="md" onClick={doCrearPausa}
+                 disabled={!pausaInicio || !pausaFin || !pausaMotivo
+                   || (pausaFin < pausaInicio) || !!actionLoading}>
+              {actionLoading === 'pausa'
+                ? <Loader2 size={14} className="animate-spin" />
+                : <PauseCircle size={14} aria-hidden="true" />}
+              {' Crear pausa'}
+            </Btn>
+          )}
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={confirmCancelarPausa && canArchivar}
+        title="Cancelar pausa"
+        message={pausaActiva
+          ? (pausaActiva.estado === 'en_curso'
+              ? `¿Terminar la pausa en curso? El cliente se reactivará de inmediato.`
+              : `¿Cancelar la pausa programada (${(() => { try { return new Date(pausaActiva.fecha_inicio).toLocaleDateString('es-ES') } catch { return '' } })()} → ${(() => { try { return new Date(pausaActiva.fecha_fin).toLocaleDateString('es-ES') } catch { return '' } })()})?`)
+          : ''}
+        confirmText="Cancelar pausa"
+        variant="primary"
+        onConfirm={doCancelarPausa}
+        onCancel={() => setConfirmCancelarPausa(false)}
       />
     </div>
   )

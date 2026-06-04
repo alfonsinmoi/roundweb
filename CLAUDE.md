@@ -264,6 +264,18 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
 - `email_template` — plantillas con variables `{{var}}` por evento
 - `pasarela_credenciales` — PayComet por trainer
 - `cliente_estado_log` — track diario activo↔inactivo
+- `cliente_baja_programada` — baja PERMANENTE en una fecha (cron la ejecuta).
+- `cliente_inactivo_temporal` — **inactividad TEMPORAL** (pausa con `fecha_inicio`,
+  `fecha_fin`, `motivo` [baja_medica|lesion|vacaciones|cambio_trabajo_domicilio|
+  otros], estado programada|en_curso|finalizada|cancelada). El cron
+  `round_baja_programada` archiva en NoofitPro al llegar `fecha_inicio` y
+  reactiva al pasar `fecha_fin` (restaura `enabled_anterior`). Durante la
+  ventana: no reserva/asiste (enabled=false NF) y no se emite cuota (guard en
+  `preemision_v2`, regla "no cobrar ningún mes que la pausa toque"). Al crear,
+  anula recibos BD no pagados de los meses cubiertos (account_move_id IS NULL).
+  Endpoints `/api/clientes/<id>/inactivo-temporal` (POST/DELETE/GET) +
+  `/api/clientes/inactivo-temporal` (GET lista). Mutuamente excluyente con
+  baja programada. Filtro de listado "Temporal inactivo".
 - `social_cuenta`, `social_post` — agenda Meta Instagram + Facebook
 - `cliente_gympass` — extensión local para gympassId
 - `categoria` + `cliente_categoria` — categorías de cliente per manager
