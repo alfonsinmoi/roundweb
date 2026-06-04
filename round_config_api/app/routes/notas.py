@@ -24,7 +24,7 @@ import logging
 from functools import wraps
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..auth_usuario import usuario_web_required, decode_jwt
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
@@ -66,6 +66,7 @@ def _serialize(row):
 
 @bp.route('/cliente/<idnoofit>', methods=['GET'])
 @either_auth
+@require_seccion('crm.notas')
 def list_notas_cliente(idnoofit):
     # Aislamiento por trainer: si está impersonado y el cliente no es suyo,
     # devolver lista vacía (no exponer notas de otro centro).
@@ -484,6 +485,7 @@ def delete_nota(nid):
 # ─── Endpoints "yo" (banner + página /notas) ─────────────────────────────────
 @bp.route('/me/banner', methods=['GET'])
 @either_auth
+@require_seccion('crm.notas')
 def my_banner():
     """Banner de notas. Para usuario_web: las que tiene asignadas. Para
     manager NoofitPro logueado directamente: TODAS las abiertas del manager
@@ -527,6 +529,7 @@ def my_banner():
 
 @bp.route('/me', methods=['GET'])
 @either_auth
+@require_seccion('crm.notas')
 def my_notas():
     """Notas visibles para el usuario logueado (manager o usuario_web).
 

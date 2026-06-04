@@ -251,3 +251,49 @@ def require_permission(path: str):
             return fn(*args, **kwargs)
         return wrapper
     return deco
+
+
+def _has_section_access(perfil: dict | None, section: str) -> bool:
+    """Espejo backend de `canAccessSection()` del frontend (useCanAccess):
+    acceso a una SECCIÓN/pantalla si el perfil tiene CUALQUIER hoja=True bajo
+    esa sección. Sirve para gatear endpoints de LECTURA con la misma regla que
+    usa el frontend para mostrar la sección (así no se deniega a quien la ve).
+
+    - perfil=None → True (manager NoofitPro, control total).
+    - is_admin    → True.
+    - sección ausente o sin ninguna hoja True → False.
+    """
+    if perfil is None:
+        return True
+    if perfil.get('is_admin'):
+        return True
+    cur = perfil.get('permisos') or {}
+    for part in section.split('.'):
+        if not isinstance(cur, dict):
+            return False
+        cur = cur.get(part)
+        if cur is None:
+            return False
+
+    def _any_true(node):
+        if node is True:
+            return True
+        if isinstance(node, dict):
+            return any(_any_true(v) for v in node.values())
+        return False
+    return _any_true(cur)
+
+
+def require_seccion(section: str):
+    """Decorador para gatear endpoints de LECTURA por sección (mismo criterio
+    que el menú/frontend). Va DESPUÉS de `@auth_required`. 403 si el perfil no
+    puede ver nada de esa sección."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not _has_section_access(getattr(g, 'perfil', None), section):
+                return jsonify({'ok': False, 'error': 'permission_denied',
+                                'seccion': section}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco

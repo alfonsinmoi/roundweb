@@ -16,7 +16,7 @@ import datetime as dt
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..audit_log import log_action, actor_from_request
 from ..odoo_guard import require_feature
 
@@ -114,6 +114,7 @@ def _serialize_sub(s):
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
 @require_feature('cuotas')
+@require_seccion('economico.cuotas_mensuales')
 def list_by_cliente(id_noofit):
     """Lista subscriptions del cliente (activas + canceladas) ordenadas."""
     # Aislamiento por trainer: si el cliente no pertenece al trainer

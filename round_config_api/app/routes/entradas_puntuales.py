@@ -27,7 +27,7 @@ import logging
 from datetime import date
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..db import get_conn
 from ..odoo_alta import get_alta
 from ..audit_log import actor_from_request, log_action
@@ -66,6 +66,7 @@ def _evt_to_dict(r):
 # ─── ALTAS (registro) ─────────────────────────────────────────────────────────
 @bp.route('/altas', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def list_altas():
     solo_activas = request.args.get('activas', '1') != '0'
     sql = "SELECT * FROM entrada_puntual_alta WHERE id_manager=%s"
@@ -166,6 +167,7 @@ def delete_alta(alta_id):
 # ─── BANNER: pendientes de cobro (por_entrada) ────────────────────────────────
 @bp.route('/pendientes', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def pendientes():
     sql = """
         SELECT * FROM entrada_puntual_evento
@@ -186,6 +188,7 @@ def pendientes():
 # ─── EVENTOS (listado con filtros) ────────────────────────────────────────────
 @bp.route('/eventos', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def list_eventos():
     estado = request.args.get('estado')
     modo = request.args.get('modo')

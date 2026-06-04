@@ -7,7 +7,7 @@
 import os, json, logging, re, time
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..odoo_guard import require_feature
 from ..db import get_conn
 from ..odoo_cuotas import get_cuotas
@@ -687,6 +687,7 @@ def update_lead(lead_id):
 @bp.route('/stages', methods=['GET'])
 @auth_required
 @require_feature('crm')
+@require_seccion('crm.leads')
 def list_stages():
     """Lista las etapas del pipeline CRM (crm.stage)."""
     try:
@@ -704,6 +705,7 @@ def list_stages():
 @bp.route('/leads', methods=['GET'])
 @auth_required
 @require_feature('crm')
+@require_seccion('crm.leads')
 def list_leads():
     """Manager ve todos. Trainer (impersonando) ve solo los suyos."""
     try:
@@ -837,6 +839,7 @@ def list_leads():
 @bp.route('/lost-reasons', methods=['GET'])
 @auth_required
 @require_feature('crm')
+@require_seccion('crm.leads')
 def list_lost_reasons():
     """Lista los motivos de pérdida estándar (frontend los usa en dropdown)."""
     return jsonify({'ok': True, 'reasons': LOST_REASONS})
@@ -845,6 +848,7 @@ def list_lost_reasons():
 @bp.route('/funnel', methods=['GET'])
 @auth_required
 @require_feature('crm')
+@require_seccion('crm.leads')
 def funnel_analytics():
     """Analítica del embudo: conteo por etapa, tasa de conversión, motivos perdida,
     tiempo medio entre etapas, score medio. Manager ve todos, trainer solo los suyos."""

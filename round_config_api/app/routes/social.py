@@ -16,7 +16,7 @@ Agenda (manager + trainer):
 import json, logging
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from .. import meta_client as mc
@@ -45,6 +45,7 @@ def _safe_cuenta(r):
 
 @bp.route('/cuentas', methods=['GET'])
 @auth_required
+@require_seccion('crm.agenda_social')
 def list_cuentas():
     if g.id_trainer:
         return jsonify({'ok': False, 'error': 'manager_only'}), 403
@@ -148,6 +149,7 @@ def delete_cuenta(cuenta_id):
 
 @bp.route('/cuentas/<int:cuenta_id>/info', methods=['GET'])
 @auth_required
+@require_seccion('crm.agenda_social')
 def info_cuenta(cuenta_id):
     """Hace una llamada real a Meta para validar el token y traer info actual."""
     with get_conn() as conn, conn.cursor() as cur:
@@ -175,6 +177,7 @@ def info_cuenta(cuenta_id):
 
 @bp.route('/posts', methods=['GET'])
 @auth_required
+@require_seccion('crm.agenda_social')
 def list_posts():
     desde = request.args.get('desde')
     hasta = request.args.get('hasta')

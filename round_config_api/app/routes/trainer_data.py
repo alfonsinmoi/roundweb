@@ -28,6 +28,7 @@ import requests
 import urllib3
 from flask import Blueprint, request, jsonify, g
 
+from ..auth import require_seccion
 from ..auth_usuario import usuario_web_required
 from ..db import get_conn
 
@@ -409,6 +410,7 @@ def _clientes_sync_state(id_manager: str):
 
 @bp.route('/clientes', methods=['GET'])
 @usuario_web_required
+@require_seccion('clientes')
 def clientes():
     """Devuelve la lista de clientes del manager, leyendo SIEMPRE de la cache
     local en BD (~50 ms). Si la cache está vacía o es muy antigua, sincroniza
@@ -468,6 +470,7 @@ def clientes_sync():
 
 @bp.route('/salas', methods=['POST'])
 @usuario_web_required
+@require_seccion('clientes')
 def salas():
     """Devuelve salas (clases) filtradas por id_trainer.
     Body opcional: {fechaDesde, fechaHasta} — si no, sin filtro de fechas."""

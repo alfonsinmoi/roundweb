@@ -27,7 +27,7 @@ from pathlib import Path
 from datetime import datetime, date
 from flask import Blueprint, request, jsonify, g, send_file, abort
 from werkzeug.utils import secure_filename
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..odoo_guard import require_feature
 from ..db import get_conn, seed_gasto_categorias_for_manager
 from ..audit_log import log_action, actor_from_request, diff_dict
@@ -96,6 +96,7 @@ def _hash_file(path: Path) -> str:
 @bp.route('/config', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_contab_config():
     """Devuelve { trainers: [{id_trainer, activo, notas, ...}] } del manager."""
     err = _manager_only()
@@ -152,6 +153,7 @@ def put_contab_config(id_trainer):
 @bp.route('/config/listados', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_listados_visibilidad():
     """Devuelve catálogo listados + visibilidad per (manager, trainer)."""
     try:
@@ -206,6 +208,7 @@ def put_listado_visibilidad(id_trainer, listado_id):
 @bp.route('/categorias', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def list_categorias():
     """Lista categorías + visibilidad per trainer (filtrada si trainer impersona)."""
     try:
@@ -402,6 +405,7 @@ def put_categoria_visibilidad(cat_id, id_trainer):
 @bp.route('/documentos', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def list_documentos():
     """Filtros: estado, categoria_id, id_trainer, periodo, desde, hasta, tipo, q"""
     try:
@@ -588,6 +592,7 @@ def upload_documento():
 @bp.route('/documentos/<int:doc_id>', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_documento(doc_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -609,6 +614,7 @@ def get_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/file', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_documento_file(doc_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -1091,6 +1097,7 @@ def desvalidar_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/asiento', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def asiento_documento(doc_id):
     """Devuelve el asiento contable de un documento.
 
@@ -1512,6 +1519,7 @@ def rechazar_documento(doc_id):
 @bp.route('/listados/totales', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_totales():
     """Totales agregados de gasto_documento.
 
@@ -1567,6 +1575,7 @@ def listado_totales():
 @bp.route('/listados/faltantes', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_faltantes():
     """Detecta categorías con periodicidad cuyo período tiene 0 documentos.
 
@@ -1912,6 +1921,7 @@ def _periodo_a_rango(periodo: str):
 @bp.route('/listados/resultados/disponibles', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_resultados_disponibles():
     """Devuelve qué meses/trimestres/años tienen al menos 1 movimiento
     (gasto Round o ingreso Odoo) en los últimos 5 años.
@@ -1973,6 +1983,7 @@ def listado_resultados_disponibles():
 @bp.route('/listados/resultados', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_resultados():
     """Cuenta de resultados (P&L) por período.
 
@@ -2229,6 +2240,7 @@ def banco_importar():
 @bp.route('/banco/movimientos', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def banco_movimientos():
     """Lista movimientos bancarios con filtros."""
     try:

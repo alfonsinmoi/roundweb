@@ -14,7 +14,7 @@
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..db import get_conn
 from .. import notif_catalog as cat
 from ..notif_sender import enviar_notificacion, marcar_leida
@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 # ── Catálogo (público con auth) ────────────────────────────────────────────
 @bp.route('/catalog', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def catalog():
     return jsonify({
         'ok': True,
@@ -37,6 +38,7 @@ def catalog():
 # ── Listar envíos ──────────────────────────────────────────────────────────
 @bp.route('/envios', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def list_envios():
     """Lista envíos del manager (filtra por trainer si está impersonando).
 
@@ -141,6 +143,7 @@ def create_envio():
 # ── Detalle envío + destinatarios ──────────────────────────────────────────
 @bp.route('/envios/<int:envio_id>', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def get_envio(envio_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -194,6 +197,7 @@ def cancel_envio(envio_id):
 # ── Notificaciones de un cliente (vista perfil + app) ──────────────────────
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def list_por_cliente(id_noofit):
     """Devuelve los envíos que recibió ese cliente, joineado con metadata."""
     try:
@@ -236,6 +240,7 @@ def list_por_cliente(id_noofit):
 # ── Configuración por (manager,trainer) ────────────────────────────────────
 @bp.route('/config', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def get_config():
     """Devuelve la config del trainer actual (o manager-wide si no impersona).
     Si no existe, devuelve defaults sin crear fila aún."""

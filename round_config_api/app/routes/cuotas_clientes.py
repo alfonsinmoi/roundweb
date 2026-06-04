@@ -6,7 +6,7 @@ import base64
 import logging
 import os
 from flask import Blueprint, request, jsonify, g, Response
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..odoo_guard import require_feature
 from ..odoo_cuotas import get_cuotas
 from ..odoo_alta import get_alta
@@ -223,6 +223,7 @@ def _bd_recibos_filtrado(mes_str=None, estado=None, cliente_idnoofit=None):
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
 @require_feature('cuotas')
+@require_seccion('economico.cuotas_mensuales')
 def cuotas_cliente(id_noofit):
     """Devuelve los recibos del cliente, unificando dos orígenes:
       - Odoo `account.move` (recibos ya facturados / con factura oficial).
@@ -263,6 +264,7 @@ def cuotas_cliente(id_noofit):
 @bp.route('/', methods=['GET'])
 @auth_required
 @require_feature('cuotas')
+@require_seccion('economico.cuotas_mensuales')
 def list_cuotas():
     """Listado unificado de recibos (BD `recibo` + Odoo `account.move`).
     Si Odoo cae, devolvemos al menos los BD para que el operador siga

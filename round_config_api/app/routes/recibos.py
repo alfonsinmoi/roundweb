@@ -25,7 +25,7 @@ import json
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from ..trainer_scope import (
@@ -72,6 +72,7 @@ def _select_recibo_cols():
 @bp.route('', methods=['GET'])
 @bp.route('/', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def list_recibos():
     """Lista recibos con filtros:
        ?cliente=<idnoofit>  ?estado=<>  ?metodo=<>  ?periodo=YYYY-MM
@@ -135,6 +136,7 @@ def list_recibos():
 
 @bp.route('/<int:rid>', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def get_recibo(rid):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT {_select_recibo_cols()} FROM recibo WHERE id_manager=%s AND id=%s",
@@ -798,6 +800,7 @@ def generar_link_pago(rid):
 
 @bp.route('/manuales/<mes>', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def list_manuales_mes(mes):
     """Lista los recibos manuales en estado `borrador_remesa` para un mes
     (YYYY-MM). Estos recibos:
@@ -824,6 +827,7 @@ def list_manuales_mes(mes):
 
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def list_cliente(id_noofit):
     """Recibos de un cliente concreto. Si el usuario está impersonando un
     trainer y el cliente no pertenece a ese trainer → 404 (no filtrar
@@ -846,6 +850,7 @@ def list_cliente(id_noofit):
 
 @bp.route('/stats', methods=['GET'])
 @auth_required
+@require_seccion('economico.cuotas_mensuales')
 def stats():
     """Stats por estado/método/periodo (para dashboards)."""
     qs = request.args
