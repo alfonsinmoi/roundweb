@@ -834,7 +834,11 @@ class OdooCuotas:
             if not ref:
                 result['errores'].append({'row': r, 'error': 'Sin referencia'})
                 continue
-            inv_ids = self._call('account.move','search',
+            # _call_scoped inyecta company_id = empresa del manager → la
+            # devolución casa el recibo dentro de la esfera del manager (todos
+            # sus trainers) y NUNCA con una factura de otra empresa/manager que
+            # tenga el mismo número de factura.
+            inv_ids = self._call_scoped('account.move','search',
                 [('move_type','=','out_invoice'),('name','=',ref)], limit=1)
             if not inv_ids:
                 result['errores'].append({'invoice_ref': ref, 'error': 'No encontrado'})

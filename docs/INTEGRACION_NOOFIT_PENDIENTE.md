@@ -418,6 +418,107 @@ persistiéndose en BD como `fallida` para auditoría, pero no llegan al móvil.
 
 ---
 
+## 17. Webhook NoofitPro → Round (sync de cliente EN TIEMPO REAL)
+
+**Estado actual (junio 2026):** la sincronización NoofitPro → Round es por
+**polling**: el cron `round_clientes_sync` (cada hora) + un sync en background
+al abrir *Clientes* releen `getClientesByManager`/`getClienteSimple` y vuelcan
+`enabled`, `name`, `email`, etc. a `cliente_cache`. Verificado que la relación
+**activo/archivado (NP) ↔ activo/inactivo (web)** está consistente (0
+discrepancias de `enabled` en 676 clientes), **pero NO es en tiempo real**: si
+en NoofitPro se archiva/activa un cliente, la web puede tardar **hasta ~1 h** en
+reflejarlo.
+
+> El sentido inverso (Round → NoofitPro) **ya existe**: al programar una baja o
+> una inactividad temporal, Round llama a `archivar_cliente`/`reactivar_cliente`
+> (`enabled=false/true` + `motivoArchivado`) contra NoofitPro. Lo que falta es el
+> **push de NoofitPro hacia Round** para no depender del cron.
+
+**Lo que necesitamos que NoofitPro desarrolle:** un **webhook saliente** que
+NoofitPro dispare **cada vez que cambie el estado o los datos de un cliente**,
+llamando a un endpoint que Round expondrá. Así la web se actualiza al instante
+y el cron horario queda solo como *backstop* de reconciliación.
+
+### Endpoint que Round expondrá (lo implementamos nosotros)
+
+```
+POST https://noofit.wiemspro.com/api/webhooks/noofit/cliente
+Content-Type: application/json
+X-Noofit-Signature: <HMAC-SHA256(body, SECRET) en hex>     # firma del cuerpo
+```
+
+- **Seguridad:** secreto compartido por entorno. NoofitPro firma el cuerpo con
+  `HMAC-SHA256` usando el secreto; Round valida la firma antes de procesar
+  (rechaza 401 si no cuadra). Alternativa mínima aceptable: cabecera
+  `X-Noofit-Token: <secreto>` fijo. **Sin firma/token válido → 401.**
+- **Respuesta:** `200 {ok:true}` si procesado; Round responde rápido (<500 ms) y
+  procesa el upsert. NoofitPro debe **reintentar** (p.ej. 3 intentos con backoff)
+  si recibe 5xx o timeout.
+
+### Eventos mínimos
+
+| `event` | Cuándo lo dispara NoofitPro |
+|---|---|
+| `cliente.archivado` | se pone `enabled=false` (manual o por proceso) |
+| `cliente.activado` | se pone `enabled=true` (reactivación) |
+| `cliente.creado` | alta de un cliente nuevo |
+| `cliente.actualizado` | cambio de nombre/email/teléfono/dni/categoría… |
+| `cliente.borrado` *(si existe)* | eliminación real |
+
+### Payload (cuerpo del POST)
+
+```json
+{
+  "event": "cliente.archivado",
+  "timestamp": "2026-06-05T09:14:33+02:00",
+  "idManager": 7673,
+  "idTrainer": 17675,
+  "cliente": {
+    "id": 1817691,
+    "enabled": false,
+    "motivoArchivado": "baja voluntaria",
+    "name": "Cristobal",
+    "surname": "Garcia Bandera",
+    "email": "...",
+    "cellPhone": "...",
+    "dni": "...",
+    "editionDate": "2026-06-05T09:14:33+02:00"
+  }
+}
+```
+
+- **Imprescindible** que venga **`idTrainer`** (y a poder ser `idManager`): Round
+  es multi-tenant y necesita saber a qué centro pertenece el cliente para no
+  mezclar datos entre trainers. Sin `idTrainer`, Round tendría que resolverlo por
+  jerarquía (más frágil).
+- Basta con que el objeto `cliente` traiga **al menos `id` + `enabled` +
+  `motivoArchivado`**; el resto de campos son bienvenidos para mantener la cache
+  completa sin un `getClienteSimple` extra.
+
+### Comportamiento de Round al recibirlo
+
+1. Valida firma/token → 401 si inválida.
+2. **UPSERT** en `cliente_cache` por `(id_manager, id)` con el `enabled` y los
+   campos recibidos (idempotente — repetir el mismo evento no rompe nada).
+3. Registra la transición en `cliente_estado_log` (activo↔inactivo) con fecha y
+   motivo.
+4. Emite evento interno para refrescar la UI abierta (sin recargar).
+
+### Qué sustituye / convive
+
+- El **webhook da tiempo real**; el cron `round_clientes_sync` pasa a ser un
+  **reconciliador** (p.ej. cada 6-12 h) para capturar eventos perdidos (webhook
+  caído, reintentos agotados). No se elimina, baja de frecuencia.
+- Cierra el último hueco de la regla "estado siempre coherente NP ↔ web":
+  hoy coherente con lag de cron; con el webhook, coherente al instante.
+
+> **Relación con la sección 7 (CRM):** este mismo webhook de
+> archivar/reactivar permite además sincronizar el CRM Odoo automáticamente
+> (mover lead a "baja"/"reactivado") — resuelve el "webhook al
+> reactivar/inactivar un cliente" que pedíamos allí.
+
+---
+
 ## Resumen ejecutivo (para hablar con NoofitPro)
 
 **Cambios "urgentes" (afectan funcionalidad existente):**
@@ -439,6 +540,10 @@ persistiéndose en BD como `fallida` para auditoría, pero no llegan al móvil.
    permanente).
 7. Endpoint de "reserva prueba" que no cree todavía un cliente real.
 8. Metadata "centro" por trainer (slug, dirección, mapa).
+9. **Webhook NoofitPro → Round (sección 17)**: push en tiempo real al
+   archivar/activar/crear/editar un cliente, contra
+   `POST /api/webhooks/noofit/cliente` (firmado HMAC). Hoy la web se entera por
+   cron horario; el webhook lo haría instantáneo y de paso sincronizaría el CRM.
 
 **No urgentes / no necesarios (Round los gestiona y no necesita
 NoofitPro):**

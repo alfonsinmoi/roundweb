@@ -630,7 +630,12 @@ def devoluciones():
         rows = d.get('rows') or []
         if not rows:
             return jsonify({'ok': False, 'error': 'Sin filas'}), 400
-        result = get_cuotas().procesar_devoluciones(rows)
+        # Acotado al MANAGER que sube (todos sus trainers, sin salir de su
+        # empresa fiscal). El fichero SEPA del banco es a nivel de empresa
+        # (p.ej. Best Training = company 3, compartida por Añoreta+Málaga), así
+        # que un trainer puede subir las devoluciones de TODO el grupo, pero
+        # nunca casar una factura de otro manager con el mismo número.
+        result = get_cuotas(g.id_manager).procesar_devoluciones(rows)
 
         # ── Notif automática "devolucion" por cada procesada ──
         notificadas = 0
