@@ -519,6 +519,94 @@ X-Noofit-Signature: <HMAC-SHA256(body, SECRET) en hex>     # firma del cuerpo
 
 ---
 
+## 18. [INTERNO Round/Odoo — NO es gap NoofitPro] Modelo de facturación: asiento por recibo vs trimestral
+
+> Seguimiento del trabajo de facturación Odoo (junio 2026). No depende de
+> NoofitPro; se guarda aquí para retomarlo. **Regla objetivo del dueño:**
+> *"cada recibo que se cree (manual o emisión) debe crear el asiento en Odoo;
+> la facturación será según el modelo elegido."*
+
+### El "modelo elegido" YA existe como config (pero la emisión no lo respeta)
+
+Campo `manager_config.modo_facturacion` VARCHAR(20) DEFAULT `'recibo_trimestre'`
+(UI: **Configuración → Forma de facturar**, `FormaFacturarTab.jsx`;
+endpoints `routes/modo_facturacion.py`; checklist `chk_modo_facturacion`). 3 valores:
+
+| valor | Opción UI | Comportamiento previsto |
+|---|---|---|
+| `recibo_trimestre` *(default)* | 1 · Recibos mensuales + facturación trimestral | recibo BD mensual; **asiento al cierre trimestral** |
+| `factura_draft` | 2 · Facturas borrador mensuales + posteo trimestral | account.move **borrador** mensual; postear trimestral |
+| `factura_directa` | 3 · Facturación directa mensual | **factura posteada por recibo, al momento** (= la regla del dueño) |
+
+### Qué hace HOY cada pieza (verificado)
+
+- **Emisión mensual** `routes/preemision_v2.generar` → crea filas en `recibo`
+  (origen `cron_emision`) **SIN asiento Odoo**. **No mira `modo_facturacion`**
+  (siempre se comporta como `recibo_trimestre`).
+- `routes/emision_v2.emitir` → crea `account.payment` de los pagados (cobro),
+  **no la factura**.
+- **Alta de cliente** `odoo_alta.crear_alta_cliente` → SÍ crea factura+pago al
+  momento (por eso los 2 únicos asientos de junio Málaga eran de altas).
+- **Cierre trimestral** `routes/facturacion_trimestre.facturar` → crea el
+  `account.move` (agregado por cliente). **Ya corregido hoy** (ver abajo).
+- **Recibo MANUAL** `routes/recibos.py` (INSERT recibo) → **no crea asiento**.
+
+➡️ **Conclusión:** la Opción 3 (`factura_directa`, asiento por recibo al
+momento) **NO está implementada**; las Opciones 1/2 dependen del cierre
+trimestral. La regla del dueño exige que la creación de recibo (manual +
+emisión) cree el asiento según `modo_facturacion`.
+
+### Ya CORREGIDO/HECHO hoy (junio 2026)
+
+- **Identidad manager/trainer por `X-TRAINER_MANAGER`** + anti-fantasma
+  (commit `40118d6`). Manager ROUND = 17677; trainers 17674/17675/17676.
+- **Devoluciones SEPA acotadas al manager** (`_call_scoped`, `get_cuotas(g.id_manager)`)
+  + notif devolución multimanager (commits `2db6cd8`, `32b303e`).
+- **`facturacion_trimestre` arreglado** (commit `c1ef2ea`): factura **todos**
+  los recibos sin asiento (`pagado`+`impagado`+`devuelto`, no solo pagados);
+  **analítica por trainer** del cliente (antes hardcodeada a "Round Málaga
+  Centro"); **company del manager** (antes env fijo =3); idempotente por
+  `account_move_id`. Frontend muestra impagados + columna Estado.
+- **Backfill datos**: 201 asientos `RB-<recibo_id>` de **junio Málaga**
+  creados en Odoo (cuenta 700000, IVA 21% tax 171, diario venta, pago para
+  pagados). Operación de datos, sin commit. Idempotente; el cierre trimestral
+  los salta (ya tienen `account_move_id`).
+- Purga del **tenant fantasma 16702** (cuenta NoofitPro ajena de Hugo) +
+  archivado de partners huérfanos.
+
+### PENDIENTE (retomar) — implementar la regla "recibo → asiento según modelo"
+
+1. **Helper único** `emitir_recibo_a_odoo(recibo)` idempotente
+   (`ref='RB-<recibo_id>'`, salta si ya tiene `account_move_id`): crea el
+   `account.move`, lo postea, concilia pago si `estado='pagado'`, fija
+   `account_move_id`/`account_move_ref`. Analítica por trainer + company del
+   manager (reutilizar `_resolve_analytic_for_partner`, `o.company_id`). Receta
+   verificada = la del backfill de junio Málaga.
+2. **Enganchar el helper** según `modo_facturacion`:
+   - `factura_directa` → al crear recibo **manual** (`recibos.py`) y al
+     **emitir** (`preemision_v2`/`emision_v2`): crear factura **posteada** al
+     momento.
+   - `factura_draft` → crear `account.move` **borrador** mensual; postear en el
+     cierre trimestral.
+   - `recibo_trimestre` → comportamiento actual (asiento al cierre trimestral).
+3. **Fail-soft**: si Odoo está caído, el recibo se crea igual y queda
+   pendiente de asiento; un cron de reconciliación reintenta (no romper la
+   creación del recibo). Marcar los pendientes para reintento.
+4. **Cron de respaldo**: barrer recibos sin `account_move_id` cuyo manager sea
+   `factura_directa`/`factura_draft` y crear el asiento que falte (igual que el
+   backfill de junio, pero recurrente).
+5. **Coherencia**: junio Málaga ya está por-recibo (`factura_directa` de facto);
+   abril/mayo seguirían el modelo trimestral. Decidir desde qué periodo aplica
+   el modelo nuevo por manager.
+6. **Riesgos**: no duplicar (idempotencia por `ref`/`account_move_id`); respetar
+   aislamiento (analítica/company por trainer/manager); SII no activo hoy en
+   company 3 (verificado), revisar si se activa.
+
+> Relacionado: el **webhook NP→Round (sección 17)** es independiente; aquí es
+> facturación interna Round↔Odoo.
+
+---
+
 ## Resumen ejecutivo (para hablar con NoofitPro)
 
 **Cambios "urgentes" (afectan funcionalidad existente):**
