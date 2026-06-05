@@ -476,7 +476,7 @@ function _filtrarSalasPorTrainer(salas) {
 }
 
 export const getSalas = () => {
-  const tf = getTrainerFilterFromStorage()
+  const tf = effectiveTrainerId()
   const key = tf ? `salas:${tf}` : 'salas'
   return cached(key, () => {
     const { isUsuarioWeb } = getProxyAuth()
@@ -494,7 +494,7 @@ export const getSalas = () => {
 }
 
 export const getSalasRango = (fechaDesde, fechaHasta) => {
-  const tf = getTrainerFilterFromStorage()
+  const tf = effectiveTrainerId()
   const key = `salas-${fechaDesde}-${fechaHasta}` + (tf ? `:${tf}` : '')
   return cached(key, () => {
     const { isUsuarioWeb } = getProxyAuth()
