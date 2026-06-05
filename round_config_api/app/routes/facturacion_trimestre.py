@@ -21,9 +21,9 @@ bp = Blueprint('facturacion_trimestre', __name__)
 log = logging.getLogger(__name__)
 
 
-def _odoo():
+def _odoo(id_manager=None):
     from ..odoo_alta import OdooAlta
-    o = OdooAlta(); o._connect()
+    o = OdooAlta(id_manager=id_manager); o._connect()
     return o
 
 
@@ -154,8 +154,8 @@ def facturar(trim):
     if not recibo_ids:
         return jsonify({'ok': False, 'error': 'recibo_ids_required'}), 400
 
-    company_id = _company_id()
-    o = _odoo()
+    o = _odoo(g.id_manager)
+    company_id = o.company_id      # company del MANAGER (no el env fijo)
 
     # Buscar tax 21% S
     tax_ids = o._call('account.tax', 'search',
@@ -167,10 +167,8 @@ def facturar(trim):
              ('type_tax_use', '=', 'sale')], limit=1)
     tax_id = tax_ids[0] if tax_ids else None
 
-    # Cuenta analítica
-    analytic_ids = o._call('account.analytic.account', 'search',
-        [('company_id', '=', company_id), ('name', '=', 'Round Málaga Centro')], limit=1)
-    analytic_id = analytic_ids[0] if analytic_ids else None
+    # La analítica se resuelve por el TRAINER de cada cliente dentro del bucle
+    # (antes estaba hardcodeada a "Round Málaga Centro" → mezclaba Añoreta).
 
     # Sale journal
     sale_ids = o._call('account.journal', 'search',
@@ -184,13 +182,14 @@ def facturar(trim):
                    importe_base, importe_iva, importe_total, periodo,
                    estado, account_move_id, account_payment_id
               FROM recibo
-             WHERE id_manager=%s AND id = ANY(%s) AND estado='pagado'
+             WHERE id_manager=%s AND id = ANY(%s)
+               AND estado IN ('pagado','impagado','devuelto')
                AND account_move_id IS NULL
         """, (str(g.id_manager), recibo_ids))
         recibos = cur.fetchall()
 
     if not recibos:
-        return jsonify({'ok': False, 'error': 'no_facturables (todos ya facturados o no pagados)'}), 400
+        return jsonify({'ok': False, 'error': 'no_facturables (todos ya tienen asiento)'}), 400
 
     # Agrupar
     if agrupar:
@@ -214,6 +213,9 @@ def facturar(trim):
             log.warning(f'partner no encontrado: {cli_idnoofit}')
             continue
         pid = partner_ids[0]
+        # Analítica del TRAINER del cliente (no hardcode) → cada factura con la
+        # analítica de su propio centro, sin mezclar Añoreta/Málaga.
+        analytic_id = o._resolve_analytic_for_partner(pid)
 
         # Líneas de factura: 1 por recibo
         line_ids = []
@@ -268,10 +270,15 @@ def facturar(trim):
             # Vincular recibos
             inv_data = o._call('account.move', 'read', [inv_id], ['name'])[0]
             with get_conn() as conn, conn.cursor() as cur:
+                # Marca el asiento en TODOS; estado='facturado' solo si estaba
+                # 'pagado' (los impagados/devueltos conservan su estado para no
+                # romper el seguimiento de impago/recobro, pero ya con asiento).
                 cur.execute("""
                     UPDATE recibo
-                       SET estado='facturado', account_move_id=%s,
-                           account_move_ref=%s, fecha_facturacion=NOW()
+                       SET account_move_id=%s, account_move_ref=%s,
+                           fecha_facturacion=NOW(),
+                           estado = CASE WHEN estado='pagado' THEN 'facturado'
+                                         ELSE estado END
                      WHERE id_manager=%s AND id = ANY(%s)
                 """, (inv_id, inv_data['name'], str(g.id_manager),
                       [r['id'] for r in lista_recibos]))
