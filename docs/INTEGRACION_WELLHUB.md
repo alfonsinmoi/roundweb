@@ -21,16 +21,38 @@ credenciales en **Configuración → Wellhub**.
 - Otras APIs disponibles: Events API, User Registration API, Eligibility API.
 - Credenciales inválidas → `401`.
 
+### ⛔ Aislamiento por trainer (OBLIGATORIO)
+Igual que el resto de la web: **cada trainer solo ve/gestiona los check-ins de
+SU centro**; nunca los de otro trainer del mismo manager. El mecanismo es el
+**`unit_id` de Wellhub** (una unidad = un centro = un trainer): todo check-in se
+etiqueta con el `id_trainer` que corresponde a su `unit_id`.
+
 ➡️ **Plan técnico (cuando lleguen las credenciales):**
-1. `wellhub_config` (per manager + `unit_id` por centro/trainer): api_key,
-   webhook_secret, unit_id por centro, entorno (sandbox/prod), activo.
-2. Endpoint webhook `POST /api/webhooks/wellhub/checkin` (verifica firma con el
-   secret) → crea `entrada_puntual_evento` (origen `wellhub`, mapeada al
-   `id_trainer` por `unit_id`).
-3. (Opcional) Validación en recepción vía Access Control API (mostrar QR/token
-   del cliente → autorizar).
-4. Aislamiento: el `unit_id` mapea cada check-in a SU centro/trainer (regla
-   multi-tenant: cada trainer solo ve sus entradas).
+1. **Dos tablas** (separa credenciales de la red vs mapeo por centro):
+   - `wellhub_config` (PK `id_manager`): `api_key`, `webhook_secret`,
+     `entorno` (sandbox/prod), `activo`. Credenciales de **red** (Wellhub emite
+     una API Key para toda la red; el `unit_id` discrimina por centro).
+   - `wellhub_unit` (`id_manager`, `id_trainer`, `unit_id`): **mapeo
+     unidad↔trainer**, `UNIQUE(id_manager, unit_id)`. Es la pieza de
+     aislamiento: cada `unit_id` pertenece a UN trainer.
+2. Webhook `POST /api/webhooks/wellhub/checkin` (verifica firma con el
+   `webhook_secret`): del payload saca el `unit_id` → resuelve `(id_manager,
+   id_trainer)` en `wellhub_unit` → crea `entrada_puntual_evento` con
+   **`id_trainer` puesto** + `origen='wellhub'`. Si el `unit_id` **no está
+   mapeado** → rechazo + log (NUNCA crea una entrada sin trainer).
+3. **Listado** (Económico → Entradas puntuales, filtro `wellhub`): scopeado por
+   trainer con los helpers existentes (`apply_trainer_filter_*`) — el trainer ve
+   solo SUS check-ins; el manager, los de todos sus centros.
+4. **Config → Wellhub** (managerOnly + permiso): el manager gestiona la API Key
+   de red + da de alta el `unit_id` de **cada** centro/trainer (la fila
+   `wellhub_unit`). Un trainer sin `unit_id` no recibe check-ins.
+5. (Opcional) Validación en recepción vía Access Control API (QR/token del
+   cliente → autorizar), también scopeada al `unit_id` del centro.
+
+> **Nota para la petición a Wellhub:** confirmar si pueden emitir **API Key por
+> unidad** (aislamiento aún más fuerte) o si es **una Key de red + `unit_id` por
+> request** (su modelo estándar). En ambos casos el aislamiento de datos se
+> garantiza con el mapeo `unit_id → id_trainer` de arriba.
 
 ## Qué hay que pedir a Wellhub (Techsales / Account Manager)
 Contacto: **integrations@gympass.com** o tu **Account Manager** de Wellhub.
@@ -72,6 +94,9 @@ Portal de docs: https://developers.wellhub.com (= developers.gympass.com).
 > 4. Acceso a **entorno sandbox/test** con credenciales de prueba.
 > 5. Documentación técnica (autenticación, payload del webhook, rate limits) y,
 >    si aplica, requisitos de IP allowlist.
+> 6. Necesitamos **separar los datos por centro**: ¿es posible una **API Key por
+>    unidad**, o el modelo es una **Key de red con el `unit_id` en cada request**?
+>    (Nos vale cualquiera; el `unit_id` por centro es imprescindible.)
 >
 > Contacto técnico: c.alcalde@wiemspro.com
 >
