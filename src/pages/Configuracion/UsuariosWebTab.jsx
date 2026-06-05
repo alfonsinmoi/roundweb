@@ -33,30 +33,19 @@ export default function UsuariosWebTab() {
   const [editing, setEditing] = useState(null)
 
   const [centros, setCentros] = useState([])
-  // Filtro por centro: un usuario_web solo aparece en los centros de su pivote
-  // (id_trainers). Los multi-centro salen en cada centro asignado. Por defecto
-  // hereda el centro seleccionado en el header (si hay).
-  const [centroFiltro, setCentroFiltro] = useState(() => {
-    try {
-      const v = sessionStorage.getItem('round.trainer_filter')
-      return (v && !['all', '*', ''].includes(v)) ? v : ''
-    } catch { return '' }
-  })
-  const usuariosVisibles = useMemo(() => {
-    if (!centroFiltro) return usuarios
-    return usuarios.filter(u => {
-      const trs = (Array.isArray(u.id_trainers) && u.id_trainers.length > 0)
-        ? u.id_trainers
-        : (u.id_trainer ? [u.id_trainer] : [])
-      return trs.map(String).includes(String(centroFiltro))
-    })
-  }, [usuarios, centroFiltro])
+  // Aislamiento por centro (filtra el BACKEND por el pivote usuario_web_trainer):
+  //  - Sesión atada a un centro (identity.trainerId, p.ej. trainer logueado) →
+  //    la lista se FUERZA a ese centro y el selector se ANULA.
+  //  - Manager (sin trainerId) → selector activo: elegir centro o "Todos".
+  const lockedTrainer = identity?.trainerId ? String(identity.trainerId) : null
+  const [centroFiltro, setCentroFiltro] = useState('')
+  const trainerSel = lockedTrainer || (centroFiltro || null)
 
   const reload = async () => {
     setLoading(true)
     try {
       const [u, p, c] = await Promise.all([
-        usuariosWebList(identity),
+        usuariosWebList(identity, trainerSel || undefined),
         perfilesList(identity),
         getEntrenadores().catch(() => []),
       ])
@@ -66,7 +55,9 @@ export default function UsuariosWebTab() {
     } catch (e) { toast.error('Error: ' + e.message) }
     finally { setLoading(false) }
   }
-  useEffect(() => { if (identity?.managerId) reload() }, [identity?.managerId])
+  // Manager: recarga al cambiar el centro. Trainer: lockedTrainer es fijo.
+  useEffect(() => { if (identity?.managerId) reload() },
+    [identity?.managerId, identity?.trainerId, centroFiltro])
 
   // Si el backend devuelve `email_send_failed`, el mensaje real está en
   // `e.body.detalle` (+ `e.body.sugerencia`). Lo desglosamos para que el
@@ -121,20 +112,32 @@ export default function UsuariosWebTab() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <label style={{ fontSize: 13, color: 'var(--text-2)' }}>Centro:</label>
-        <select value={centroFiltro} onChange={e => setCentroFiltro(e.target.value)}
-                style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)',
-                         border: '1px solid var(--line)', background: 'var(--bg-1)',
-                         color: 'var(--text-0)', fontSize: 13 }}>
-          <option value="">Todos los centros</option>
-          {centros.map(c => (
-            <option key={c.id} value={String(c.id)}>
-              {(c.name && c.name.trim()) ? `${c.name} ${c.surname || ''}`.trim() : (c.email || `Centro ${c.id}`)}
-            </option>
-          ))}
-        </select>
+        {lockedTrainer ? (
+          // Sesión de trainer → centro fijo, selector anulado.
+          <span style={{ fontSize: 13, color: 'var(--text-1)', fontWeight: 600 }}>
+            {(() => {
+              const c = centros.find(x => String(x.id) === lockedTrainer)
+              return c ? ((c.name && c.name.trim()) ? `${c.name} ${c.surname || ''}`.trim() : (c.email || `Centro ${lockedTrainer}`)) : `Centro ${lockedTrainer}`
+            })()}
+            <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 6 }}>(tu centro)</span>
+          </span>
+        ) : (
+          // Manager → selector activo.
+          <select value={centroFiltro} onChange={e => setCentroFiltro(e.target.value)}
+                  style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                           border: '1px solid var(--line)', background: 'var(--bg-1)',
+                           color: 'var(--text-0)', fontSize: 13 }}>
+            <option value="">Todos los centros</option>
+            {centros.map(c => (
+              <option key={c.id} value={String(c.id)}>
+                {(c.name && c.name.trim()) ? `${c.name} ${c.surname || ''}`.trim() : (c.email || `Centro ${c.id}`)}
+              </option>
+            ))}
+          </select>
+        )}
         <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
-          {usuariosVisibles.length} usuario{usuariosVisibles.length !== 1 ? 's' : ''}
-          {centroFiltro ? ' en este centro' : ''}
+          {usuarios.length} usuario{usuarios.length !== 1 ? 's' : ''}
+          {trainerSel ? ' en este centro' : ''}
         </span>
       </div>
 
