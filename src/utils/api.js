@@ -455,8 +455,22 @@ async function _proxySalas(body = {}) {
   return d.salas ?? []
 }
 
+// Trainer efectivo para filtrar clases en login NoofitPro DIRECTO:
+// override del selector admin, o el trainer de la sesión (roundTrainerId, que
+// fija el fix de identidad por X-TRAINER_MANAGER). null = manager/todos.
+// (El usuario_web NO pasa por aquí: filtra el proxy server-side por su JWT.)
+function effectiveTrainerId() {
+  const override = getTrainerFilterFromStorage()
+  if (override) return override
+  try {
+    const raw = sessionStorage.getItem('round_session')
+    const s = raw ? JSON.parse(raw) : {}
+    return s?.roundTrainerId ? String(s.roundTrainerId) : null
+  } catch { return null }
+}
+
 function _filtrarSalasPorTrainer(salas) {
-  const tf = getTrainerFilterFromStorage()
+  const tf = effectiveTrainerId()
   if (!tf) return salas
   return salas.filter(s => String(s.idTrainer || s.trainerId || '') === String(tf))
 }
@@ -512,7 +526,8 @@ function isoWithOffset(date) {
 }
 
 export const getSalasByRange = (fechaDesde, fechaHasta) => {
-  const key = `salas-range:${fechaDesde.toISOString().slice(0, 10)}:${fechaHasta.toISOString().slice(0, 10)}`
+  const tfKey = effectiveTrainerId() || 'all'
+  const key = `salas-range:${fechaDesde.toISOString().slice(0, 10)}:${fechaHasta.toISOString().slice(0, 10)}:${tfKey}`
   return cached(key, async () => {
     const { isUsuarioWeb } = getProxyAuth()
     if (isUsuarioWeb) {
@@ -522,10 +537,12 @@ export const getSalasByRange = (fechaDesde, fechaHasta) => {
       }).catch(() => [])
       return list.filter(s => s.enabled !== false)
     }
+    // Login NoofitPro directo: NoofitPro NO filtra por trainer (devuelve todas
+    // las del manager) → filtramos por el trainer de la sesión para aislar.
     return apiPost('api/dispositivos/getSalasByManagerByRange', {
       fechaDesde: isoWithOffset(fechaDesde),
       fechaHasta: isoWithOffset(fechaHasta),
-    }).then(d => (d.salas ?? []).filter(s => s.enabled !== false))
+    }).then(d => _filtrarSalasPorTrainer((d.salas ?? []).filter(s => s.enabled !== false)))
   })
 }
 
