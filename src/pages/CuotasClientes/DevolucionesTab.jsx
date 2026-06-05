@@ -5,11 +5,18 @@ import { Card, Btn, SectionTitle, Badge, Avatar } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { procesarDevoluciones, cuotasList } from '../../utils/cuotasApi'
 
-// Detecta el campo "referencia del recibo" en una fila parseada.
-// Acepta nombres de columna típicos ES/EN.
-const REF_KEYS = ['invoice_ref','recibo','factura','referencia','numero','número','number','reference','endtoendid','end_to_end_id','name']
-const MOTIVO_KEYS = ['motivo','reason','concepto','razon','razón','description','descripcion']
+// Columnas del fichero de devoluciones SEPA del banco. La devolución se casa
+// con la EMISIÓN (mes/año) + el CLIENTE (DNI), NO con la referencia Odoo:
+//  - DNI: del "Concepto" (ej. "MES:6,26241980S C:2203/RT MJ 1915").
+//  - periodo: de "Fecha de cobro original" (ej. "01-06-2026" → 2026-06).
+const CONCEPTO_KEYS = ['concepto']
+const FECHA_KEYS = ['fecha de cobro original','fecha cobro original','fecha de cargo','fecha cargo','fecha cobro','fecha original','fecha']
 const IMPORTE_KEYS = ['importe','amount','total']
+const MOTIVODEV_KEYS = ['motivo devolución','motivo devolucion','motivo','reason','razón','razon']
+const CODIGO_KEYS = ['código devolución','codigo devolucion','código','codigo','code']
+const LIBRADO_KEYS = ['librado','deudor','cliente','nombre','titular']
+const REF_KEYS = ['referencia','reference','recibo','invoice_ref','numero','número']
+const DNI_KEYS = ['dni','nif','documento','nie']
 
 function findKey(row, candidates) {
   const keys = Object.keys(row).map(k => k.toLowerCase().trim())
@@ -20,35 +27,52 @@ function findKey(row, candidates) {
   return null
 }
 
+const DOC_RE = /[XYZ]?\d{7,8}[A-Z]/i
+function extractDni(concepto, dniCol) {
+  const m1 = String(dniCol || '').match(DOC_RE)
+  if (m1) return m1[0].toUpperCase()
+  const m2 = String(concepto || '').match(DOC_RE)
+  return m2 ? m2[0].toUpperCase() : ''
+}
+
+function toPeriodo(v) {
+  if (v == null || v === '') return ''
+  const s = String(v).trim()
+  let m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/)   // dd-mm-yyyy
+  if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}`
+  m = s.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$/)        // yyyy-mm-dd
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}`
+  const d = new Date(s)
+  if (!isNaN(d.getTime())) return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  return ''
+}
+
 function normalizarFilas(raw) {
   if (!raw || raw.length === 0) return []
-  // Si las filas son arrays (sin cabecera), tratar primera columna como ref
-  if (Array.isArray(raw[0])) {
-    return raw.filter(r => r[0]).map(r => ({
-      invoice_ref: String(r[0]).trim(),
-      motivo: r[1] ? String(r[1]).trim() : '',
-      importe: r[2] || null,
-    }))
-  }
-  // Filas como objetos: detectar columnas
+  // Fichero del banco = filas como objetos con cabecera.
+  if (Array.isArray(raw[0])) return []
   const sample = raw[0]
-  const refKey = findKey(sample, REF_KEYS)
-  const motivoKey = findKey(sample, MOTIVO_KEYS)
+  const conceptoKey = findKey(sample, CONCEPTO_KEYS)
+  const fechaKey = findKey(sample, FECHA_KEYS)
   const importeKey = findKey(sample, IMPORTE_KEYS)
-  if (!refKey) {
-    // Si no encontramos cabecera con nombre conocido, usar primera columna
-    const k0 = Object.keys(sample)[0]
-    return raw.filter(r => r[k0]).map(r => ({
-      invoice_ref: String(r[k0]).trim(),
-      motivo: '',
-      importe: null,
-    }))
-  }
-  return raw.filter(r => r[refKey]).map(r => ({
-    invoice_ref: String(r[refKey]).trim(),
-    motivo: motivoKey ? (r[motivoKey] ? String(r[motivoKey]).trim() : '') : '',
-    importe: importeKey ? r[importeKey] : null,
-  }))
+  const motivoKey = findKey(sample, MOTIVODEV_KEYS)
+  const codigoKey = findKey(sample, CODIGO_KEYS)
+  const libradoKey = findKey(sample, LIBRADO_KEYS)
+  const refKey = findKey(sample, REF_KEYS)
+  const dniKey = findKey(sample, DNI_KEYS)
+  return raw.map(r => {
+    const concepto = conceptoKey ? String(r[conceptoKey] || '') : ''
+    const motivoDev = motivoKey ? String(r[motivoKey] || '').trim() : ''
+    const codigo = codigoKey ? String(r[codigoKey] || '').trim() : ''
+    return {
+      dni: extractDni(concepto, dniKey ? r[dniKey] : ''),
+      periodo: toPeriodo(fechaKey ? r[fechaKey] : ''),
+      importe: importeKey ? r[importeKey] : null,
+      motivo: [motivoDev, codigo ? `(${codigo})` : ''].filter(Boolean).join(' ') || concepto,
+      librado: libradoKey ? String(r[libradoKey] || '').trim() : '',
+      referencia: refKey ? String(r[refKey] || '').trim() : '',
+    }
+  }).filter(f => f.dni || f.referencia)
 }
 
 export default function DevolucionesTab({ identity }) {
@@ -120,11 +144,14 @@ export default function DevolucionesTab({ identity }) {
   }
   function addReciboFromBusqueda(r) {
     setFilas(prev => [...prev, {
-      invoice_ref: r.name,
-      motivo: busMotivo.trim(),
-      importe: r.amount_total,
+      cliente_idnoofit: String(r.partner_idnoofit || r.cliente_idnoofit || ''),
+      periodo: r.periodo || r.mes || mesBusca,
+      importe: r.amount_total ?? r.importe_total,
+      motivo: busMotivo.trim() || 'Devolución manual',
+      librado: r.partner_id?.name || r.cliente_nombre || (clienteSel?.name) || '',
+      referencia: r.name || r.account_move_ref || '',
     }])
-    toast.success(`${r.name} añadido`)
+    toast.success(`${r.name || 'recibo'} añadido`)
   }
 
   function handleFile(file) {
@@ -308,7 +335,7 @@ export default function DevolucionesTab({ identity }) {
                     </thead>
                     <tbody>
                       {clienteSel.recibos.map(r => {
-                        const yaAñadido = filas.some(f => f.invoice_ref === r.name)
+                        const yaAñadido = filas.some(f => f.referencia === r.name)
                         const isPaid = r.payment_state === 'paid'
                         const stateColor = isPaid ? 'green'
                           : r.payment_state === 'reversed' ? 'red'
@@ -356,9 +383,11 @@ export default function DevolucionesTab({ identity }) {
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
                   <Th>#</Th>
-                  <Th>Referencia recibo</Th>
-                  <Th>Motivo</Th>
+                  <Th>Cliente</Th>
+                  <Th>DNI</Th>
+                  <Th>Periodo</Th>
                   <Th>Importe</Th>
+                  <Th>Motivo</Th>
                   <Th></Th>
                 </tr>
               </thead>
@@ -366,9 +395,11 @@ export default function DevolucionesTab({ identity }) {
                 {filas.map((f, i) => (
                   <tr key={i}>
                     <Td style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{i + 1}</Td>
-                    <Td mono style={{ fontWeight: 600 }}>{f.invoice_ref}</Td>
-                    <Td title={f.motivo}>{f.motivo || '—'}</Td>
+                    <Td title={f.referencia}>{f.librado || '—'}</Td>
+                    <Td mono>{f.dni || '—'}</Td>
+                    <Td mono style={{ color: f.periodo ? 'inherit' : 'var(--red)' }}>{f.periodo || '⚠ sin fecha'}</Td>
                     <Td mono>{f.importe ? `${parseFloat(f.importe).toFixed(2)} €` : '—'}</Td>
+                    <Td title={f.motivo}>{f.motivo || '—'}</Td>
                     <Td>
                       <Btn size="sm" variant="secondary" onClick={() => removeFila(i)}>
                         <X size={12} />
@@ -413,11 +444,11 @@ export default function DevolucionesTab({ identity }) {
                 <tbody>
                   {resultado.procesadas.map((p, i) => (
                     <tr key={i}>
-                      <Td mono>{p.invoice_ref}</Td>
-                      <Td title={p.partner}>{p.partner || '—'}</Td>
+                      <Td mono>{p.referencia || '—'}</Td>
+                      <Td title={p.partner}>{p.partner || '—'}{p.ya_devuelto ? ' (ya devuelto)' : ''}</Td>
                       <Td mono>{p.importe ? `${p.importe.toFixed(2)} €` : '—'}</Td>
                       <Td title={p.motivo}>{p.motivo || '—'}</Td>
-                      <Td mono>{p.pagos_anulados}</Td>
+                      <Td mono>{p.pagos_anulados ?? '—'}</Td>
                     </tr>
                   ))}
                 </tbody>
@@ -431,14 +462,14 @@ export default function DevolucionesTab({ identity }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--line)', textAlign: 'left' }}>
-                    <Th>Referencia</Th>
+                    <Th>Cliente / Ref</Th>
                     <Th>Error</Th>
                   </tr>
                 </thead>
                 <tbody>
                   {resultado.errores.map((e, i) => (
                     <tr key={i}>
-                      <Td mono>{e.invoice_ref || '—'}</Td>
+                      <Td title={e.referencia}>{e.librado || e.referencia || '—'}</Td>
                       <Td wrap title={e.error}>{e.error}</Td>
                     </tr>
                   ))}

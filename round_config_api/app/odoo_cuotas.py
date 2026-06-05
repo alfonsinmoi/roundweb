@@ -884,6 +884,29 @@ class OdooCuotas:
                 result['errores'].append({'invoice_ref': ref, 'error': str(e)})
         return result
 
+    def anular_pagos_de_move(self, move_id):
+        """Cancela los account.payment reconciliados con un account.move → la
+        factura vuelve a NO pagada (amount_residual>0), pendiente de recobro.
+        Devuelve el nº de pagos cancelados. Idempotente."""
+        try:
+            move_id = int(move_id)
+        except (TypeError, ValueError):
+            return 0
+        pagos = self._call('account.payment', 'search',
+                           [('reconciled_invoice_ids', 'in', [move_id])])
+        n = 0
+        for p in pagos:
+            try:
+                self._call('account.payment', 'action_draft', [p])
+            except Exception:
+                pass
+            try:
+                self._call('account.payment', 'action_cancel', [p])
+                n += 1
+            except Exception as e:
+                log.warning(f'anular_pagos_de_move: cancel payment {p}: {e}')
+        return n
+
     def descargar_sepa(self, attachment_id):
         att = self._call('ir.attachment','read',[attachment_id],['name','datas','mimetype'])
         if not att:

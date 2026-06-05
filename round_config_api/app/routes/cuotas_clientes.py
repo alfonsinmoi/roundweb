@@ -616,41 +616,142 @@ def paycomet_callback():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+import re as _re
+from datetime import date as _date
+
+
+def _norm_doc(s):
+    """Normaliza un DNI/NIE: mayúsculas, solo alfanumérico."""
+    v = _re.sub(r'[^A-Za-z0-9]', '', str(s or '')).upper()
+    return v or None
+
+
+def _parse_importe_dev(v):
+    if v is None or v == '':
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        s = str(v).strip().replace('.', '').replace(',', '.')
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+
+def _cliente_idnoofit_por_dni(id_manager, dni):
+    """DNI → cliente_idnoofit dentro del MANAGER (todos sus trainers; la
+    devolución no sale de la esfera del manager). None si no hay match único."""
+    if not dni:
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id::text AS id FROM cliente_cache
+             WHERE id_manager = %s
+               AND upper(regexp_replace(coalesce(raw_data->>'dni',''),'[^A-Za-z0-9]','','g')) = %s
+             LIMIT 1
+        """, (str(id_manager), dni))
+        row = cur.fetchone()
+    return row['id'] if row else None
+
+
+def _recibo_para_devolucion(id_manager, cliente_idnoofit, periodo, importe):
+    """Recibo (BD) que casa con la devolución: manager + cliente + periodo.
+    Prefiere el no-devuelto y el de importe más cercano. Manager-scoped."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, id_trainer, cliente_nombre, estado, importe_total, account_move_id
+              FROM recibo
+             WHERE id_manager = %s AND cliente_idnoofit = %s AND periodo = %s
+               AND estado <> 'anulado'
+             ORDER BY (estado = 'devuelto') ASC,
+                      CASE WHEN %s IS NULL THEN 0
+                           ELSE abs(coalesce(importe_total,0) - %s) END ASC,
+                      id DESC
+             LIMIT 1
+        """, (str(id_manager), str(cliente_idnoofit), periodo, importe, importe))
+        return cur.fetchone()
+
+
 @bp.route('/devoluciones', methods=['POST'])
 @auth_required
 def devoluciones():
-    """Recibe { rows: [{invoice_ref, motivo}, ...] } y anula los pagos.
-
-    Tras procesar, dispara notif automática al cliente afectado
-    (si auto_devolucion está activa en su config). Defensivo: el fallo
-    al notificar NO rompe el endpoint.
+    """Procesa devoluciones SEPA. Cada fila casa con la EMISIÓN (mes/año) + el
+    CLIENTE (DNI), NO con la referencia Odoo. Body:
+      { rows: [{ dni|cliente_idnoofit, periodo:'AAAA-MM', importe?, motivo?,
+                 referencia?, librado? }, ...] }
+    Matching MANAGER-scoped (todos los trainers; el fichero del banco es de la
+    empresa fiscal entera). Marca el recibo 'devuelto' (BD) y anula el pago en
+    Odoo si tiene asiento. Idempotente (si ya está devuelto, lo reporta).
     """
     try:
         d = request.get_json() or {}
         rows = d.get('rows') or []
         if not rows:
             return jsonify({'ok': False, 'error': 'Sin filas'}), 400
-        # Acotado al MANAGER que sube (todos sus trainers, sin salir de su
-        # empresa fiscal). El fichero SEPA del banco es a nivel de empresa
-        # (p.ej. Best Training = company 3, compartida por Añoreta+Málaga), así
-        # que un trainer puede subir las devoluciones de TODO el grupo, pero
-        # nunca casar una factura de otro manager con el mismo número.
-        result = get_cuotas(g.id_manager).procesar_devoluciones(rows)
+        oc = get_cuotas(g.id_manager)
+        result = {'procesadas': [], 'errores': []}
+        for r in rows:
+            ref = (r.get('referencia') or r.get('invoice_ref') or '').strip()
+            librado = (r.get('librado') or '').strip()
+            motivo = (r.get('motivo') or '').strip() or 'Devolución SEPA'
+            periodo = (r.get('periodo') or '').strip()
+            importe = _parse_importe_dev(r.get('importe'))
+            cliente = (str(r.get('cliente_idnoofit') or '').strip()) or None
+            dni = _norm_doc(r.get('dni'))
+            err = {'referencia': ref, 'librado': librado}
 
-        # ── Notif automática "devolucion" por cada procesada ──
+            if not cliente and dni:
+                cliente = _cliente_idnoofit_por_dni(g.id_manager, dni)
+            if not cliente:
+                err['error'] = 'cliente no encontrado (DNI)'; result['errores'].append(err); continue
+            if not periodo:
+                err['error'] = 'sin periodo (fecha de cobro original)'; result['errores'].append(err); continue
+
+            rec = _recibo_para_devolucion(g.id_manager, cliente, periodo, importe)
+            if not rec:
+                err['error'] = f'recibo no encontrado (cliente {cliente}, {periodo})'
+                result['errores'].append(err); continue
+
+            base = {'referencia': ref, 'recibo_id': rec['id'],
+                    'invoice_id': rec['account_move_id'], 'partner': rec['cliente_nombre'],
+                    'partner_idnoofit': cliente, 'importe': float(rec['importe_total'] or 0),
+                    'motivo': motivo, 'periodo': periodo}
+            if rec['estado'] == 'devuelto':
+                base['ya_devuelto'] = True
+                result['procesadas'].append(base); continue
+
+            # Marcar devuelto en BD
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE recibo SET estado='devuelto', fecha_devolucion=NOW(),
+                           notas = COALESCE(notas,'') || %s, updated_at = NOW()
+                     WHERE id = %s
+                """, (f"\n[DEVOLUCIÓN {_date.today().isoformat()}] {motivo}", rec['id']))
+            # Anular el pago en Odoo (si el recibo tiene asiento) → queda pendiente de recobro
+            pagos_anulados = 0
+            if rec['account_move_id']:
+                try:
+                    pagos_anulados = oc.anular_pagos_de_move(rec['account_move_id'])
+                except Exception as e:
+                    log.warning(f'devolucion: anular pago move {rec["account_move_id"]}: {e}')
+            base['pagos_anulados'] = pagos_anulados
+            result['procesadas'].append(base)
+            log_action(actor_from_request(), 'devolucion', 'devolucion', entidad_id=str(rec['id']),
+                       resumen=f"Devolución SEPA · recibo {rec['id']} · {rec['cliente_nombre']} · {periodo}",
+                       cambios={'motivo': motivo, 'importe': base['importe'], 'periodo': periodo})
+
+        # Notif automática al cliente afectado
         notificadas = 0
-        for proc in result.get('procesadas', []):
+        for proc in result['procesadas']:
+            if proc.get('ya_devuelto'):
+                continue
             try:
                 if _disparar_notif_devolucion(proc, g.id_manager):
                     notificadas += 1
             except Exception as e:
-                log.warning(f'notif devolucion fallback: {e}')
+                log.warning(f'notif devolucion: {e}')
         result['notif_enviadas'] = notificadas
-
-        log_action(actor_from_request(), 'devolucion', 'devolucion',
-                   resumen=f'Devoluciones procesadas ({len(rows)} filas)',
-                   cambios={'rows': rows,
-                            'procesadas': result.get('procesadas')})
         return jsonify({'ok': True, **result})
     except Exception as e:
         log.exception('devoluciones')
