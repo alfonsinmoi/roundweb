@@ -607,6 +607,37 @@ emisión) cree el asiento según `modo_facturacion`.
 
 ---
 
+## 19. Clases/salas NO separadas por centro (trainer)
+
+**Estado (verificado jun 2026):** `getSalasByManagerByRange` /
+`getSalasByManager` devuelven **TODAS las clases del grupo bajo
+`idTrainer=17675`** (el manager), **aunque consultes con las credenciales de
+otro trainer** (probado con `roundanoreta@noofit.com` → mismas 187 clases, todas
+`idTrainer=17675`, `idCreador=17675`). Ningún campo del objeto sala distingue el
+centro: `idTecnico` (26/27) / `nameTrainer` ("Trainer "/"NooFit") solo separan
+**tipo de actividad** (RT vs Ciclo), no el trainer/centro.
+
+**Síntoma:** un trainer (p.ej. Añoreta) ve las clases de Málaga; no se pueden
+aislar por centro porque en NoofitPro no están separadas.
+
+**Lo que necesitamos de NoofitPro:**
+1. Que cada sala/clase lleve el **`idTrainer` del centro real** al que pertenece
+   (Añoreta=17674, Málaga=17675, …), no siempre el del manager.
+2. (o) Que `getSalasByManagerByRange` con el token de un trainer devuelva **solo
+   las clases de ese trainer**.
+
+**Impacto en la web:** el filtro por `idTrainer` ya existe (proxy
+`/api/trainer-data/salas` filtra por el trainer del usuario_web). En cuanto
+NoofitPro etiquete las clases por centro, **el aislamiento funciona solo, sin
+cambios en la web**. Hasta entonces, un trainer ve 0 (si se filtra) o todas (si
+no) — ninguna correcta.
+
+> Mientras tanto, en la web: alinear la ruta de login NoofitPro directo para que
+> filtre por el `trainerId` de la sesión (hoy solo filtra el proxy de
+> usuario_web); pero no resuelve el problema de fondo (datos no separados).
+
+---
+
 ## Resumen ejecutivo (para hablar con NoofitPro)
 
 **Cambios "urgentes" (afectan funcionalidad existente):**
