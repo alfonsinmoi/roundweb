@@ -641,7 +641,7 @@ def devoluciones():
         notificadas = 0
         for proc in result.get('procesadas', []):
             try:
-                if _disparar_notif_devolucion(proc):
+                if _disparar_notif_devolucion(proc, g.id_manager):
                     notificadas += 1
             except Exception as e:
                 log.warning(f'notif devolucion fallback: {e}')
@@ -657,22 +657,34 @@ def devoluciones():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
-def _disparar_notif_devolucion(proc: dict) -> bool:
+def _disparar_notif_devolucion(proc: dict, id_manager: str, id_trainer: str = None) -> bool:
     """Manda notif "devolucion" al cliente si tiene id_noofit y auto_devolucion=True.
 
     `proc` viene de procesar_devoluciones: incluye partner_idnoofit, importe,
-    motivo, invoice_ref, invoice_id.
-    Retorna True si se intentó el envío.
+    motivo, invoice_ref, invoice_id. `id_manager` = el manager que sube el
+    fichero (g.id_manager); ya NO se usa ROUND_DEFAULT_MANAGER hardcodeado, así
+    funciona multimanager. Retorna True si se intentó el envío.
     """
     cliente_idnoofit = (proc.get('partner_idnoofit') or '').strip()
     if not cliente_idnoofit:
         return False
 
-    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
-    id_trainer = None  # TODO derivar del partner cuando exista x_id_trainer
+    from ..db import get_conn
+    # Derivar el trainer del cliente (de la cache) para scopear bien la config
+    # de notif y el envío. Si no se encuentra, queda None (manager-wide).
+    if id_trainer is None:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT id_trainer FROM cliente_cache "
+                            "WHERE id_manager=%s AND id::text=%s LIMIT 1",
+                            (str(id_manager), cliente_idnoofit))
+                row = cur.fetchone()
+                if row and row.get('id_trainer') is not None:
+                    id_trainer = str(row['id_trainer'])
+        except Exception:
+            pass
 
     # Comprobar config
-    from ..db import get_conn
     auto_on = True
     plantillas = {}
     try:
