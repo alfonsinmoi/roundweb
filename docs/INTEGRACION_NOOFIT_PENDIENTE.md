@@ -632,9 +632,17 @@ NoofitPro etiquete las clases por centro, **el aislamiento funciona solo, sin
 cambios en la web**. Hasta entonces, un trainer ve 0 (si se filtra) o todas (si
 no) — ninguna correcta.
 
-> Mientras tanto, en la web: alinear la ruta de login NoofitPro directo para que
-> filtre por el `trainerId` de la sesión (hoy solo filtra el proxy de
-> usuario_web); pero no resuelve el problema de fondo (datos no separados).
+> **Hecho en la web (jun 2026):** todas las vías de listado de clases filtran
+> por trainer — `getSalas`/`getSalasRango`/`getSalasByRange` (usuario_web por el
+> proxy server-side; login NoofitPro directo por `roundTrainerId` de la sesión).
+> Un trainer solo ve SUS clases (Añoreta=0 hasta crear las suyas).
+>
+> **Residual (defensa en profundidad, ligado a este gap):**
+> `getUsuariosBySala(salaId)` (asistentes de una clase) es llamada directa a
+> NoofitPro sin validar que la sala sea del trainer. Hoy no explotable (el
+> `salaId` solo sale del listado ya filtrado, y todas las salas son 17675).
+> Cuando NoofitPro separe salas por centro, conviene un proxy que valide
+> `sala.idTrainer == g.id_trainer` antes de devolver asistentes.
 
 ---
 
