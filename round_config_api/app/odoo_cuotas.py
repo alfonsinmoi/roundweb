@@ -214,6 +214,7 @@ class OdooCuotas:
         log.info(f'Preemisión {mes_str}: {len(subs)} suscripciones activas')
 
         creados, ya_emitido, no_aplica = [], [], []
+        sin_analitica = []   # B12 req4 (soft): movimientos sin analítica de trainer
 
         for s in subs:
             sub_id = s['id']
@@ -249,11 +250,13 @@ class OdooCuotas:
             # línea para que el reporte por trainer funcione en Odoo.
             line_extras = {}
             tai = s.get('trainer_analytic_id')
-            if tai:
-                # tai puede venir como [id, "nombre"] o como int
-                aid = tai[0] if isinstance(tai, (list, tuple)) else tai
-                if aid:
-                    line_extras['analytic_distribution'] = {str(aid): 100.0}
+            aid = (tai[0] if isinstance(tai, (list, tuple)) else tai) if tai else None
+            if aid:
+                line_extras['analytic_distribution'] = {str(aid): 100.0}
+            else:
+                # B12 req4 (soft): el movimiento se crea igual (no parar cobros),
+                # pero se registra para incidencia → revisar analítica del trainer.
+                sin_analitica.append(sub_id)
 
             line_vals = [(0,0,{
                 'name': descripcion,
@@ -277,7 +280,9 @@ class OdooCuotas:
                 'invoice_line_ids': line_vals,
                 'round_subscription_id': sub_id,
                 'narration': narration or False,
-                'company_id': s.get('company_id', [1])[0] if isinstance(s.get('company_id'), list) else 1,
+                # B1/B10 — company de la sub; jamás caer a la 1 legacy
+                'company_id': (s['company_id'][0] if isinstance(s.get('company_id'), list)
+                               else self.company_id),
             }
             # Mandato + payment_mode si SEPA
             if s.get('forma_pago') == 'sepa' and s.get('mandate_id'):
@@ -300,11 +305,26 @@ class OdooCuotas:
                 'precio_final': calc['precio_final'],
             })
 
+        # B12 req4 (soft): incidencia si hubo movimientos sin analítica de trainer
+        if sin_analitica and self._id_manager:
+            try:
+                from .incidencias import crear_incidencia_admin
+                crear_incidencia_admin(
+                    id_manager=self._id_manager, tipo='odoo_analitica',
+                    severidad='warning', entidad='preemision', entidad_id=mes_str,
+                    titulo=f'{len(sin_analitica)} movimientos {mes_str} sin analítica de trainer',
+                    mensaje=('Se crearon recibos/borradores sin analytic_distribution de '
+                             f'trainer (subs: {sin_analitica[:50]}). Revisar que cada '
+                             'suscripción tenga trainer_analytic_id para atribuir el ingreso.'))
+            except Exception as e:
+                log.warning(f'preemision: incidencia sin_analitica: {e}')
+
         return {
             'mes': mes_str,
             'creados': creados,
             'ya_emitido': ya_emitido,
             'no_aplica': no_aplica,
+            'sin_analitica': sin_analitica,
         }
 
     def _toca_emitir(self, sub_id, s, mes_str):

@@ -139,6 +139,14 @@ class RoundSubscription(models.Model):
         readonly=True,
     )
 
+    def init(self):
+        # B7 — una suscripción ACTIVA por (partner, cuota). Índice parcial.
+        self.env.cr.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_partner_cuota_activa
+            ON round_subscription (partner_id, cuota_id)
+            WHERE estado = 'activa'
+        """)
+
     @api.depends('partner_id', 'cuota_id', 'estado')
     def _compute_display_name(self):
         for rec in self:

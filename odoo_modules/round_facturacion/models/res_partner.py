@@ -41,6 +41,15 @@ class ResPartner(models.Model):
         string='Nº suscripciones',
     )
 
+    def init(self):
+        # B2 — unicidad GLOBAL de id_noofit: 1 cliente NoofitPro = 1 res.partner
+        # (compartido entre companies). Índice parcial (excluye NULL/'').
+        self.env.cr.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS res_partner_id_noofit_uniq
+            ON res_partner (id_noofit)
+            WHERE id_noofit IS NOT NULL AND id_noofit <> ''
+        """)
+
     @api.depends('round_subscription_ids')
     def _compute_round_subscription_count(self):
         for rec in self:

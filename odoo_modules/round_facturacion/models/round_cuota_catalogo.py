@@ -89,6 +89,16 @@ class RoundCuotaCatalogo(models.Model):
          'El código de cuota debe ser único por empresa y trainer.'),
     ]
 
+    def init(self):
+        # B5 — una cuota ACTIVA por (codigo, company, trainer). COALESCE trata
+        # id_trainer NULL/'' como un único bucket (cierra el hueco de NULL).
+        # WHERE activo permite que convivan archivadas con el mismo codigo.
+        self.env.cr.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_cuota_catalogo_codigo_comp_trainer_activo
+            ON round_cuota_catalogo (codigo, company_id, COALESCE(id_trainer, ''))
+            WHERE activo = true
+        """)
+
     @api.depends('subscription_ids', 'subscription_ids.estado')
     def _compute_n_suscripciones(self):
         for rec in self:
