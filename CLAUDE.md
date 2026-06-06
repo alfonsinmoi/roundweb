@@ -457,6 +457,34 @@ A partir de Fase 6 cada módulo Odoo se activa por separado desde
 **Configuración → Suscripciones** (pestaña principal). El antiguo wizard
 "Desplegar contabilidad" queda como legacy.
 
+### ⛔ REGLA ARQUITECTÓNICA — una BASE DE DATOS Odoo por manager (no una company)
+
+**Cuando un manager activa una "empresa Odoo" (al contratar contabilidad,
+cuotas o CRM) se crea una BASE DE DATOS Odoo NUEVA y dedicada para ese manager
+— NO una `res.company` dentro de la base de datos `round_facturacion`.**
+
+- Aislamiento por BD = aislamiento total: un manager nunca puede ver/escribir
+  datos de otro porque ni siquiera comparten base de datos. Es el blindaje
+  multi-tenant definitivo (mejor que multi-company por filas).
+- `manager_config.odoo_url` (y/o un `odoo_db` por manager) identifica la
+  instancia/BD del manager. La conexión XML-RPC se hace contra ESA BD.
+- **Dentro de la BD del manager**, los trainers se separan así:
+  - trainer SIN entidad jurídica propia → analítica (`trainer_analytic_id`)
+    dentro de la company del manager.
+  - trainer CON entidad jurídica distinta (CIF propio) → `res.company`
+    PROPIA **dentro de la BD del manager** (`trainer_empresa.odoo_company_id`).
+  Es decir: la frontera de **BD = manager**; dentro, la frontera de
+  **company = entidad jurídica** (manager o trainer-entidad).
+- `resolve_company(manager, trainer)` (B1) resuelve la company DENTRO de la BD
+  del manager; la resolución de la **BD/URL** se hace por `odoo_url`/`odoo_db`
+  del manager (ya soportado en `OdooCuotas._ensure_identity`).
+- **Estado actual (jun 2026)**: solo opera el manager Round (17675) en la BD
+  histórica `round_facturacion`, company 3. Los próximos managers que activen
+  módulos estrenarán BD propia. El provisioner debe crear la BD (no solo la
+  company) y registrar `odoo_url`/`odoo_db` en `manager_config`.
+- La company `1` ("BEST TRAINING legacy USA - NO USAR") es legacy/prohibida
+  (lista negra `ODOO_LEGACY_COMPANY_IDS`, guard B1).
+
 - **3 columnas booleanas en manager_config**:
   `odoo_crm_enabled`, `odoo_cuotas_enabled`, `odoo_contabilidad_enabled`
   + `sistemas_cobro` JSONB (lista, valores válidos: `sepa`,
