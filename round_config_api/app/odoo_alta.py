@@ -26,6 +26,19 @@ JOURNAL_KEYS = {
 }
 
 
+def _email_real(email):
+    """B3 — email aprovechable como clave de identidad (único en NoofitPro).
+    Descarta vacíos, sin '@', placeholders nomail@ y marcadores _MAK."""
+    e = (email or '').strip().lower()
+    if not e or '@' not in e:
+        return False
+    if '_mak' in e:
+        return False
+    if e == 'nomail@nomail.es':
+        return False
+    return True
+
+
 class OdooAlta(OdooCuotas):
     """Hereda OdooCuotas para reusar conexión XML-RPC y _calcular_importe."""
 
@@ -34,20 +47,23 @@ class OdooAlta(OdooCuotas):
         """datos = {nombre, apellidos, dni, email, movil, direccion, localidad,
                     cp, fecha_nacimiento, sexo, idnoofit, iban}"""
         idnoofit = str(datos.get('idnoofit') or '').strip() or None
-        # 1) Buscar por id_noofit (el que usamos para sync). Multi-company:
-        #    res.partner es global en Odoo pero queremos limitar al partner
-        #    de la company del manager actual (para evitar colisiones cuando
-        #    dos managers tengan el mismo cliente con el mismo idnoofit).
+        # B3 — Identidad de partner = id_noofit (1 cliente NoofitPro = 1 partner
+        # GLOBAL; el partner es compartido entre companies, por eso NO se
+        # scopea por company). B2 garantiza unicidad de id_noofit.
         partner_id = None
         if idnoofit:
-            ids = self._call_scoped('res.partner', 'search', [('id_noofit','=',idnoofit)], limit=1)
+            ids = self._call('res.partner', 'search', [('id_noofit','=',idnoofit)], limit=1)
             if ids: partner_id = ids[0]
-        # 2) Si no, buscar por DNI (vat) o email
-        if not partner_id and datos.get('dni'):
-            ids = self._call_scoped('res.partner', 'search', [('vat','=',datos['dni'])], limit=1)
-            if ids: partner_id = ids[0]
-        if not partner_id and datos.get('email'):
-            ids = self._call_scoped('res.partner', 'search', [('email','=ilike',datos['email'])], limit=1)
+        # Secundaria: email (único en NoofitPro), SOLO si es real y el candidato
+        # no tiene OTRO id_noofit (evita reescribir el partner de otra persona).
+        # NUNCA por DNI/vat: no es único (una persona puede tener 2 cuentas NF).
+        if not partner_id and _email_real(datos.get('email')):
+            dom = [('email','=ilike', datos['email'].strip())]
+            if idnoofit:
+                dom += ['|', ('id_noofit','=',False), ('id_noofit','=',idnoofit)]
+            else:
+                dom += [('id_noofit','=',False)]
+            ids = self._call('res.partner', 'search', dom, limit=1)
             if ids: partner_id = ids[0]
 
         vals = {
@@ -107,43 +123,36 @@ class OdooAlta(OdooCuotas):
                 log.info(f'IBAN registrado para partner {partner_id}')
         return partner_id
 
-    # ── Cuota lookup / autocreación ──────────────────────────────────────────
-    def get_cuota_by_codigo(self, codigo):
-        if not codigo: return None
-        ids = self._call_scoped('round.cuota.catalogo', 'search',
-            [('codigo','=', str(codigo))], limit=1)
-        if not ids: return None
-        return self._call('round.cuota.catalogo', 'read', [ids[0]],
-            ['id','codigo','descripcion','precio_mensual','precio_trimestral',
-             'precio_semestral','precio_anual','matricula','product_id'])[0]
+    # ── Cuota lookup (B6: identidad = codigo + id_trainer, SIN auto-crear) ────
+    _CUOTA_FIELDS = ['id','codigo','descripcion','precio_mensual','precio_trimestral',
+                     'precio_semestral','precio_anual','matricula','product_id',
+                     'company_id','id_trainer']
 
-    def get_or_create_cuota(self, codigo, fallback_precio=None, fallback_periodicidad='mensual'):
-        """Devuelve la cuota; si no existe la crea con el precio aportado en
-        la periodicidad indicada. Útil cuando el trainer da de alta a un
-        cliente cuya cuota no se ha configurado todavía en el catálogo."""
-        c = self.get_cuota_by_codigo(codigo)
-        if c: return c
-        if fallback_precio is None or fallback_precio <= 0:
-            return None  # no podemos crearla sin precio
-        precio_field = {
-            'mensual':    'precio_mensual',
-            'bimensual':  'precio_mensual',  # Odoo no tiene precio_bimensual
-            'trimestral': 'precio_trimestral',
-            'semestral':  'precio_semestral',
-            'anual':      'precio_anual',
-        }.get(fallback_periodicidad, 'precio_mensual')
-        vals = {
-            'codigo': str(codigo),
-            'descripcion': f'{codigo} (creada desde alta cliente)',
-            precio_field: float(fallback_precio),
-            'company_id': self.company_id,
-            'activo': True,
-        }
-        cuota_id = self._call('round.cuota.catalogo', 'create', vals)
-        log.info(f'Cuota auto-creada {codigo} id={cuota_id} {precio_field}={fallback_precio}')
-        return self._call('round.cuota.catalogo', 'read', [cuota_id],
-            ['id','codigo','descripcion','precio_mensual','precio_trimestral',
-             'precio_semestral','precio_anual','matricula','product_id'])[0]
+    def get_cuota_by_codigo(self, codigo, id_trainer=None):
+        """B6 — Busca la cuota por (codigo, id_trainer) en la company del trainer.
+        Identidad = codigo + id_trainer (toda cuota pertenece a un trainer).
+        NO hay fallback a plantilla de manager. Devuelve dict o None."""
+        if not codigo:
+            return None
+        comp = self.resolve_company(self._id_manager, id_trainer)
+        dom = [('codigo','=', str(codigo)), ('activo','=', True)]
+        if comp:
+            dom.append(('company_id','=', comp))
+        if id_trainer:
+            dom.append(('id_trainer','=', str(id_trainer)))
+        ids = self._call('round.cuota.catalogo', 'search', dom, limit=1)
+        if not ids:
+            return None
+        return self._call('round.cuota.catalogo', 'read', [ids[0]], self._CUOTA_FIELDS)[0]
+
+    def get_or_create_cuota(self, codigo, fallback_precio=None,
+                            fallback_periodicidad='mensual', id_trainer=None):
+        """B6 — NO auto-crea (eso ensuciaba el catálogo con cuotas fantasma).
+        Si la cuota del trainer no existe → None; el caller lanza error claro.
+        Una cuota inexistente solo debería ocurrir en una importación mal
+        preparada (hay que importar el catálogo y asignarlo al trainer ANTES
+        de importar los clientes)."""
+        return self.get_cuota_by_codigo(codigo, id_trainer=id_trainer)
 
     # ── Subscription ─────────────────────────────────────────────────────────
     def _desc_ids_from_codigos(self, codigos):
@@ -176,12 +185,11 @@ class OdooAlta(OdooCuotas):
         # Normalizar forma_pago al Selection real de round.subscription
         forma_pago = self._map_forma_pago_recurrente(forma_pago)
 
-        # ── Anti-duplicado: si ya hay suscripción activa con mismo
-        # partner+cuota+periodicidad, la reutilizamos (actualizamos forma_pago).
+        # ── B4/B7 — Anti-duplicado: UNA sub ACTIVA por (partner, cuota), SIN
+        # periodicidad (alineado con el índice único uq_subscription_partner_cuota_activa).
         existing = self._call('round.subscription', 'search',
             [('partner_id','=',partner_id),
              ('cuota_id','=',cuota_id),
-             ('periodicidad','=',periodicidad),
              ('estado','=','activa')], limit=1)
         if existing:
             sub_id = existing[0]
@@ -203,6 +211,20 @@ class OdooAlta(OdooCuotas):
                 except Exception as e: log.warning(f'descuentos: {e}')
             return sub_id
 
+        # B4 — company de la sub = la del trainer del cliente (B1) + coherencia
+        # férrea cuota ↔ sub ↔ company.
+        info = self._call('res.partner', 'read', [partner_id], ['id_noofit'])
+        idn = info[0].get('id_noofit') if info else None
+        id_trainer = self._id_trainer_de_idnoofit(idn)
+        comp = self.resolve_company(self._id_manager, id_trainer)
+        self._require_company(comp)
+        cu = self._call('round.cuota.catalogo', 'read', [cuota_id], ['company_id'])
+        cu_comp = (cu[0]['company_id'][0] if cu and cu[0].get('company_id') else None)
+        if cu_comp and cu_comp != comp:
+            raise RuntimeError(
+                f'Incoherencia: cuota {cuota_id} es de company {cu_comp}, '
+                f'no de la del trainer {id_trainer} (company {comp}).')
+
         # Mandato SEPA si forma_pago == sepa
         mandate_id = False
         if forma_pago == 'sepa':
@@ -217,6 +239,7 @@ class OdooAlta(OdooCuotas):
             'forma_pago': forma_pago,
             'estado': 'activa',
             'fecha_inicio': fecha_inicio or str(date.today()),
+            'company_id': comp,
         }
         if mandate_id:
             vals['mandate_id'] = mandate_id
@@ -244,6 +267,23 @@ class OdooAlta(OdooCuotas):
         sub_id = self._call('round.subscription', 'create', vals)
         log.info(f'Subscription creada id={sub_id}')
         return sub_id
+
+    def _id_trainer_de_idnoofit(self, idnoofit):
+        """B6/B4 — Trainer ACTUAL del cliente según el vínculo NoofitPro
+        (cliente_cache.id_trainer). La web lo LEE, nunca lo escribe."""
+        if not idnoofit or not self._id_manager:
+            return None
+        try:
+            from .db import get_conn
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT id_trainer FROM cliente_cache "
+                            "WHERE id_manager=%s AND id=%s",
+                            (str(self._id_manager), int(idnoofit)))
+                row = cur.fetchone()
+            tr = (row or {}).get('id_trainer')
+            return str(tr) if tr else None
+        except Exception:
+            return None
 
     def _resolve_analytic_for_partner(self, partner_id):
         """Dado un partner_id en Odoo, devuelve el analytic_id que le
@@ -555,18 +595,16 @@ class OdooAlta(OdooCuotas):
         # 1) Partner
         partner_id = self.upsert_partner(cli)
 
-        # 2) Cuota — si no existe la creamos con el importe aportado
-        importe_alta = float(alta.get('importe_alta') or 0)
-        periodicidad = sub.get('periodicidad') or 'mensual'
-        cuota = self.get_or_create_cuota(
-            sub.get('cuota_codigo'),
-            fallback_precio=importe_alta,
-            fallback_periodicidad=periodicidad,
-        )
+        # 2) Cuota — DEBE existir para el trainer del cliente (B6: no se auto-crea).
+        #    Trainer = cliente_cache.id_trainer (vínculo NoofitPro); fallback al
+        #    id_trainer del contexto del alta.
+        id_trainer_cli = self._id_trainer_de_idnoofit(cli.get('idnoofit')) or id_trainer
+        cuota = self.get_cuota_by_codigo(sub.get('cuota_codigo'), id_trainer=id_trainer_cli)
         if not cuota:
             raise ValueError(
-                f"cuota '{sub.get('cuota_codigo')}' no existe y no se puede crear "
-                f"(falta importe). Crea la cuota en Configuración primero."
+                f"La cuota '{sub.get('cuota_codigo')}' no existe en el catálogo del "
+                f"trainer {id_trainer_cli}. Configúrala en Configuración → Cuotas "
+                f"antes de dar de alta al cliente."
             )
 
         # 3) Subscription

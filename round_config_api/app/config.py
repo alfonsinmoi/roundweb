@@ -16,6 +16,12 @@ ODOO_PWD     = os.getenv('CONFIG_ODOO_PWD',  '')
 ODOO_COMPANY = int(os.getenv('CONFIG_ODOO_COMPANY', '1'))
 ODOO_SYNC_ENABLED = os.getenv('CONFIG_ODOO_SYNC', '1') == '1'
 
+# B1 — Companies Odoo "legacy/prohibidas": NUNCA se escribe en ellas.
+# Por defecto la company 1 ("BEST TRAINING legacy USA - NO USAR").
+ODOO_LEGACY_COMPANY_IDS = {
+    int(x) for x in os.getenv('CONFIG_ODOO_LEGACY_COMPANIES', '1').split(',') if x.strip()
+}
+
 # Token compartido entre frontend Round y este backend
 API_TOKEN = os.getenv('CONFIG_API_TOKEN', '')
 

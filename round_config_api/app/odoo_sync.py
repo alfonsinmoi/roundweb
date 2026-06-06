@@ -28,6 +28,31 @@ class OdooSync:
         self._company_id = None
         self._odoo_url = None
 
+    def resolve_company(self, id_manager=None, id_trainer=None):
+        """B1/B10 — Empresa Odoo por (manager, trainer). int | None.
+        Trainer con entidad propia → su company; si no → la del manager.
+        Lanza si la company resuelta es legacy/prohibida."""
+        idm = str(id_manager) if id_manager else (self._id_manager or None)
+        comp = None
+        from .db import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            if idm and id_trainer:
+                cur.execute("SELECT odoo_company_id FROM trainer_empresa "
+                            "WHERE id_manager=%s AND id_trainer=%s", (idm, str(id_trainer)))
+                r = cur.fetchone()
+                if r and r.get('odoo_company_id'):
+                    comp = int(r['odoo_company_id'])
+            if comp is None and idm:
+                cur.execute("SELECT odoo_company_id FROM manager_config WHERE id_manager=%s", (idm,))
+                r = cur.fetchone()
+                if r and r.get('odoo_company_id'):
+                    comp = int(r['odoo_company_id'])
+        if comp is None and not idm:
+            comp = int(cfg.ODOO_COMPANY)
+        if comp is not None and comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+            raise RuntimeError(f'company {comp} es legacy/prohibida (manager={idm}, trainer={id_trainer})')
+        return comp
+
     def _ensure_identity(self):
         if self._company_id is not None:
             return
@@ -35,23 +60,16 @@ class OdooSync:
             try:
                 from .db import get_conn
                 with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT odoo_company_id, odoo_url
-                          FROM manager_config
-                         WHERE id_manager = %s
-                    """, (self._id_manager,))
+                    cur.execute("SELECT odoo_url FROM manager_config WHERE id_manager=%s",
+                                (self._id_manager,))
                     row = cur.fetchone()
-                if row and row.get('odoo_company_id'):
-                    self._company_id = int(row['odoo_company_id'])
-                    self._odoo_url = (row.get('odoo_url') or '').strip() or None
-                    return
-                log.warning(f'OdooSync: manager_id={self._id_manager} sin '
-                            f'odoo_company_id; usando default '
-                            f'cfg.ODOO_COMPANY={cfg.ODOO_COMPANY}')
+                self._odoo_url = ((row or {}).get('odoo_url') or '').strip() or None
             except Exception as e:
-                log.warning(f'OdooSync: error resolviendo identidad: {e}')
-        self._company_id = int(cfg.ODOO_COMPANY)
-        self._odoo_url = None
+                log.warning(f'OdooSync: error resolviendo odoo_url: {e}')
+        comp = self.resolve_company(self._id_manager)
+        if comp is None and not self._id_manager:
+            comp = int(cfg.ODOO_COMPANY)
+        self._company_id = comp  # puede ser None para manager sin provisionar
 
     @property
     def company_id(self):
@@ -119,7 +137,7 @@ class OdooSync:
         # Idempotencia: buscar por (codigo, company, id_trainer). Cada centro
         # tiene su propia cuota con mismo código (Málaga "I MYGYM" ≠ Añoreta "I MYGYM").
         search_dom = [('codigo', '=', vals['codigo']),
-                      ('company_id', '=', cfg.ODOO_COMPANY)]
+                      ('company_id', '=', vals['company_id'])]
         tr = vals.get('id_trainer') or False
         search_dom.append(('id_trainer', '=', tr))
         existing = self._call('round.cuota.catalogo', 'search', search_dom, limit=1)
@@ -151,7 +169,7 @@ class OdooSync:
             'matricula':         float(r.get('matricula')         or 0),
             'activo':            bool(r.get('active', True)),
             'actividades_descripcion': self._build_acts_desc(r),
-            'company_id':        cfg.ODOO_COMPANY,
+            'company_id':        self.resolve_company(self._id_manager, id_trainer),  # B10: por trainer
             'id_trainer':        str(id_trainer) if id_trainer else False,
         }
 
@@ -171,7 +189,7 @@ class OdooSync:
         if not cfg.ODOO_SYNC_ENABLED: return None
         vals = self._descuento_vals(r)
         existing = self._call('round.descuento.catalogo', 'search',
-                              [('codigo', '=', vals['codigo']), ('company_id', '=', cfg.ODOO_COMPANY)],
+                              [('codigo', '=', vals['codigo']), ('company_id', '=', vals['company_id'])],
                               limit=1)
         if existing:
             self._call('round.descuento.catalogo', 'write', [existing[0]], vals)
@@ -193,7 +211,7 @@ class OdooSync:
             'tipo':        r['tipo'],
             'valor':       float(r.get('valor') or 0),
             'activo':      bool(r.get('active', True)),
-            'company_id':  cfg.ODOO_COMPANY,
+            'company_id':  self.resolve_company(self._id_manager, r.get('id_trainer')),  # B10: por trainer
         }
 
     # ── Modificaciones ───────────────────────────────────────────────────────

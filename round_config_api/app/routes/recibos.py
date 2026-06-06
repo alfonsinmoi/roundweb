@@ -533,6 +533,13 @@ def marcar_pagado(rid):
                                            fecha_pago=fecha,
                                            actor_label=actor_label or 'marcar_pagado')
                 payment_id = res['payment_id']
+                # B9 — reflejo Odoo OK
+                try:
+                    with get_conn() as _c, _c.cursor() as _cur:
+                        _cur.execute("UPDATE recibo SET sync_status='synced', "
+                                     "sync_error=NULL, sync_attempted_at=now() WHERE id=%s", (r['id'],))
+                        _c.commit()
+                except Exception: pass
                 # Reconciliar contra la factura SOLO si existe y está posteada.
                 move_id = r.get('account_move_id')
                 if move_id:
@@ -555,9 +562,25 @@ def marcar_pagado(rid):
             else:
                 odoo_warning = res['error']
                 log.warning(f'marcar_pagado recibo={rid} → Odoo NO actualizado: {res["error"]}')
+                # B9 — a la cola de reintento (cron_odoo_sync_retry)
+                try:
+                    with get_conn() as _c, _c.cursor() as _cur:
+                        _cur.execute("UPDATE recibo SET sync_status='pending', "
+                                     "sync_error=%s, sync_attempted_at=now() WHERE id=%s",
+                                     ((res.get('error') or '')[:500], rid))
+                        _c.commit()
+                except Exception: pass
         except Exception as e:
             odoo_warning = str(e)
             log.exception(f'marcar_pagado recibo={rid}: error Odoo')
+            # B9 — a la cola de reintento
+            try:
+                with get_conn() as _c, _c.cursor() as _cur:
+                    _cur.execute("UPDATE recibo SET sync_status='pending', "
+                                 "sync_error=%s, sync_attempted_at=now() WHERE id=%s",
+                                 (str(e)[:500], rid))
+                    _c.commit()
+            except Exception: pass
 
     log_action(actor, entidad='recibo', entidad_id=rid, accion='marcar_pagado',
                resumen=(f"Recibo {rid} pagado vía {r['metodo_pago']} · "

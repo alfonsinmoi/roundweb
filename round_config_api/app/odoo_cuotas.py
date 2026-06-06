@@ -39,35 +39,79 @@ class OdooCuotas:
         # Lazy: company_id y odoo_url se resuelven en la primera conexión
         self._company_id = None
         self._odoo_url = None
+        self._identity_resolved = False
 
-    # ── Resolución de identidad del manager ─────────────────────────────────
+    # ── Resolución de empresa/identidad (B1) ─────────────────────────────────
+    def resolve_company(self, id_manager=None, id_trainer=None):
+        """B1 — Empresa Odoo por (manager, trainer). Devuelve int | None.
+
+        - Si el trainer tiene entidad jurídica propia
+          (`trainer_empresa.odoo_company_id` no nulo) → su company.
+        - Si no → la del manager (`manager_config.odoo_company_id`).
+        - Si no hay ninguna → None (sin módulo activado = legítimo; el guard
+          de ESCRITURA `_require_company` decide si abortar).
+        Lanza si la company resuelta es legacy/prohibida.
+        """
+        idm = str(id_manager) if id_manager else (self._id_manager or None)
+        comp = None
+        from .db import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            if idm and id_trainer:
+                cur.execute("SELECT odoo_company_id FROM trainer_empresa "
+                            "WHERE id_manager=%s AND id_trainer=%s",
+                            (idm, str(id_trainer)))
+                r = cur.fetchone()
+                if r and r.get('odoo_company_id'):
+                    comp = int(r['odoo_company_id'])
+            if comp is None and idm:
+                cur.execute("SELECT odoo_company_id FROM manager_config "
+                            "WHERE id_manager=%s", (idm,))
+                r = cur.fetchone()
+                if r and r.get('odoo_company_id'):
+                    comp = int(r['odoo_company_id'])
+        if comp is not None and comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+            raise RuntimeError(
+                f'company {comp} es legacy/prohibida (manager={idm}, trainer={id_trainer})')
+        return comp
+
+    def _require_company(self, comp):
+        """B1 — exige empresa válida (no None, no legacy) para ESCRIBIR en Odoo."""
+        if comp is None:
+            raise RuntimeError(
+                f'Sin empresa Odoo para manager={self._id_manager}; '
+                f'activa el módulo (cuotas/contabilidad) antes de operar.')
+        if comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+            raise RuntimeError(f'company {comp} es legacy/prohibida.')
+        return comp
+
     def _ensure_identity(self):
-        """Resuelve company_id y odoo_url desde manager_config (lazy)."""
-        if self._company_id is not None:
+        """Resuelve company_id (de la instancia = la del manager) y odoo_url.
+
+        B1: rechaza company legacy SIEMPRE; no inventa una company para un
+        manager sin provisionar (queda None y el guard de escritura aborta).
+        Las llamadas sin id_manager (legacy) usan cfg.ODOO_COMPANY del .env.
+        """
+        if self._identity_resolved:
             return
+        # odoo_url propio del manager (si lo tiene)
         if self._id_manager:
             try:
                 from .db import get_conn
                 with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT odoo_company_id, odoo_url
-                          FROM manager_config
-                         WHERE id_manager = %s
-                    """, (self._id_manager,))
+                    cur.execute("SELECT odoo_url FROM manager_config WHERE id_manager=%s",
+                                (self._id_manager,))
                     row = cur.fetchone()
-                if row and row.get('odoo_company_id'):
-                    self._company_id = int(row['odoo_company_id'])
-                    self._odoo_url = (row.get('odoo_url') or '').strip() or None
-                    return
-                log.warning(f'OdooCuotas: manager_id={self._id_manager} '
-                            f'no tiene odoo_company_id en BD; usando default '
-                            f'cfg.ODOO_COMPANY={cfg.ODOO_COMPANY}')
-            except Exception as e:
-                log.exception(f'OdooCuotas: error resolviendo identidad '
-                              f'del manager {self._id_manager}: {e}')
-        # Fallback al .env (manager histórico Round, id=17675, company_id=3)
-        self._company_id = int(cfg.ODOO_COMPANY)
-        self._odoo_url = None
+                self._odoo_url = ((row or {}).get('odoo_url') or '').strip() or None
+            except Exception:
+                self._odoo_url = None
+        comp = self.resolve_company(self._id_manager)
+        if comp is None and not self._id_manager:
+            # Camino legacy sin manager → company del .env (verificada ≠ legacy)
+            comp = int(cfg.ODOO_COMPANY)
+            if comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+                raise RuntimeError(f'cfg.ODOO_COMPANY={comp} es legacy/prohibida')
+        self._company_id = comp          # puede ser None (manager sin provisionar)
+        self._identity_resolved = True
 
     @property
     def company_id(self):

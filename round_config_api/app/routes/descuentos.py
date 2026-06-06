@@ -162,7 +162,7 @@ def create():
               d.get('precio_final'), combo_json, acts_json))
         row = cur.fetchone()
     if scope == 'plantilla_manager':
-        oid = get_sync().descuento_create(row)
+        oid = get_sync(g.id_manager).descuento_create(row)
         if oid and isinstance(oid, int):
             with get_conn() as conn2, conn2.cursor() as cur2:
                 cur2.execute("UPDATE descuento SET odoo_id=%s WHERE id=%s", (oid, row['id']))
@@ -208,9 +208,9 @@ def update(_id):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     if r['scope'] == 'plantilla_manager':
         if r.get('odoo_id'):
-            get_sync().descuento_update(r['odoo_id'], r)
+            get_sync(g.id_manager).descuento_update(r['odoo_id'], r)
         else:
-            oid = get_sync().descuento_create(r)
+            oid = get_sync(g.id_manager).descuento_create(r)
             if oid and isinstance(oid, int):
                 with get_conn() as conn2, conn2.cursor() as cur2:
                     cur2.execute("UPDATE descuento SET odoo_id=%s WHERE id=%s", (oid, r['id']))
@@ -233,7 +233,7 @@ def delete(_id):
         cur.execute("DELETE FROM descuento WHERE id=%s AND id_manager=%s", (_id, g.id_manager))
         n = cur.rowcount
     if r and r.get('odoo_id') and r.get('scope') == 'plantilla_manager':
-        get_sync().descuento_delete(r['odoo_id'])
+        get_sync(g.id_manager).descuento_delete(r['odoo_id'])
     if n:
         log_action(actor_from_request(), 'descuento', 'delete',
                    entidad_id=_id,
@@ -582,7 +582,7 @@ def create_asignacion(desc_id):
                 continue
             # Sync Odoo: añadir descuento a suscripciones activas del cliente
             if desc_odoo_id:
-                get_sync().asignacion_apply(desc_odoo_id, cliente)
+                get_sync(g.id_manager).asignacion_apply(desc_odoo_id, cliente)
             creadas.append(_asig_row(row))
         except Exception as e:
             errores.append({'cliente': cliente, 'error': str(e)})
@@ -640,7 +640,7 @@ def delete_asignacion(desc_id, asig_id):
             cur.execute("SELECT odoo_id FROM descuento WHERE id=%s", (desc_id,))
             desc_r = cur.fetchone()
         if desc_r and desc_r.get('odoo_id'):
-            get_sync().asignacion_revoke(desc_r['odoo_id'], r['cliente_idnoofit'])
+            get_sync(g.id_manager).asignacion_revoke(desc_r['odoo_id'], r['cliente_idnoofit'])
 
     if n > 0:
         log_action(actor_from_request(), 'descuento_asignacion', 'desasignar',

@@ -2519,6 +2519,85 @@ CREATE TRIGGER trg_puesto_demanda_upd     BEFORE UPDATE ON puesto_demanda
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_trabajador_pref_upd    BEFORE UPDATE ON trabajador_preferencias
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+
+-- ═══ Blindajes de integridad financiera (jun 2026) ═══════════════════════
+-- B1/B9: columnas nuevas (idempotente para instalaciones existentes)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='trainer_empresa')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='trainer_empresa' AND column_name='odoo_company_id') THEN
+    ALTER TABLE trainer_empresa ADD COLUMN odoo_company_id INTEGER;  -- NULL = comparte la del manager
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='recibo') THEN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='sync_status') THEN
+      ALTER TABLE recibo ADD COLUMN sync_status VARCHAR(12) DEFAULT 'synced';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='sync_attempted_at') THEN
+      ALTER TABLE recibo ADD COLUMN sync_attempted_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='sync_error') THEN
+      ALTER TABLE recibo ADD COLUMN sync_error TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='sepa_remesa_id') THEN
+      ALTER TABLE recibo ADD COLUMN sepa_remesa_id INTEGER;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='sync_intentos') THEN
+      ALTER TABLE recibo ADD COLUMN sync_intentos INTEGER DEFAULT 0;
+    END IF;
+  END IF;
+END $$;
+
+-- B12.1: emisión irrepetible por (manager, trainer, periodo)
+CREATE TABLE IF NOT EXISTS emision_mes (
+  id          serial PRIMARY KEY,
+  id_manager  varchar(64) NOT NULL,
+  id_trainer  varchar(64) NOT NULL,
+  periodo     varchar(7)  NOT NULL,
+  emitido_at  timestamptz NOT NULL DEFAULT now(),
+  n_recibos   integer DEFAULT 0,
+  UNIQUE (id_manager, id_trainer, periodo)
+);
+
+-- B12.2: trazabilidad única de actuaciones financieras (cobros/devoluciones/modificaciones)
+CREATE TABLE IF NOT EXISTS movimiento_financiero (
+  id          serial PRIMARY KEY,
+  id_manager  varchar(64) NOT NULL,
+  id_trainer  varchar(64) NOT NULL,
+  recibo_id   integer,
+  tipo        varchar(16) NOT NULL CHECK (tipo IN ('cobro','devolucion','modificacion')),
+  referencia  varchar(120) NOT NULL,
+  importe     numeric(12,2),
+  fecha       date,
+  odoo_ref    varchar(120),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id_manager, tipo, recibo_id, referencia)
+);
+
+-- B12c: remesa SEPA con marcador anti-re-remesa
+CREATE TABLE IF NOT EXISTS sepa_remesa (
+  id          serial PRIMARY KEY,
+  id_manager  varchar(64) NOT NULL,
+  id_trainer  varchar(64) NOT NULL,
+  periodo     varchar(7),
+  fichero     text,
+  generado_at timestamptz NOT NULL DEFAULT now(),
+  estado      varchar(16) NOT NULL DEFAULT 'generada'
+);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name='recibo_sepa_remesa_fk') THEN
+    ALTER TABLE recibo ADD CONSTRAINT recibo_sepa_remesa_fk
+      FOREIGN KEY (sepa_remesa_id) REFERENCES sepa_remesa(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+-- B8a/B8b: idempotencia de recibos (import por origen_ref + emisión por trainer/periodo)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_recibo_import_origenref
+  ON recibo (id_manager, origen, origen_ref)
+  WHERE origen_ref IS NOT NULL AND origen_ref <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_recibo_emision_periodo
+  ON recibo (id_manager, id_trainer, cliente_idnoofit, periodo, cuota_codigo)
+  WHERE origen IN ('cron_emision','emision_v2') AND estado NOT IN ('cancelado','anulado');
 """
 
 

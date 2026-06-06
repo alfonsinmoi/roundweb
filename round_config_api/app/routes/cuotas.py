@@ -140,7 +140,7 @@ def create_cuota():
 
     # Sync Odoo: TODAS las cuotas (plantilla_manager + trainer) — el dropdown
     # de cuotas para el cliente lee de Odoo y filtra por id_trainer.
-    odoo_id = get_sync().cuota_create(row)
+    odoo_id = get_sync(g.id_manager).cuota_create(row)
     if odoo_id and isinstance(odoo_id, int):
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s RETURNING odoo_id", (odoo_id, row['id']))
@@ -186,9 +186,9 @@ def update_cuota(cuota_id):
     # las cuotas (plantilla_manager + trainer) — desde mayo 2026 cada cuota
     # vive en Odoo con su id_trainer para que el dropdown filtre per-centro.
     if row.get('odoo_id'):
-        get_sync().cuota_update(row['odoo_id'], row)
+        get_sync(g.id_manager).cuota_update(row['odoo_id'], row)
     else:
-        new_odoo_id = get_sync().cuota_create(row)
+        new_odoo_id = get_sync(g.id_manager).cuota_create(row)
         if new_odoo_id and isinstance(new_odoo_id, int):
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s", (new_odoo_id, row['id']))
@@ -211,7 +211,7 @@ def delete_cuota(cuota_id):
             cur.execute("DELETE FROM cuota WHERE id=%s AND id_manager=%s", (cuota_id, g.id_manager))
             n = cur.rowcount
     if r and r.get('odoo_id'):
-        get_sync().cuota_delete(r['odoo_id'])
+        get_sync(g.id_manager).cuota_delete(r['odoo_id'])
     if n:
         log_action(actor_from_request(), 'cuota', 'delete',
                    entidad_id=cuota_id,

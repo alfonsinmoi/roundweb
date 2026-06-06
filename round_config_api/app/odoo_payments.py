@@ -51,13 +51,10 @@ _journal_id_for._cache = {}
 
 
 def _partner_id_for_idnoofit(o, company_id, idnoofit):
-    """Resuelve partner Odoo por id_noofit. Prioriza el de la company; si no
-    hay, busca cross-company (caso multi-empresa)."""
-    partner_ids = o._call('res.partner', 'search',
-                          [('id_noofit', '=', str(idnoofit)),
-                           ('company_id', '=', company_id)], limit=1)
-    if partner_ids:
-        return partner_ids[0]
+    """B2/B9 — 1 idnoofit = 1 partner GLOBAL (compartido entre companies,
+    company_id NULL). Se busca solo por id_noofit; NO se filtra por company
+    (evita el fallback cross-company que podía colgar el cobro de un partner
+    de otra empresa). B2 garantiza unicidad de id_noofit."""
     partner_ids = o._call('res.partner', 'search',
                           [('id_noofit', '=', str(idnoofit))], limit=1)
     return partner_ids[0] if partner_ids else None
@@ -91,6 +88,30 @@ def crear_account_payment(o, *, company_id, recibo_id, cliente_idnoofit,
         return {'ok': False, 'payment_id': None, 'journal_id': jid,
                 'error': f'partner_no_encontrado_idnoofit_{cliente_idnoofit}'}
 
+    ref = f'COBRO-RECIBO-{recibo_id}'
+
+    def _ensure_posted(pay_id):
+        """Relee el estado; si no está posteado intenta postear y devuelve estado."""
+        st = (o._call('account.payment', 'read', [pay_id], ['state']) or [{}])[0].get('state')
+        if st != 'posted':
+            try:
+                o._call('account.payment', 'action_post', [pay_id])
+            except Exception as e:
+                log.warning(f'action_post falló para payment {pay_id}: {e}')
+            st = (o._call('account.payment', 'read', [pay_id], ['state']) or [{}])[0].get('state')
+        return st
+
+    # B9 — Idempotencia por ref: si ya existe un payment con este ref (no
+    # cancelado), reutilizarlo en vez de crear otro. Cierra el doble-pago ante
+    # reintentos/timeouts/concurrencia (cron+UI). El estado posted se valida.
+    existing = o._call('account.payment', 'search',
+        [('ref', '=', ref), ('company_id', '=', company_id), ('state', '!=', 'cancel')], limit=1)
+    if existing:
+        pay_id = existing[0]
+        st = _ensure_posted(pay_id)
+        return {'ok': st == 'posted', 'payment_id': pay_id, 'journal_id': jid,
+                'reused': True, 'error': None if st == 'posted' else 'no_posted'}
+
     fecha = fecha_emision
     if isinstance(fecha, dt.date) and not isinstance(fecha, dt.datetime):
         fecha = fecha.isoformat()
@@ -108,22 +129,18 @@ def crear_account_payment(o, *, company_id, recibo_id, cliente_idnoofit,
             'date':         str(fecha)[:10],
             'journal_id':   jid,
             'company_id':   company_id,
-            'ref':          f'COBRO-RECIBO-{recibo_id}',
+            'ref':          ref,
         })
     except Exception as e:
         log.exception(f'crear_account_payment recibo={recibo_id}')
         return {'ok': False, 'payment_id': None, 'journal_id': jid,
                 'error': f'create_failed: {e}'}
 
-    # Postear (cambiar a state=posted). Si falla, dejar el payment en draft
-    # y reportar (el operador puede postearlo manualmente).
-    try:
-        o._call('account.payment', 'action_post', [payment_id])
-    except Exception as e:
-        log.warning(f'action_post falló para payment {payment_id}: {e}')
-
-    return {'ok': True, 'payment_id': payment_id, 'journal_id': jid,
-            'error': None}
+    # B9 — postear y VALIDAR estado: si no queda 'posted', ok=False para que el
+    # llamador NO marque el recibo pagado en silencio (lo dejará pending → cron).
+    st = _ensure_posted(payment_id)
+    return {'ok': st == 'posted', 'payment_id': payment_id, 'journal_id': jid,
+            'error': None if st == 'posted' else 'no_posted'}
 
 
 def vincular_payment_a_recibo(recibo_id, payment_id, fecha_pago=None,

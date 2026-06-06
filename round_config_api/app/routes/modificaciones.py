@@ -84,7 +84,7 @@ def create():
               d['tipo'], d.get('valor',0), d['fecha_desde'], d.get('fecha_hasta'),
               d.get('razon'), d.get('estado', 'activa')))
         row = cur.fetchone()
-    oid = get_sync().modificacion_create(row)
+    oid = get_sync(g.id_manager).modificacion_create(row)
     if oid and isinstance(oid, int):
         with get_conn() as conn2, conn2.cursor() as cur2:
             cur2.execute("UPDATE modificacion SET odoo_id=%s WHERE id=%s", (oid, row['id']))
@@ -121,7 +121,7 @@ def update(_id):
     if not r:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     if r.get('odoo_id'):
-        get_sync().modificacion_update(r['odoo_id'], r)
+        get_sync(g.id_manager).modificacion_update(r['odoo_id'], r)
     log_action(actor_from_request(), 'modificacion', 'update',
                entidad_id=_id,
                resumen=f"Edición modificación id={_id}",
@@ -139,7 +139,7 @@ def delete(_id):
         cur.execute("DELETE FROM modificacion WHERE id=%s AND id_manager=%s", (_id, g.id_manager))
         n = cur.rowcount
     if r and r.get('odoo_id'):
-        get_sync().modificacion_delete(r['odoo_id'])
+        get_sync(g.id_manager).modificacion_delete(r['odoo_id'])
     if n:
         log_action(actor_from_request(), 'modificacion', 'delete',
                    entidad_id=_id,
