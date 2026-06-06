@@ -14,16 +14,19 @@ const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
 // Pestañas declaradas con qué modos las habilitan.
 // modes: array de modos en los que la pestaña se muestra. Si la lista incluye
 // '*' la pestaña se muestra siempre.
+// Orden (mayo 2026): primero lectura/análisis (Listado → Devoluciones →
+// Evolución), después acciones operativas (Generar recibos del mes →
+// Facturación). El Listado es la primera por ser la vista por defecto.
 const ALL_TABS = [
+  { id: 'listado',         label: 'Listado',                 comp: ListadoTab,           modes: ['*'] },
+  { id: 'devoluciones',    label: 'Devoluciones',            comp: DevolucionesTab,      modes: ['*'] },
+  { id: 'evolucion',       label: 'Evolución',               comp: EvolucionTab,         modes: ['*'] },
   { id: 'generar_recibos', label: 'Generar recibos del mes', comp: GenerarRecibosTab,
     modes: ['recibo_trimestre', 'factura_draft'] },
-  { id: 'facturacion_trim', label: 'Facturación trimestral', comp: FacturacionTrimestreTab,
-    modes: ['recibo_trimestre', 'factura_draft'] },
-  { id: 'generar',     label: 'Remesa mensual',         comp: GenerarTab,
+  { id: 'generar',         label: 'Remesa mensual',          comp: GenerarTab,
     modes: ['factura_directa'] },
-  { id: 'listado',     label: 'Listado',                comp: ListadoTab,    modes: ['*'] },
-  { id: 'devoluciones',label: 'Devoluciones',           comp: DevolucionesTab,modes: ['*'] },
-  { id: 'evolucion',   label: 'Evolución',              comp: EvolucionTab,  modes: ['*'] },
+  { id: 'facturacion_trim',label: 'Facturación trimestral',  comp: FacturacionTrimestreTab,
+    modes: ['recibo_trimestre', 'factura_draft'] },
 ]
 
 export default function CuotasClientes() {

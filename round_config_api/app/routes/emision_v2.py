@@ -16,7 +16,7 @@ import datetime as dt
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 
@@ -37,6 +37,7 @@ def _company_id():
 
 @bp.route('/<mes>', methods=['POST'])
 @auth_required
+@require_permission('economico.cuotas_mensuales.emitir_mes')
 def emitir(mes):
     """Crea account.payment para los recibos pagados (sepa, tarjeta_token)."""
     company_id = _company_id()
@@ -50,12 +51,17 @@ def emitir(mes):
         [('company_id', '=', company_id), ('type', '=', 'cash')], limit=1)
     cash_jid = cash_jids[0] if cash_jids else None
 
+    # ── Buscar recibos pagados sin payment (cron_emision + manuales) ────────
+    # NOTA: la transición borrador_remesa → pagado/impagado ya la hizo
+    # `preemision_v2.generar` (botón "Generar recibos"). Aquí solo recogemos
+    # los pagados que aún no tienen account_payment_id.
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, cliente_idnoofit, cliente_nombre, importe_total,
                    metodo_pago, fecha_emision
               FROM recibo
-             WHERE id_manager=%s AND periodo=%s AND origen='cron_emision'
+             WHERE id_manager=%s AND periodo=%s
+               AND origen IN ('cron_emision','manual_remesa')
                AND estado='pagado' AND account_payment_id IS NULL
         """, (str(g.id_manager), mes))
         recibos_a_pagar = cur.fetchall()

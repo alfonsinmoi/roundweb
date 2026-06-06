@@ -31,6 +31,7 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from .. import wcommerce_check
+from ..audit_log import log_action, actor_from_request, diff_dict
 
 bp = Blueprint('manager_odoo', __name__)
 log = logging.getLogger(__name__)
@@ -47,7 +48,8 @@ def _row_manager(id_manager: str):
                    odoo_analytic_plan_id, odoo_analytic_default_id,
                    odoo_crm_enabled, odoo_cuotas_enabled, odoo_contabilidad_enabled,
                    sistemas_cobro,
-                   wcommerce_cliente_id, tipo_pago_wc
+                   wcommerce_cliente_id, tipo_pago_wc,
+                   control_horario_enabled, control_horario_activated_at
               FROM manager_config
              WHERE id_manager = %s
         """, (str(id_manager),))
@@ -56,14 +58,16 @@ def _row_manager(id_manager: str):
 
 def _features_from_row(row: dict) -> dict:
     """Devuelve qué módulos están habilitados a partir de la fila
-    manager_config con las 3 columnas granulares (Fase 6).
+    manager_config con las columnas granulares (Fase 6 + Fase 7).
     """
     if not row:
-        return {'crm': False, 'cuotas': False, 'contabilidad': False}
+        return {'crm': False, 'cuotas': False, 'contabilidad': False,
+                'control_horario': False}
     return {
-        'crm':           bool(row.get('odoo_crm_enabled')),
-        'cuotas':        bool(row.get('odoo_cuotas_enabled')),
-        'contabilidad':  bool(row.get('odoo_contabilidad_enabled')),
+        'crm':              bool(row.get('odoo_crm_enabled')),
+        'cuotas':           bool(row.get('odoo_cuotas_enabled')),
+        'contabilidad':     bool(row.get('odoo_contabilidad_enabled')),
+        'control_horario':  bool(row.get('control_horario_enabled')),
     }
 
 
@@ -90,6 +94,8 @@ def odoo_status():
             'odoo_crm_enabled': False,
             'odoo_cuotas_enabled': False,
             'odoo_contabilidad_enabled': False,
+            'control_horario_enabled': False,
+            'control_horario_activated_at': None,
             'sistemas_cobro': [],
             'odoo_company_id': None,
             'odoo_activated_at': None,
@@ -115,6 +121,9 @@ def odoo_status():
         'odoo_crm_enabled':          bool(row.get('odoo_crm_enabled')),
         'odoo_cuotas_enabled':       bool(row.get('odoo_cuotas_enabled')),
         'odoo_contabilidad_enabled': bool(row.get('odoo_contabilidad_enabled')),
+        'control_horario_enabled':   bool(row.get('control_horario_enabled')),
+        'control_horario_activated_at': (row['control_horario_activated_at'].isoformat()
+                                          if row.get('control_horario_activated_at') else None),
         'sistemas_cobro': sistemas,
         'odoo_company_id': row.get('odoo_company_id'),
         'odoo_activated_at': (row['odoo_activated_at'].isoformat()
@@ -195,6 +204,11 @@ def wc_check():
                        wcommerce_cliente_id = COALESCE(wcommerce_cliente_id, %s)
                  WHERE id_manager = %s
             """, (tipo, wc_id, str(g.id_manager)))
+        log_action(actor_from_request(), 'manager_odoo', 'wc_check',
+                   entidad_id=str(g.id_manager),
+                   resumen=f'Consulta wcommerce: tipo_pago={tipo}',
+                   cambios=diff_dict({'tipo_pago_wc': row.get('tipo_pago_wc')},
+                                     {'tipo_pago_wc': tipo}))
 
     elegible = (tipo == 'S')
     motivo = None
@@ -222,6 +236,7 @@ def wc_check():
 
 @bp.route('/wcommerce-cliente', methods=['PATCH', 'PUT'])
 @auth_required
+@require_permission('manager_odoo.editar_id_wcommerce')
 def set_wcommerce_cliente():
     """Permite (al admin del manager) introducir/cambiar manualmente el id
     de cliente en wcommerce."""
@@ -243,6 +258,11 @@ def set_wcommerce_cliente():
         r = cur.fetchone()
     if not r:
         return jsonify({'ok': False, 'error': 'manager_not_found'}), 404
+    log_action(actor_from_request(), 'manager_odoo', 'set_wcommerce',
+               entidad_id=str(g.id_manager),
+               resumen='Actualizado id cliente wcommerce',
+               cambios={'wcommerce_cliente_id': r['wcommerce_cliente_id'],
+                        'tipo_pago_wc': None})
     return jsonify({'ok': True, 'wcommerce_cliente_id': r['wcommerce_cliente_id']})
 
 
@@ -350,6 +370,11 @@ def provision_modulo(modulo):
                         'detalle': str(e)[:200],
                         'log': log_steps}), 500
 
+    log_action(actor_from_request(), 'provision', f'provision_{modulo}',
+               entidad_id=str(g.id_manager),
+               resumen=f'Activado módulo Odoo {modulo}',
+               cambios=diff_dict({flag_col: bool((row or {}).get(flag_col))},
+                                 {flag_col: True}))
     return jsonify({'ok': True, 'modulo': modulo,
                     'company_id': out.get('company_id'),
                     'log': log_steps,
@@ -387,6 +412,7 @@ def get_solicitud_despliegue():
 
 @bp.route('/solicitud-despliegue', methods=['POST'])
 @auth_required
+@require_permission('configuracion.suscripciones.activar')
 def post_solicitud_despliegue():
     """Crea una solicitud nueva. Solo permitida si:
       - el manager tiene tipoPago='S' (verificable on-demand) o ya lo tenía guardado
@@ -575,6 +601,13 @@ def post_solicitud_despliegue():
     # Notificar al manager
     _notificar_manager_odoo_activo(g.id_manager, valores, company_id)
 
+    log_action(actor_from_request(), 'manager_odoo', 'solicitud_despliegue',
+               entidad_id=str(g.id_manager),
+               resumen='Despliegue Odoo completado (contabilidad/cuotas/CRM)',
+               cambios={'solicitud_id': solicitud_id,
+                        'odoo_company_id': company_id,
+                        'odoo_enabled': {'before': False, 'after': True}})
+
     return jsonify({
         'ok': True,
         'solicitud_id': solicitud_id,
@@ -644,6 +677,7 @@ def get_trainers_contabilidad():
 
 @bp.route('/trainers-contabilidad/<id_trainer>', methods=['PATCH'])
 @auth_required
+@require_permission('manager_odoo.trainers_contabilidad_editar')
 def patch_trainer_contabilidad(id_trainer):
     """Cambia el modo del trainer (`heredar=true|false`).
 
@@ -671,6 +705,12 @@ def patch_trainer_contabilidad(id_trainer):
         log.exception(f'patch_trainer_contabilidad {g.id_manager}/{id_trainer}')
         return jsonify({'ok': False, 'error': 'odoo_error',
                         'detalle': str(e)[:300]}), 502
+    log_action(actor_from_request(), 'trainer_contabilidad', 'toggle_contabilidad',
+               entidad_id=str(id_trainer),
+               resumen=('Trainer hereda contabilidad del manager' if heredar
+                        else 'Trainer con contabilidad independiente'),
+               cambios={'heredar_contabilidad': heredar,
+                        'analytic_account_id': analytic_id})
     return jsonify({'ok': True, 'id_trainer': id_trainer,
                     'heredar_contabilidad': heredar,
                     'analytic_account_id': analytic_id})
@@ -763,6 +803,7 @@ def admin_get_solicitud(sol_id):
 
 @bp.route('/admin/solicitudes-despliegue/<int:sol_id>/reintentar', methods=['POST'])
 @auth_required
+@require_permission('manager_odoo.reintentar_solicitud_admin')
 def admin_reintentar_solicitud(sol_id):
     """Re-ejecuta el provisioner sobre una solicitud en estado pendiente
     con motivo_rechazo. Útil cuando el primer intento falló por un error
@@ -853,6 +894,13 @@ def admin_reintentar_solicitud(sol_id):
         target=lambda: sync_partners_from_cache(_mgr, solicitud_id=sol_id),
         daemon=True).start()
 
+    log_action(actor_from_request(), 'manager_odoo', 'solicitud_despliegue',
+               entidad_id=str(row['id_manager']),
+               resumen='Reintento admin de despliegue Odoo completado',
+               cambios={'solicitud_id': sol_id,
+                        'odoo_company_id': company_id,
+                        'odoo_enabled': {'before': False, 'after': True},
+                        'procesado_por': 'admin-retry'})
     return jsonify({'ok': True, 'solicitud_id': sol_id,
                     'odoo_company_id': company_id,
                     'log': prov.log_steps})

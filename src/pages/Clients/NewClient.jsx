@@ -7,7 +7,17 @@ import { postClientes } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 
 const nivelesConocimiento = ['Principiante', 'Básico', 'Intermedio', 'Avanzado', 'Experto']
-const estadosForma = ['Sedentario', 'Regular', 'Activo', 'Muy activo', 'Atleta']
+// NoofitPro espera estadoForma como entero 0-6 (no como string). Mapeamos
+// label → id. Si se cambia este array, asegurarse de que coincide con
+// la convención de NoofitPro (distribución observada en BD: 0,2,3,4,5,6).
+const estadosForma = [
+  { id: 0, label: 'Sedentario' },
+  { id: 2, label: 'Regular' },
+  { id: 3, label: 'Activo' },
+  { id: 4, label: 'Muy activo' },
+  { id: 5, label: 'Atleta' },
+  { id: 6, label: 'Élite' },
+]
 
 export default function NewClient() {
   const navigate = useNavigate()
@@ -27,7 +37,7 @@ export default function NewClient() {
     birthdate: '', gender: 'M',
     height: '', weight: '',
     nivelConocimiento: 0,
-    estadoForma: 'Regular',
+    estadoForma: 2,   // 2 = Regular (id NoofitPro)
   })
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -51,7 +61,9 @@ export default function NewClient() {
         height: form.height ? Number(form.height) : 0,
         weight: form.weight ? Number(form.weight) : 0,
         nivelConocimiento: Number(form.nivelConocimiento),
-        estadoForma: form.estadoForma || null,
+        // NoofitPro requiere entero, no string (rechaza con 400 si recibe "Muy activo")
+        estadoForma: form.estadoForma === '' || form.estadoForma == null
+          ? null : Number(form.estadoForma),
         enabled: true,
         activo: true,
         toSend: true,
@@ -60,7 +72,14 @@ export default function NewClient() {
       setSaved(true)
       setTimeout(() => navigate('/clientes'), 1500)
     } catch (err) {
-      setError('Error al crear el cliente. Inténtalo de nuevo')
+      // Mostrar el error real (NoofitPro suele devolver mensajes como
+      // "El email ya existe", "DNI no válido"...) en vez de un fallback genérico
+      const msg = err?.message || ''
+      setError(msg && msg !== 'Error en la operación'
+        ? `Error al crear el cliente: ${msg}`
+        : 'Error al crear el cliente. Inténtalo de nuevo')
+      // eslint-disable-next-line no-console
+      console.error('NewClient error:', err)
     } finally {
       setSaving(false)
     }
@@ -142,7 +161,7 @@ export default function NewClient() {
             <Select label="Estado de forma" id="estadoForma" value={form.estadoForma}
                     onChange={e => set('estadoForma', e.target.value)}>
               {estadosForma.map(ef => (
-                <option key={ef} value={ef}>{ef}</option>
+                <option key={ef.id} value={ef.id}>{ef.label}</option>
               ))}
             </Select>
 

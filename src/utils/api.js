@@ -99,6 +99,53 @@ function getSignal(key) {
   return controller.signal
 }
 
+// ── Estado de NoofitPro (proxy /wiemspro) ───────────────────────────────────
+// Todas las llamadas de este módulo van a NoofitPro. Con un timeout detectamos
+// "lento/caído" y avisamos a la UI vía evento global (NoofitStatusBanner lo
+// escucha). Así un trainer ya verificado sigue gestionando los datos LOCALES
+// de Round (van por otro backend) aunque NoofitPro no responda, y se le avisa
+// al consultar datos que sí dependen de NoofitPro.
+const NOOFIT_TIMEOUT_MS = 15000
+
+function _emitNoofitStatus(ok, reason) {
+  try {
+    window.dispatchEvent(new CustomEvent('round.noofit-status',
+      { detail: { ok, reason: reason || null, ts: Date.now() } }))
+  } catch { /* SSR / no window */ }
+}
+
+// fetch a NoofitPro con timeout + detección de caída. Combina el signal de
+// cancelación por abortKey (navegación) con un timeout. Emite el estado.
+async function _fetchNF(url, init = {}, abortKey) {
+  let signal
+  try {
+    const timeoutSig = AbortSignal.timeout(NOOFIT_TIMEOUT_MS)
+    if (abortKey) {
+      const keySig = getSignal(abortKey)
+      signal = (typeof AbortSignal.any === 'function')
+        ? AbortSignal.any([keySig, timeoutSig]) : timeoutSig
+    } else {
+      signal = timeoutSig
+    }
+  } catch { signal = getSignal(abortKey) }  // navegadores sin AbortSignal.timeout
+  try {
+    const res = await fetch(url, { ...init, signal })
+    // 502/503/504 = gateway/proxy: NoofitPro no disponible
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      _emitNoofitStatus(false, `http_${res.status}`)
+    } else {
+      _emitNoofitStatus(true)  // respondió → NoofitPro operativo
+    }
+    return res
+  } catch (e) {
+    const name = e?.name || ''
+    const isTimeout = name === 'TimeoutError'
+    const isManualAbort = name === 'AbortError' && !isTimeout  // cancelado por navegación
+    if (!isManualAbort) _emitNoofitStatus(false, isTimeout ? 'timeout' : 'network')
+    throw e
+  }
+}
+
 // Helper: chequea status 401 y, si parece auth expirado, redirige a /login
 // devolviendo true para que el caller pueda interrumpir el flujo.
 async function _checkAuthExpired(res) {
@@ -114,12 +161,10 @@ async function _checkAuthExpired(res) {
 
 export async function apiGet(path, { abortKey } = {}) {
   const { token, manager } = getSession()
-  const signal = getSignal(abortKey)
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'GET',
     headers: authHeaders(token, manager),
-    signal,
-  })
+  }, abortKey)
   if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
@@ -129,12 +174,10 @@ export async function apiGet(path, { abortKey } = {}) {
 
 export async function apiGetRaw(path, { abortKey } = {}) {
   const { token, manager } = getSession()
-  const signal = getSignal(abortKey)
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'GET',
     headers: authHeaders(token, manager),
-    signal,
-  })
+  }, abortKey)
   if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   return res.json()
@@ -152,13 +195,11 @@ function stripNulls(obj) {
 
 export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } = {}) {
   const { token, manager } = getSession()
-  const signal = getSignal(abortKey)
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'POST',
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(stripNulls(body)),
-    signal,
-  })
+  }, abortKey)
   if (await _checkAuthExpired(res)) throw new Error('Sesión expirada')
   if (!res.ok) throw new Error(userFriendlyError(`Error ${res.status}`))
   const data = await res.json()
@@ -170,7 +211,7 @@ export async function apiPost(path, body = {}, extraHeaders = {}, { abortKey } =
 // poder leer el error real del backend en el caller.
 export async function apiPostRaw(path, body = {}, extraHeaders = {}) {
   const { token, manager } = getSession()
-  const res = await fetch(`${BASE}/${path}`, {
+  const res = await _fetchNF(`${BASE}/${path}`, {
     method: 'POST',
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json', ...extraHeaders },
     body: JSON.stringify(stripNulls(body)),
@@ -195,7 +236,7 @@ export async function apiDeleteRaw(path, body = null) {
     headers: { ...authHeaders(token, manager), 'Content-Type': 'application/json' },
   }
   if (body) init.body = JSON.stringify(stripNulls(body))
-  const res = await fetch(`${BASE}/${path}`, init)
+  const res = await _fetchNF(`${BASE}/${path}`, init)
   let body_text = ''
   try { body_text = await res.text() } catch {}
   if (res.status === 401 && isAuthExpiredResponse(res.status, body_text)) {
@@ -370,8 +411,24 @@ export const getActividades = () =>
 export const getCuotas = () =>
   apiGet('api/dispositivos/getCuotas').then(d => d.cuotas ?? [])
 
-export const guardarActividad = (actividad) =>
-  apiPost('api/dispositivos/guardarActividad', actividad)
+// guardarActividad: NoofitPro guarda bien pero NO devuelve mensaje='OK'
+// (devuelve la actividad u otro shape), así que apiPost lanzaba "error"
+// falso aunque la modificación se aplicaba. Usamos apiPostRaw y tratamos
+// cualquier 2xx como éxito; solo lanzamos si hay error HTTP o un mensaje
+// de error explícito.
+export const guardarActividad = async (actividad) => {
+  const r = await apiPostRaw('api/dispositivos/guardarActividad', actividad)
+  if (!r.ok) {
+    const msg = r.data?.mensaje || r.text || `Error ${r.status}`
+    throw new Error(userFriendlyError(msg, 'No se pudo guardar la actividad'))
+  }
+  const m = r.data?.mensaje
+  if (typeof m === 'string' && m && m.toUpperCase() !== 'OK' && /error|fallo|inval|no\s|deneg/i.test(m)) {
+    throw new Error(userFriendlyError(m, 'No se pudo guardar la actividad'))
+  }
+  invalidateCache('actividades')   // refrescar la lista tras crear/editar
+  return r.data ?? {}
+}
 
 export const getSensores = () => {
   try {
@@ -398,14 +455,28 @@ async function _proxySalas(body = {}) {
   return d.salas ?? []
 }
 
+// Trainer efectivo para filtrar clases en login NoofitPro DIRECTO:
+// override del selector admin, o el trainer de la sesión (roundTrainerId, que
+// fija el fix de identidad por X-TRAINER_MANAGER). null = manager/todos.
+// (El usuario_web NO pasa por aquí: filtra el proxy server-side por su JWT.)
+function effectiveTrainerId() {
+  const override = getTrainerFilterFromStorage()
+  if (override) return override
+  try {
+    const raw = sessionStorage.getItem('round_session')
+    const s = raw ? JSON.parse(raw) : {}
+    return s?.roundTrainerId ? String(s.roundTrainerId) : null
+  } catch { return null }
+}
+
 function _filtrarSalasPorTrainer(salas) {
-  const tf = getTrainerFilterFromStorage()
+  const tf = effectiveTrainerId()
   if (!tf) return salas
   return salas.filter(s => String(s.idTrainer || s.trainerId || '') === String(tf))
 }
 
 export const getSalas = () => {
-  const tf = getTrainerFilterFromStorage()
+  const tf = effectiveTrainerId()
   const key = tf ? `salas:${tf}` : 'salas'
   return cached(key, () => {
     const { isUsuarioWeb } = getProxyAuth()
@@ -423,7 +494,7 @@ export const getSalas = () => {
 }
 
 export const getSalasRango = (fechaDesde, fechaHasta) => {
-  const tf = getTrainerFilterFromStorage()
+  const tf = effectiveTrainerId()
   const key = `salas-${fechaDesde}-${fechaHasta}` + (tf ? `:${tf}` : '')
   return cached(key, () => {
     const { isUsuarioWeb } = getProxyAuth()
@@ -455,7 +526,8 @@ function isoWithOffset(date) {
 }
 
 export const getSalasByRange = (fechaDesde, fechaHasta) => {
-  const key = `salas-range:${fechaDesde.toISOString().slice(0, 10)}:${fechaHasta.toISOString().slice(0, 10)}`
+  const tfKey = effectiveTrainerId() || 'all'
+  const key = `salas-range:${fechaDesde.toISOString().slice(0, 10)}:${fechaHasta.toISOString().slice(0, 10)}:${tfKey}`
   return cached(key, async () => {
     const { isUsuarioWeb } = getProxyAuth()
     if (isUsuarioWeb) {
@@ -465,10 +537,12 @@ export const getSalasByRange = (fechaDesde, fechaHasta) => {
       }).catch(() => [])
       return list.filter(s => s.enabled !== false)
     }
+    // Login NoofitPro directo: NoofitPro NO filtra por trainer (devuelve todas
+    // las del manager) → filtramos por el trainer de la sesión para aislar.
     return apiPost('api/dispositivos/getSalasByManagerByRange', {
       fechaDesde: isoWithOffset(fechaDesde),
       fechaHasta: isoWithOffset(fechaHasta),
-    }).then(d => (d.salas ?? []).filter(s => s.enabled !== false))
+    }).then(d => _filtrarSalasPorTrainer((d.salas ?? []).filter(s => s.enabled !== false)))
   })
 }
 
@@ -479,10 +553,21 @@ export function invalidateSalasCache() {
 }
 
 export const postClientes = async (clienteList) => {
-  const r = await apiPost(
+  // Usamos apiPostRaw para conservar el mensaje exacto de NoofitPro
+  // (apiPost lo aplasta con userFriendlyError → no veríamos "DNI inválido",
+  // "email ya existe", etc.).
+  const r = await apiPostRaw(
     'api/dispositivos/clientePlusv2',
     clienteList.map(c => ({ ...c, toSend: true }))
   )
+  if (!r.ok || (r.data && r.data.mensaje && r.data.mensaje !== 'OK')) {
+    const noofitMsg = r.data?.mensaje || r.data?.error || `HTTP ${r.status}`
+    const err = new Error(noofitMsg)
+    err.noofitMessage = noofitMsg
+    err.body = r.data
+    err.status = r.status
+    throw err
+  }
   invalidateCache('clientes')
   clearPersistedCache('clientes')
   // Tras crear/editar en NoofitPro, refrescar la cache local del backend

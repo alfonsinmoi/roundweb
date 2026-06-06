@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react'
 import { Loader2, FileText, Download, Check, AlertTriangle } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
+import { useCan } from '../../hooks/useCan'
 import {
   facturacionTrimestrePreview, facturacionTrimestreFacturar,
 } from '../../utils/cuotasApi'
@@ -21,6 +22,9 @@ function currentTrimestre() {
 
 export default function FacturacionTrimestreTab({ identity }) {
   const toast = useToast()
+  // Gates UI
+  const canEmitirTrim = useCan('economico.cuotas_mensuales.facturacion_trimestre_emitir')
+  const canExcelTrim = useCan('economico.cuotas_mensuales.facturacion_trimestre_excel')
   const [trim, setTrim] = useState(currentTrimestre())
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -44,7 +48,11 @@ export default function FacturacionTrimestreTab({ identity }) {
   }
   useEffect(() => { reload() }, [trim])
 
-  const pendientes = (data?.recibos || []).filter(r => r.estado === 'pagado' && !r.account_move_id)
+  // Facturables = todos los del trimestre SIN asiento (cobrados + impagados +
+  // devueltos). Al facturar se crea el asiento de TODOS; los impagados quedan
+  // con factura emitida pendiente de cobro.
+  const FACTURABLES = ['pagado', 'impagado', 'devuelto']
+  const pendientes = (data?.recibos || []).filter(r => FACTURABLES.includes(r.estado) && !r.account_move_id)
 
   const toggle = id => {
     setMarcados(prev => {
@@ -91,8 +99,9 @@ export default function FacturacionTrimestreTab({ identity }) {
                      background: 'var(--blue-bg)', border: '1px solid var(--blue-border)' }}>
         <p style={{ fontSize: 13, margin: 0, color: 'var(--text-1)' }}>
           <strong style={{ color: 'var(--blue)' }}>Facturación trimestral</strong> — al cerrar el trimestre,
-          marca los recibos cobrados que quieres convertir en factura formal en Odoo.
-          Los no marcados quedan pendientes de revisión.
+          marca los recibos que quieres convertir en factura formal en Odoo
+          (cobrados e impagados). Los <strong>impagados</strong> se emiten igual,
+          quedando pendientes de cobro. Los no marcados quedan pendientes de revisión.
         </p>
       </Card>
 
@@ -108,12 +117,16 @@ export default function FacturacionTrimestreTab({ identity }) {
                    }} />
           </div>
           <div style={{ flex: 1 }} />
-          <Btn variant="secondary" onClick={descargarExcel} disabled={!data}>
-            <Download size={14} /> Descargar Excel
-          </Btn>
-          <Btn variant="primary" onClick={facturar} disabled={facturando || marcados.size === 0}>
-            {facturando ? <><Loader2 size={14} className="animate-spin" /> Facturando…</> : <><FileText size={14} /> Facturar marcados ({marcados.size})</>}
-          </Btn>
+          {canExcelTrim && (
+            <Btn variant="secondary" onClick={descargarExcel} disabled={!data}>
+              <Download size={14} /> Descargar Excel
+            </Btn>
+          )}
+          {canEmitirTrim && (
+            <Btn variant="primary" onClick={facturar} disabled={facturando || marcados.size === 0}>
+              {facturando ? <><Loader2 size={14} className="animate-spin" /> Facturando…</> : <><FileText size={14} /> Facturar marcados ({marcados.size})</>}
+            </Btn>
+          )}
         </div>
       </Card>
 
@@ -136,7 +149,7 @@ export default function FacturacionTrimestreTab({ identity }) {
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--line)',
                        display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-0)', margin: 0 }}>
-            Cobrados pendientes de facturar ({pendientes.length})
+            Pendientes de facturar — cobrados + impagados ({pendientes.length})
           </h3>
           <div style={{ display: 'flex', gap: 6 }}>
             <Btn variant="secondary" size="sm" onClick={marcarTodos}>Marcar todos</Btn>
@@ -160,6 +173,7 @@ export default function FacturacionTrimestreTab({ identity }) {
                 <th style={th}>Cuota</th>
                 <th style={th}>Mes</th>
                 <th style={th}>Método</th>
+                <th style={th}>Estado</th>
                 <th style={{ ...th, textAlign: 'right' }}>Importe</th>
                 <th style={th}>Fecha pago</th>
               </tr>
@@ -178,6 +192,13 @@ export default function FacturacionTrimestreTab({ identity }) {
                   <td style={{ ...td, fontSize: 11, color: 'var(--text-2)' }}>{r.cuota_codigo}</td>
                   <td style={td}>{r.periodo}</td>
                   <td style={td}>{r.metodo_pago}</td>
+                  <td style={td}>
+                    <span style={{ fontSize: 11, fontWeight: 600,
+                      color: r.estado === 'impagado' ? 'var(--red)'
+                           : r.estado === 'devuelto' ? 'var(--amber)' : 'var(--green)' }}>
+                      {r.estado}
+                    </span>
+                  </td>
                   <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>
                     {Number(r.importe_total).toFixed(2)} €
                   </td>

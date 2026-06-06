@@ -39,35 +39,79 @@ class OdooCuotas:
         # Lazy: company_id y odoo_url se resuelven en la primera conexión
         self._company_id = None
         self._odoo_url = None
+        self._identity_resolved = False
 
-    # ── Resolución de identidad del manager ─────────────────────────────────
+    # ── Resolución de empresa/identidad (B1) ─────────────────────────────────
+    def resolve_company(self, id_manager=None, id_trainer=None):
+        """B1 — Empresa Odoo por (manager, trainer). Devuelve int | None.
+
+        - Si el trainer tiene entidad jurídica propia
+          (`trainer_empresa.odoo_company_id` no nulo) → su company.
+        - Si no → la del manager (`manager_config.odoo_company_id`).
+        - Si no hay ninguna → None (sin módulo activado = legítimo; el guard
+          de ESCRITURA `_require_company` decide si abortar).
+        Lanza si la company resuelta es legacy/prohibida.
+        """
+        idm = str(id_manager) if id_manager else (self._id_manager or None)
+        comp = None
+        from .db import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            if idm and id_trainer:
+                cur.execute("SELECT odoo_company_id FROM trainer_empresa "
+                            "WHERE id_manager=%s AND id_trainer=%s",
+                            (idm, str(id_trainer)))
+                r = cur.fetchone()
+                if r and r.get('odoo_company_id'):
+                    comp = int(r['odoo_company_id'])
+            if comp is None and idm:
+                cur.execute("SELECT odoo_company_id FROM manager_config "
+                            "WHERE id_manager=%s", (idm,))
+                r = cur.fetchone()
+                if r and r.get('odoo_company_id'):
+                    comp = int(r['odoo_company_id'])
+        if comp is not None and comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+            raise RuntimeError(
+                f'company {comp} es legacy/prohibida (manager={idm}, trainer={id_trainer})')
+        return comp
+
+    def _require_company(self, comp):
+        """B1 — exige empresa válida (no None, no legacy) para ESCRIBIR en Odoo."""
+        if comp is None:
+            raise RuntimeError(
+                f'Sin empresa Odoo para manager={self._id_manager}; '
+                f'activa el módulo (cuotas/contabilidad) antes de operar.')
+        if comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+            raise RuntimeError(f'company {comp} es legacy/prohibida.')
+        return comp
+
     def _ensure_identity(self):
-        """Resuelve company_id y odoo_url desde manager_config (lazy)."""
-        if self._company_id is not None:
+        """Resuelve company_id (de la instancia = la del manager) y odoo_url.
+
+        B1: rechaza company legacy SIEMPRE; no inventa una company para un
+        manager sin provisionar (queda None y el guard de escritura aborta).
+        Las llamadas sin id_manager (legacy) usan cfg.ODOO_COMPANY del .env.
+        """
+        if self._identity_resolved:
             return
+        # odoo_url propio del manager (si lo tiene)
         if self._id_manager:
             try:
                 from .db import get_conn
                 with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT odoo_company_id, odoo_url
-                          FROM manager_config
-                         WHERE id_manager = %s
-                    """, (self._id_manager,))
+                    cur.execute("SELECT odoo_url FROM manager_config WHERE id_manager=%s",
+                                (self._id_manager,))
                     row = cur.fetchone()
-                if row and row.get('odoo_company_id'):
-                    self._company_id = int(row['odoo_company_id'])
-                    self._odoo_url = (row.get('odoo_url') or '').strip() or None
-                    return
-                log.warning(f'OdooCuotas: manager_id={self._id_manager} '
-                            f'no tiene odoo_company_id en BD; usando default '
-                            f'cfg.ODOO_COMPANY={cfg.ODOO_COMPANY}')
-            except Exception as e:
-                log.exception(f'OdooCuotas: error resolviendo identidad '
-                              f'del manager {self._id_manager}: {e}')
-        # Fallback al .env (manager histórico Round, id=17675, company_id=3)
-        self._company_id = int(cfg.ODOO_COMPANY)
-        self._odoo_url = None
+                self._odoo_url = ((row or {}).get('odoo_url') or '').strip() or None
+            except Exception:
+                self._odoo_url = None
+        comp = self.resolve_company(self._id_manager)
+        if comp is None and not self._id_manager:
+            # Camino legacy sin manager → company del .env (verificada ≠ legacy)
+            comp = int(cfg.ODOO_COMPANY)
+            if comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+                raise RuntimeError(f'cfg.ODOO_COMPANY={comp} es legacy/prohibida')
+        self._company_id = comp          # puede ser None (manager sin provisionar)
+        self._identity_resolved = True
 
     @property
     def company_id(self):
@@ -170,6 +214,7 @@ class OdooCuotas:
         log.info(f'Preemisión {mes_str}: {len(subs)} suscripciones activas')
 
         creados, ya_emitido, no_aplica = [], [], []
+        sin_analitica = []   # B12 req4 (soft): movimientos sin analítica de trainer
 
         for s in subs:
             sub_id = s['id']
@@ -205,11 +250,13 @@ class OdooCuotas:
             # línea para que el reporte por trainer funcione en Odoo.
             line_extras = {}
             tai = s.get('trainer_analytic_id')
-            if tai:
-                # tai puede venir como [id, "nombre"] o como int
-                aid = tai[0] if isinstance(tai, (list, tuple)) else tai
-                if aid:
-                    line_extras['analytic_distribution'] = {str(aid): 100.0}
+            aid = (tai[0] if isinstance(tai, (list, tuple)) else tai) if tai else None
+            if aid:
+                line_extras['analytic_distribution'] = {str(aid): 100.0}
+            else:
+                # B12 req4 (soft): el movimiento se crea igual (no parar cobros),
+                # pero se registra para incidencia → revisar analítica del trainer.
+                sin_analitica.append(sub_id)
 
             line_vals = [(0,0,{
                 'name': descripcion,
@@ -233,7 +280,9 @@ class OdooCuotas:
                 'invoice_line_ids': line_vals,
                 'round_subscription_id': sub_id,
                 'narration': narration or False,
-                'company_id': s.get('company_id', [1])[0] if isinstance(s.get('company_id'), list) else 1,
+                # B1/B10 — company de la sub; jamás caer a la 1 legacy
+                'company_id': (s['company_id'][0] if isinstance(s.get('company_id'), list)
+                               else self.company_id),
             }
             # Mandato + payment_mode si SEPA
             if s.get('forma_pago') == 'sepa' and s.get('mandate_id'):
@@ -256,11 +305,26 @@ class OdooCuotas:
                 'precio_final': calc['precio_final'],
             })
 
+        # B12 req4 (soft): incidencia si hubo movimientos sin analítica de trainer
+        if sin_analitica and self._id_manager:
+            try:
+                from .incidencias import crear_incidencia_admin
+                crear_incidencia_admin(
+                    id_manager=self._id_manager, tipo='odoo_analitica',
+                    severidad='warning', entidad='preemision', entidad_id=mes_str,
+                    titulo=f'{len(sin_analitica)} movimientos {mes_str} sin analítica de trainer',
+                    mensaje=('Se crearon recibos/borradores sin analytic_distribution de '
+                             f'trainer (subs: {sin_analitica[:50]}). Revisar que cada '
+                             'suscripción tenga trainer_analytic_id para atribuir el ingreso.'))
+            except Exception as e:
+                log.warning(f'preemision: incidencia sin_analitica: {e}')
+
         return {
             'mes': mes_str,
             'creados': creados,
             'ya_emitido': ya_emitido,
             'no_aplica': no_aplica,
+            'sin_analitica': sin_analitica,
         }
 
     def _toca_emitir(self, sub_id, s, mes_str):
@@ -330,14 +394,13 @@ class OdooCuotas:
         mod_descs, mod_total = [], 0.0
         for m in mods:
             v = float(m['valor'])
-            if m['tipo'] == 'descuento':
-                mod_total -= v
-            elif m['tipo'] == 'cargo_extra':
+            # Math por SIGNO de valor: positivo suma, negativo resta.
+            # `tipo` queda como etiqueta; `precio_alternativo` sustituye base.
+            if m['tipo'] in ('descuento', 'cargo_extra'):
                 mod_total += v
             elif m['tipo'] == 'precio_alternativo':
-                # sustituye el base
-                precio_base = v
-            mod_descs.append(f"{m['tipo']} {v}€")
+                precio_base = abs(v)
+            mod_descs.append(f"{m['tipo']} {'+' if v >= 0 else '−'}{abs(v)}€")
 
         precio_final = max(0.0, precio_base - desc_total + mod_total)
         return {
@@ -358,7 +421,14 @@ class OdooCuotas:
                                    ('invoice_date','<=',str(fin))])
 
     def list_recibos_filtrado(self, mes_str=None, estado=None, partner_id=None):
-        domain = [('move_type','=','out_invoice'),('round_subscription_id','!=',False)]
+        # Mostramos recibos de cuota: los emitidos por el flujo round
+        # (round_subscription_id) Y los importados a Odoo como facturas
+        # sueltas con ref 'RB-<recibo_id>' (p.ej. la migración de recibos
+        # Añoreta 2026-06, que no tienen round.subscription). El post-filtro
+        # por trainer (partner_idnoofit ∈ cliente_cache) los aísla por centro.
+        domain = [('move_type','=','out_invoice'),
+                  '|', ('round_subscription_id','!=',False),
+                       ('ref','=like','RB-%')]
         if mes_str:
             inicio, fin = self._periodos_mes(mes_str)
             domain += [('invoice_date','>=',str(inicio)),('invoice_date','<=',str(fin))]
@@ -369,11 +439,17 @@ class OdooCuotas:
         return self._list_recibos(domain)
 
     def list_recibos_cliente(self, id_noofit):
-        partner_ids = self._call('res.partner','search',[('id_noofit','=',str(id_noofit))],limit=1)
+        # IMPORTANTE: hay clientes con varios partners Odoo duplicados con el
+        # mismo id_noofit (residuo de altas previas que crearon ghost partners).
+        # Buscamos TODOS los partners y devolvemos los recibos de TODOS — si
+        # filtrásemos al primero (limit=1) los recibos emitidos contra el
+        # otro partner quedarían invisibles para el operador.
+        partner_ids = self._call('res.partner','search',
+                                 [('id_noofit','=',str(id_noofit))])
         if not partner_ids:
             return []
         return self._list_recibos([('move_type','=','out_invoice'),
-                                   ('partner_id','=',partner_ids[0])])
+                                   ('partner_id','in',partner_ids)])
 
 
     def generar_pdf_factura(self, invoice_id):
@@ -570,12 +646,12 @@ class OdooCuotas:
                         fields=['tipo','valor','razon'])
                     for mo in mods:
                         v = float(mo['valor'])
-                        if mo['tipo'] == 'descuento':
-                            importe = -v
-                        elif mo['tipo'] == 'cargo_extra':
+                        # Signo de valor manda. `precio_alternativo` afecta
+                        # al base, no se suma al importe.
+                        if mo['tipo'] in ('descuento', 'cargo_extra'):
                             importe = v
                         else:  # precio_alternativo
-                            importe = 0  # afecta base, no se suma
+                            importe = 0
                         mods_aplicadas.append({
                             'tipo': mo['tipo'],
                             'valor': v,
@@ -822,7 +898,11 @@ class OdooCuotas:
             if not ref:
                 result['errores'].append({'row': r, 'error': 'Sin referencia'})
                 continue
-            inv_ids = self._call('account.move','search',
+            # _call_scoped inyecta company_id = empresa del manager → la
+            # devolución casa el recibo dentro de la esfera del manager (todos
+            # sus trainers) y NUNCA con una factura de otra empresa/manager que
+            # tenga el mismo número de factura.
+            inv_ids = self._call_scoped('account.move','search',
                 [('move_type','=','out_invoice'),('name','=',ref)], limit=1)
             if not inv_ids:
                 result['errores'].append({'invoice_ref': ref, 'error': 'No encontrado'})
@@ -867,6 +947,29 @@ class OdooCuotas:
             except Exception as e:
                 result['errores'].append({'invoice_ref': ref, 'error': str(e)})
         return result
+
+    def anular_pagos_de_move(self, move_id):
+        """Cancela los account.payment reconciliados con un account.move → la
+        factura vuelve a NO pagada (amount_residual>0), pendiente de recobro.
+        Devuelve el nº de pagos cancelados. Idempotente."""
+        try:
+            move_id = int(move_id)
+        except (TypeError, ValueError):
+            return 0
+        pagos = self._call('account.payment', 'search',
+                           [('reconciled_invoice_ids', 'in', [move_id])])
+        n = 0
+        for p in pagos:
+            try:
+                self._call('account.payment', 'action_draft', [p])
+            except Exception:
+                pass
+            try:
+                self._call('account.payment', 'action_cancel', [p])
+                n += 1
+            except Exception as e:
+                log.warning(f'anular_pagos_de_move: cancel payment {p}: {e}')
+        return n
 
     def descargar_sepa(self, attachment_id):
         att = self._call('ir.attachment','read',[attachment_id],['name','datas','mimetype'])

@@ -6,7 +6,7 @@ PostgreSQL del VPS, scoped por id_manager.
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 
 bp = Blueprint('cliente_gympass', __name__)
@@ -53,6 +53,7 @@ def get_one(id_noofit):
 
 @bp.route('/<id_noofit>', methods=['PUT'])
 @auth_required
+@require_permission('clientes.gympass.editar')
 def upsert(id_noofit):
     """Crea o actualiza el gympass_id de un cliente. body = {gympass_id, notas?}"""
     try:
@@ -80,6 +81,7 @@ def upsert(id_noofit):
 
 @bp.route('/<id_noofit>', methods=['DELETE'])
 @auth_required
+@require_permission('clientes.gympass.editar')
 def delete(id_noofit):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -96,6 +98,7 @@ def delete(id_noofit):
 
 @bp.route('/bulk', methods=['POST'])
 @auth_required
+@require_permission('clientes.gympass.bulk')
 def bulk():
     """Bulk upsert. body = {items: [{cliente_idnoofit, gympass_id, notas?}]}"""
     try:

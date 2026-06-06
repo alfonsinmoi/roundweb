@@ -4,9 +4,10 @@ Cada CREATE/UPDATE/DELETE se replica también en Odoo (round.cuota.catalogo)
 si CONFIG_ODOO_SYNC=1. Si Odoo está caído, sigue funcionando sólo con Postgres.
 """
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
+from ..audit_log import log_action, actor_from_request
 from .. import config
 
 bp = Blueprint('cuotas', __name__)
@@ -16,6 +17,7 @@ SELECT_FIELDS = """
     precio_mensual, precio_bimensual, precio_trimestral,
     precio_semestral, precio_anual, matricula,
     formas_pago, periodicidades, actividades_idnoofit,
+    tipo_cuota, precio_entrada,
     active, odoo_id, created_at, updated_at
 """
 
@@ -41,7 +43,7 @@ def _row_to_dict(row):
         if out.get(k):
             out[k] = out[k].isoformat()
     for k in ('precio_mensual','precio_bimensual','precio_trimestral',
-              'precio_semestral','precio_anual','matricula'):
+              'precio_semestral','precio_anual','matricula','precio_entrada'):
         if out.get(k) is not None:
             out[k] = float(out[k])
     return out
@@ -58,13 +60,21 @@ def list_cuotas():
     with get_conn() as conn:
         with conn.cursor() as cur:
             if g.id_trainer:
+                # Cuotas del trainer (adoptadas) + plantillas del manager que
+                # AÚN NO haya adoptado. Si ya adoptó una plantilla (copia
+                # trainer con mismo codigo), no mostramos también la plantilla
+                # → evita que la cuota salga dos veces.
                 cur.execute(f"""
-                    SELECT {SELECT_FIELDS} FROM cuota
+                    SELECT {SELECT_FIELDS} FROM cuota c
                     WHERE id_manager = %s
-                      AND (scope = 'plantilla_manager'
-                           OR (scope = 'trainer' AND id_trainer = %s))
+                      AND ((scope = 'trainer' AND id_trainer = %s)
+                           OR (scope = 'plantilla_manager'
+                               AND NOT EXISTS (SELECT 1 FROM cuota t
+                                                WHERE t.id_manager=c.id_manager
+                                                  AND t.scope='trainer' AND t.id_trainer=%s
+                                                  AND t.codigo=c.codigo)))
                     ORDER BY scope, codigo
-                """, (g.id_manager, g.id_trainer))
+                """, (g.id_manager, g.id_trainer, g.id_trainer))
             else:
                 cur.execute(f"""
                     SELECT {SELECT_FIELDS} FROM cuota
@@ -77,6 +87,7 @@ def list_cuotas():
 
 @bp.route('', methods=['POST'])
 @auth_required
+@require_permission('configuracion.cuotas.crear')
 def create_cuota():
     d = request.get_json() or {}
     err = _validate_payload(d)
@@ -85,9 +96,24 @@ def create_cuota():
     if not d.get('codigo'):
         return jsonify({'ok': False, 'error': 'codigo_obligatorio'}), 400
 
-    # scope: si hay id_trainer, es trainer-cuota; si no, plantilla manager
-    scope = 'trainer' if g.id_trainer else 'plantilla_manager'
-    id_trainer = g.id_trainer if scope == 'trainer' else None
+    # POLÍTICA (mayo 2026): por DEFECTO una cuota se guarda como
+    # `plantilla_manager` para que aplique a TODOS los trainers del manager.
+    # Solo se hace trainer-scoped si el cliente pide explícitamente con
+    # `scope='trainer'` o pasa `id_trainer` en el body (el operador eligió
+    # un trainer concreto en el formulario de Configuración → Cuotas).
+    # El hecho de estar impersonando un trainer NO la limita automáticamente
+    # a ese trainer — debe poder reutilizarse en cualquier centro.
+    body_scope = (d.get('scope') or '').strip().lower()
+    body_trainer = (d.get('id_trainer') or '').strip() if d.get('id_trainer') else ''
+    if body_scope == 'trainer' or body_trainer:
+        scope = 'trainer'
+        id_trainer = body_trainer or g.id_trainer
+        if not id_trainer:
+            return jsonify({'ok': False,
+                            'error': 'scope=trainer requiere id_trainer'}), 400
+    else:
+        scope = 'plantilla_manager'
+        id_trainer = None
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -96,8 +122,9 @@ def create_cuota():
                     scope, id_manager, id_trainer, plantilla_origen_id, codigo, descripcion,
                     precio_mensual, precio_bimensual, precio_trimestral,
                     precio_semestral, precio_anual, matricula,
-                    formas_pago, periodicidades, actividades_idnoofit, active
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    formas_pago, periodicidades, actividades_idnoofit,
+                    tipo_cuota, precio_entrada, active
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING {SELECT_FIELDS}
             """, (
                 scope, g.id_manager, id_trainer, d.get('plantilla_origen_id'),
@@ -105,22 +132,30 @@ def create_cuota():
                 d.get('precio_mensual',0), d.get('precio_bimensual',0), d.get('precio_trimestral',0),
                 d.get('precio_semestral',0), d.get('precio_anual',0), d.get('matricula',0),
                 d.get('formas_pago', []), d.get('periodicidades', []),
-                d.get('actividades_idnoofit', []), d.get('active', True),
+                d.get('actividades_idnoofit', []),
+                d.get('tipo_cuota', 'recurrente'), d.get('precio_entrada', 0),
+                d.get('active', True),
             ))
             row = cur.fetchone()
 
-    # Sync Odoo: solo plantillas de manager (las trainer-cuotas son derivadas)
-    if scope == 'plantilla_manager':
-        odoo_id = get_sync().cuota_create(row)
-        if odoo_id and isinstance(odoo_id, int):
-            with get_conn() as conn, conn.cursor() as cur:
-                cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s RETURNING odoo_id", (odoo_id, row['id']))
-                row['odoo_id'] = odoo_id
+    # Sync Odoo: TODAS las cuotas (plantilla_manager + trainer) — el dropdown
+    # de cuotas para el cliente lee de Odoo y filtra por id_trainer.
+    odoo_id = get_sync(g.id_manager).cuota_create(row)
+    if odoo_id and isinstance(odoo_id, int):
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s RETURNING odoo_id", (odoo_id, row['id']))
+            row['odoo_id'] = odoo_id
+    log_action(actor_from_request(), 'cuota', 'create',
+               entidad_id=row['id'],
+               resumen=f"Cuota creada {row.get('codigo')} (scope={scope})",
+               cambios={'codigo': row.get('codigo'), 'scope': scope,
+                        'id_trainer': id_trainer})
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)}), 201
 
 
 @bp.route('/<int:cuota_id>', methods=['PUT', 'PATCH'])
 @auth_required
+@require_permission('configuracion.cuotas.editar')
 def update_cuota(cuota_id):
     d = request.get_json() or {}
     err = _validate_payload(d)
@@ -129,7 +164,7 @@ def update_cuota(cuota_id):
     # Construir SET dinámico
     allowed = ('codigo','descripcion','precio_mensual','precio_bimensual','precio_trimestral',
                'precio_semestral','precio_anual','matricula','formas_pago','periodicidades',
-               'actividades_idnoofit','active')
+               'actividades_idnoofit','tipo_cuota','precio_entrada','active')
     sets, params = [], []
     for k in allowed:
         if k in d:
@@ -147,21 +182,27 @@ def update_cuota(cuota_id):
     if not row:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
 
-    # Sync Odoo: si es plantilla y tiene odoo_id, actualizar; si no, crear
-    if row['scope'] == 'plantilla_manager':
-        if row.get('odoo_id'):
-            get_sync().cuota_update(row['odoo_id'], row)
-        else:
-            new_odoo_id = get_sync().cuota_create(row)
-            if new_odoo_id and isinstance(new_odoo_id, int):
-                with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s", (new_odoo_id, row['id']))
-                row['odoo_id'] = new_odoo_id
+    # Sync Odoo: si tiene odoo_id, actualizar; si no, crear. Aplica a todas
+    # las cuotas (plantilla_manager + trainer) — desde mayo 2026 cada cuota
+    # vive en Odoo con su id_trainer para que el dropdown filtre per-centro.
+    if row.get('odoo_id'):
+        get_sync(g.id_manager).cuota_update(row['odoo_id'], row)
+    else:
+        new_odoo_id = get_sync(g.id_manager).cuota_create(row)
+        if new_odoo_id and isinstance(new_odoo_id, int):
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("UPDATE cuota SET odoo_id=%s WHERE id=%s", (new_odoo_id, row['id']))
+            row['odoo_id'] = new_odoo_id
+    log_action(actor_from_request(), 'cuota', 'update',
+               entidad_id=cuota_id,
+               resumen=f"Cuota actualizada {row.get('codigo')}",
+               cambios={k: d[k] for k in allowed if k in d})
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)})
 
 
 @bp.route('/<int:cuota_id>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.cuotas.borrar')
 def delete_cuota(cuota_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -169,13 +210,19 @@ def delete_cuota(cuota_id):
             r = cur.fetchone()
             cur.execute("DELETE FROM cuota WHERE id=%s AND id_manager=%s", (cuota_id, g.id_manager))
             n = cur.rowcount
-    if r and r.get('odoo_id') and r.get('scope') == 'plantilla_manager':
-        get_sync().cuota_delete(r['odoo_id'])
+    if r and r.get('odoo_id'):
+        get_sync(g.id_manager).cuota_delete(r['odoo_id'])
+    if n:
+        log_action(actor_from_request(), 'cuota', 'delete',
+                   entidad_id=cuota_id,
+                   resumen='Cuota eliminada',
+                   cambios={'scope': r.get('scope') if r else None})
     return jsonify({'ok': True, 'deleted': n})
 
 
 @bp.route('/<int:cuota_id>/adoptar', methods=['POST'])
 @auth_required
+@require_permission('configuracion.cuotas.adoptar')
 def adoptar_plantilla(cuota_id):
     """Trainer adopta una plantilla del manager. Crea una trainer-cuota
     derivada con los datos de la plantilla."""
@@ -208,8 +255,9 @@ def adoptar_plantilla(cuota_id):
                     scope, id_manager, id_trainer, plantilla_origen_id, codigo, descripcion,
                     precio_mensual, precio_bimensual, precio_trimestral,
                     precio_semestral, precio_anual, matricula,
-                    formas_pago, periodicidades, actividades_idnoofit, active
-                ) VALUES ('trainer', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    formas_pago, periodicidades, actividades_idnoofit,
+                    tipo_cuota, precio_entrada, active
+                ) VALUES ('trainer', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING {SELECT_FIELDS}
             """, (
                 g.id_manager, g.id_trainer, cuota_id,
@@ -218,7 +266,14 @@ def adoptar_plantilla(cuota_id):
                 plantilla['precio_trimestral'], plantilla['precio_semestral'],
                 plantilla['precio_anual'], plantilla['matricula'],
                 plantilla['formas_pago'], plantilla['periodicidades'],
-                plantilla['actividades_idnoofit'], plantilla['active'],
+                plantilla['actividades_idnoofit'],
+                plantilla.get('tipo_cuota','recurrente'), plantilla.get('precio_entrada',0),
+                plantilla['active'],
             ))
             row = cur.fetchone()
+    log_action(actor_from_request(), 'cuota', 'create',
+               entidad_id=row['id'],
+               resumen=f"Plantilla adoptada por trainer ({row.get('codigo')})",
+               cambios={'codigo': row.get('codigo'), 'scope': 'trainer',
+                        'plantilla_origen_id': cuota_id})
     return jsonify({'ok': True, 'cuota': _row_to_dict(row)}), 201

@@ -14,7 +14,7 @@ import requests
 import urllib3
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 
@@ -55,6 +55,7 @@ def list_creds():
 
 @bp.route('/<id_trainer>', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.trainer_creds.editar')
 def upsert_creds(id_trainer):
     """Guarda/actualiza credenciales. Password vacía → no se sobrescribe."""
     d = request.get_json() or {}
@@ -100,6 +101,7 @@ def upsert_creds(id_trainer):
 
 @bp.route('/<id_trainer>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.trainer_creds.editar')
 def delete_creds(id_trainer):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -118,6 +120,7 @@ def delete_creds(id_trainer):
 
 @bp.route('/<id_trainer>/test', methods=['POST'])
 @auth_required
+@require_permission('configuracion.trainer_creds.editar')
 def test_creds(id_trainer):
     """Prueba el login NoofitPro con las credenciales guardadas."""
     with get_conn() as conn, conn.cursor() as cur:

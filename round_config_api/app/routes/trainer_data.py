@@ -28,6 +28,7 @@ import requests
 import urllib3
 from flask import Blueprint, request, jsonify, g
 
+from ..auth import require_seccion
 from ..auth_usuario import usuario_web_required
 from ..db import get_conn
 
@@ -149,7 +150,8 @@ def _filter_by_trainer(items, id_trainer, key='idTrainer'):
 
 # ─── Cache de clientes en BD local ─────────────────────────────────────────
 
-def _upsert_clientes(id_manager: str, clientes: list, *, full_sync: bool):
+def _upsert_clientes(id_manager: str, clientes: list, *, full_sync: bool,
+                     solo_id_trainer: str = None):
     """UPSERT masivo en cliente_cache. Devuelve nº de clientes escritos.
 
     `full_sync=True`  → además, BORRA de cliente_cache los ids del manager
@@ -192,10 +194,19 @@ def _upsert_clientes(id_manager: str, clientes: list, *, full_sync: bool):
                 json.dumps(c, ensure_ascii=False, default=str),
             ))
         if full_sync and ids_actuales:
-            cur.execute("""
-                DELETE FROM cliente_cache
-                 WHERE id_manager=%s AND id <> ALL(%s)
-            """, (str(id_manager), list(ids_actuales)))
+            if solo_id_trainer:
+                # Sync de UN solo trainer → solo purgamos clientes obsoletos de
+                # ESE trainer; los de otros trainers del manager se respetan
+                # (antes el DELETE era manager-wide y borraba los demás centros).
+                cur.execute("""
+                    DELETE FROM cliente_cache
+                     WHERE id_manager=%s AND id_trainer=%s AND id <> ALL(%s)
+                """, (str(id_manager), str(solo_id_trainer), list(ids_actuales)))
+            else:
+                cur.execute("""
+                    DELETE FROM cliente_cache
+                     WHERE id_manager=%s AND id <> ALL(%s)
+                """, (str(id_manager), list(ids_actuales)))
         cur.execute("""
             INSERT INTO cliente_cache_sync (id_manager, synced_at, n_clientes, ultima_falla)
             VALUES (%s, NOW(), %s, NULL)
@@ -317,7 +328,11 @@ def _sync_clientes_manager(id_manager: str, id_trainer: str = None):
         return {'ok': False, 'n_clientes': 0, 'n_cuentas_ok': 0,
                 'n_cuentas': len(creds), 'error': '; '.join(fallos)}
 
-    n = _upsert_clientes(id_manager, list(todos_dict.values()), full_sync=full)
+    # Si el sync es de un solo trainer (id_trainer dado), el DELETE de
+    # full_sync debe limitarse a ese trainer — no borrar los clientes de los
+    # otros centros del manager.
+    n = _upsert_clientes(id_manager, list(todos_dict.values()), full_sync=full,
+                         solo_id_trainer=(str(id_trainer) if id_trainer else None))
     if fallos:
         log.warning(f'_sync_clientes_manager {id_manager}: parciales, fallos={fallos}')
     return {'ok': True, 'n_clientes': n,
@@ -395,6 +410,7 @@ def _clientes_sync_state(id_manager: str):
 
 @bp.route('/clientes', methods=['GET'])
 @usuario_web_required
+@require_seccion('clientes')
 def clientes():
     """Devuelve la lista de clientes del manager, leyendo SIEMPRE de la cache
     local en BD (~50 ms). Si la cache está vacía o es muy antigua, sincroniza
@@ -409,10 +425,16 @@ def clientes():
     id_trainer = g.id_trainer
     is_admin = bool(g.usuario_web.get('perfil_is_admin'))
     override = (request.args.get('id_trainer') or '').strip()
-    if is_admin:
+    # Nueva regla (mayo 2026): si el usuario eligió un centro al login (su JWT
+    # lleva id_trainer), queda BLOQUEADO a ese centro durante la sesión —
+    # tiene que hacer logout para cambiar. Solo el manager bare (sin id_trainer
+    # en el JWT) puede ver "Todos los centros" o filtrar por ?id_trainer=X.
+    if id_trainer:
+        trainer_filtro = id_trainer
+    elif is_admin:
         trainer_filtro = override if (override and override.lower() not in ('all', '*', '')) else None
     else:
-        trainer_filtro = id_trainer
+        trainer_filtro = None
 
     full = _read_clientes_local(id_manager)
     state = _clientes_sync_state(id_manager)
@@ -448,6 +470,7 @@ def clientes_sync():
 
 @bp.route('/salas', methods=['POST'])
 @usuario_web_required
+@require_seccion('clientes')
 def salas():
     """Devuelve salas (clases) filtradas por id_trainer.
     Body opcional: {fechaDesde, fechaHasta} — si no, sin filtro de fechas."""
@@ -483,15 +506,18 @@ def salas():
             return jsonify({'ok': False, 'error': str(e)}), 502
 
     is_admin = bool(g.usuario_web.get('perfil_is_admin'))
-    # Override admin via body o querystring
+    # Override admin via body o querystring (solo si JWT no lleva centro fijo).
     override = (d.get('id_trainer') or request.args.get('id_trainer') or '').strip()
-    if is_admin:
+    if id_trainer:
+        # Usuario eligió centro en login → bloqueado durante la sesión.
+        trainer_filtro = id_trainer
+    elif is_admin:
         if override and override.lower() not in ('all', '*', ''):
             trainer_filtro = override
         else:
             trainer_filtro = None
     else:
-        trainer_filtro = id_trainer
+        trainer_filtro = None
     filtered = _filter_by_trainer(full, trainer_filtro)
     return jsonify({'ok': True, 'mensaje': 'OK', 'salas': filtered,
                     'total_full': len(full), 'total_filtered': len(filtered),

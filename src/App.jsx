@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { PortalAuthProvider } from './contexts/PortalAuthContext'
 import { TrainerFilterProvider } from './contexts/TrainerFilterContext'
 import { ToastProvider } from './components/Toast'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -24,15 +25,39 @@ const Ejercicios = lazy(() => import('./pages/Ejercicios'))
 const Dispositivos = lazy(() => import('./pages/Dispositivos'))
 const Listados = lazy(() => import('./pages/Listados'))
 const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
+const InformeClientes = lazy(() => import('./pages/InformeClientes'))
+const InformeIntegridad = lazy(() => import('./pages/InformeIntegridad'))
 const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
 const ERPConfiguracion = lazy(() => import('./pages/ERPConfiguracion'))
 const Configuracion = lazy(() => import('./pages/Configuracion/Configuracion'))
 const CuotasClientes = lazy(() => import('./pages/CuotasClientes/CuotasClientes'))
+const EntradasPuntuales = lazy(() => import('./pages/EntradasPuntuales/EntradasPuntuales'))
+const ControlHorario = lazy(() => import('./pages/ControlHorario/ControlHorario'))
+const TPV = lazy(() => import('./pages/TPV/TPV'))
+const DashboardTPV = lazy(() => import('./pages/TPV/DashboardTPV'))
+const ProveedoresTPV = lazy(() => import('./pages/TPV/ProveedoresTPV'))
+
+// ── Portal del cliente NoofitPro ───────────────────────────────────────────
+const PortalLogin   = lazy(() => import('./pages/PortalCliente/PortalLogin'))
+const PortalLayout  = lazy(() => import('./pages/PortalCliente/PortalLayout'))
+const PortalHome    = lazy(() => import('./pages/PortalCliente/PortalHome'))
+const FicharTab     = lazy(() => import('./pages/PortalCliente/FicharTab'))
+const MisJornadasTab = lazy(() => import('./pages/PortalCliente/MisJornadasTab'))
+const AusenciasTabPortal = lazy(() => import('./pages/PortalCliente/AusenciasTab'))
+const PerfilTab     = lazy(() => import('./pages/PortalCliente/PerfilTab'))
+const BuzonTab      = lazy(() => import('./pages/PortalCliente/BuzonTab'))
+const ReservasTab   = lazy(() => import('./pages/PortalCliente/ReservasTab'))
+const RetosTab      = lazy(() => import('./pages/PortalCliente/RetosTab'))
+const EntrenamientosTab    = lazy(() => import('./pages/PortalCliente/EntrenamientosTab'))
+const EntrenamientoDetalle = lazy(() => import('./pages/PortalCliente/EntrenamientoDetalle'))
+const LogrosTab     = lazy(() => import('./pages/PortalCliente/PlaceholderTab').then(m => ({ default: m.LogrosTab })))
 const CrmPage = lazy(() => import('./pages/CRM/CrmPage'))
 const SocialAgenda = lazy(() => import('./pages/SocialAgenda'))
 const NotificacionesPage = lazy(() => import('./pages/Notificaciones/NotificacionesPage'))
 const ContabilidadPage = lazy(() => import('./pages/Contabilidad/ContabilidadPage'))
+const Incidencias = lazy(() => import('./pages/Incidencias/Incidencias'))
+const PublicForm = lazy(() => import('./pages/PublicForm/PublicForm'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 function PageLoader() {
@@ -68,6 +93,26 @@ function AppRoutes() {
         <Route path="/verificar" element={<VerifyAccount mode="verify" />} />
         <Route path="/reset"     element={<VerifyAccount mode="reset" />} />
 
+        {/* Formulario público embebible (iframe en webs de los managers).
+            Sin auth, sin Layout — documento autónomo. */}
+        <Route path="/f/:publicId" element={<PublicForm />} />
+
+        {/* Portal del cliente NoofitPro (auth aislada del admin) */}
+        <Route path="/portal/login" element={<PortalLogin />} />
+        <Route path="/portal" element={<PortalLayout />}>
+          <Route index             element={<PortalHome />} />
+          <Route path="fichar"     element={<FicharTab />} />
+          <Route path="mis-jornadas"       element={<MisJornadasTab />} />
+          <Route path="ausencias"          element={<AusenciasTabPortal />} />
+          <Route path="buzon"              element={<BuzonTab />} />
+          <Route path="entrenamientos"     element={<EntrenamientosTab />} />
+          <Route path="entrenamientos/:id" element={<EntrenamientoDetalle />} />
+          <Route path="perfil"     element={<PerfilTab />} />
+          <Route path="reservas"   element={<ReservasTab />} />
+          <Route path="retos"      element={<RetosTab />} />
+          <Route path="logros"     element={<LogrosTab />} />
+        </Route>
+
         <Route element={<RequireAuth><Layout /></RequireAuth>}>
           <Route index                  element={<Navigate to="/clientes" replace />} />
           <Route path="/dashboard"      element={<Dashboard />} />
@@ -84,16 +129,24 @@ function AppRoutes() {
           <Route path="/listados"       element={<Listados />} />
           <Route path="/informe-asistencia"          element={<InformeAsistencia />} />
           <Route path="/informe-asistencia/:tab"     element={<InformeAsistencia />} />
+          <Route path="/informe-clientes"            element={<InformeClientes />} />
+          <Route path="/informe-integridad"          element={<InformeIntegridad />} />
           <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />
           <Route path="/configuracion"       element={<Configuracion />} />
           <Route path="/cuotas-clientes"     element={<CuotasClientes />} />
+          <Route path="/entradas-puntuales"  element={<EntradasPuntuales />} />
+          <Route path="/control-horario"     element={<ControlHorario />} />
+          <Route path="/tpv"                 element={<TPV />} />
+          <Route path="/tpv/dashboard"       element={<DashboardTPV />} />
+          <Route path="/tpv/proveedores"     element={<ProveedoresTPV />} />
           <Route path="/crm"                 element={<CrmPage />} />
           <Route path="/agenda-social"       element={<SocialAgenda />} />
           <Route path="/notificaciones"      element={<NotificacionesPage />} />
           <Route path="/contabilidad"        element={<ContabilidadPage />} />
           <Route path="/clases-modificacion" element={<ClasesModificacion />} />
           <Route path="/notas" element={<NotasPage />} />
+          <Route path="/incidencias" element={<Incidencias />} />
         </Route>
 
         <Route path="*" element={<RequireAuth><NotFound /></RequireAuth>} />
@@ -107,11 +160,13 @@ export default function App() {
     <ErrorBoundary>
       <BrowserRouter>
         <AuthProvider>
-          <TrainerFilterProvider>
-            <ToastProvider>
-              <AppRoutes />
-            </ToastProvider>
-          </TrainerFilterProvider>
+          <PortalAuthProvider>
+            <TrainerFilterProvider>
+              <ToastProvider>
+                <AppRoutes />
+              </ToastProvider>
+            </TrainerFilterProvider>
+          </PortalAuthProvider>
         </AuthProvider>
       </BrowserRouter>
     </ErrorBoundary>

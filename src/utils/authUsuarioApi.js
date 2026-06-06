@@ -20,16 +20,36 @@ async function jsonOrThrow(res) {
   return body
 }
 
-export async function loginUsuarioWeb(email, password) {
+/**
+ * Login del usuario_web.
+ *
+ * Si el usuario tiene acceso a más de un centro (trainer), el backend
+ * responde 200 con `multi_trainer: true` y la lista `trainers`. El frontend
+ * debe entonces mostrar un selector y volver a llamar `loginUsuarioWeb(email,
+ * password, idTrainer)` con la elección.
+ *
+ * @param idTrainer id NoofitPro del centro elegido (opcional, solo en la
+ *   segunda llamada cuando el usuario es multi-centro)
+ */
+export async function loginUsuarioWeb(email, password, idTrainer = null) {
   const r = await fetch(`${BASE}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email, password,
+      ...(idTrainer ? { id_trainer: String(idTrainer) } : {}),
+    }),
   })
-  // Caso especial: 200 OK con must_change_password=true (no es error real)
+  // Casos especiales — 200 OK pero NO es un login completo aún:
+  //   - must_change_password=true → ir a flujo de cambio
+  //   - multi_trainer=true → ir a selector de centro
   const body = await r.json().catch(() => null)
   if (r.ok && body && body.must_change_password) {
     return { ok: false, mustChangePassword: true, ...body }
+  }
+  if (r.ok && body && body.multi_trainer) {
+    return { ok: false, multiTrainer: true, trainers: body.trainers,
+             usuario: body.usuario, message: body.message }
   }
   if (!r.ok || (body && body.ok === false)) {
     const err = new Error((body && body.error) || `HTTP ${r.status}`)
@@ -122,6 +142,18 @@ export async function usuariosWebList(identity, trainerId) {
   const r = await fetch(url, { headers: configHeaders(identity) })
   return jsonOrThrow(r)
 }
+
+/** Busca un usuario_web por email (case-insensitive). Devuelve `null` si no
+ *  existe o el primer match. Útil para detectar desde la ficha del cliente
+ *  si ya está dado de alta como usuario web. */
+export async function usuarioWebFindByEmail(identity, email) {
+  if (!email) return null
+  const r = await fetch(`/api/config/usuarios-web?email=${encodeURIComponent(email)}`,
+                        { headers: configHeaders(identity) })
+  const body = await jsonOrThrow(r)
+  return (body.usuarios && body.usuarios[0]) || null
+}
+
 export async function usuarioWebCreate(identity, payload) {
   const r = await fetch('/api/config/usuarios-web', {
     method: 'POST', headers: configHeaders(identity), body: JSON.stringify(payload),
@@ -149,5 +181,29 @@ export async function usuarioWebResendVerification(identity, id) {
 export async function usuarioWebDelete(identity, id, hard = false) {
   const url = hard ? `/api/config/usuarios-web/${id}?hard=1` : `/api/config/usuarios-web/${id}`
   const r = await fetch(url, { method: 'DELETE', headers: configHeaders(identity) })
+  return jsonOrThrow(r)
+}
+
+// ── Formularios de captación (form builder embebible) ──────────────────────
+export async function formulariosList(identity) {
+  const r = await fetch('/api/config/formularios', { headers: configHeaders(identity) })
+  return jsonOrThrow(r)
+}
+export async function formularioCreate(identity, payload) {
+  const r = await fetch('/api/config/formularios', {
+    method: 'POST', headers: configHeaders(identity), body: JSON.stringify(payload),
+  })
+  return jsonOrThrow(r)
+}
+export async function formularioUpdate(identity, id, payload) {
+  const r = await fetch(`/api/config/formularios/${id}`, {
+    method: 'PATCH', headers: configHeaders(identity), body: JSON.stringify(payload),
+  })
+  return jsonOrThrow(r)
+}
+export async function formularioDelete(identity, id) {
+  const r = await fetch(`/api/config/formularios/${id}`, {
+    method: 'DELETE', headers: configHeaders(identity),
+  })
   return jsonOrThrow(r)
 }

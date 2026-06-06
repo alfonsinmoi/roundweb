@@ -11,6 +11,27 @@
 
 ---
 
+## 0. QR de vinculación cliente ↔ mynoofit ✅ RESUELTO (junio 2026)
+
+**Estado:** ACTIVADO. Spec en `docs/QR_TRAINER_CLIENTE.md`.
+
+**Formatos confirmados por NoofitPro:**
+- **QR de la ficha** (`QrFichaCliente`, `ClientProfile.jsx`): payload sin
+  cifrar. `TRAINERLINK;<idCliente>` si `cedeDatos=true` (defecto), o
+  `cedeDatosFalse:<idCliente>:<dni>:<idTrainer>` si `cedeDatos=false`.
+  Helper: `payloadQrVincular()` en `src/utils/qrCifrado.js`.
+- **QR del centro/trainer** (`QrCentroButton`): payload cifrado AES-256-CBC
+  con PBKDF2-HMAC-SHA1 (1000 iter., 48 bytes), salida base64.
+  Texto plano: `TRAINER;<idTrainer>;<managerId>;<nombreCompleto>`.
+  Helper: `cifrarQrTrainer()` en `src/utils/qrCifrado.js` (Web Crypto API).
+
+**TODO menor:**
+- El flag `Trainer.cedeDatos` no lo expone NoofitPro hoy: la web asume
+  `cedeDatos=true` (caso defecto). Cuando llegue por API, pasarlo a
+  `payloadQrVincular({cedeDatos})` en `QrFichaCliente`.
+
+---
+
 ## 1. Categorías de cliente (Gympass / Trabajador / Invitado / …)
 
 **Estado actual:** Round las mantiene en sus tablas `categoria` (catálogo
@@ -397,6 +418,234 @@ persistiéndose en BD como `fallida` para auditoría, pero no llegan al móvil.
 
 ---
 
+## 17. Webhook NoofitPro → Round (sync de cliente EN TIEMPO REAL)
+
+**Estado actual (junio 2026):** la sincronización NoofitPro → Round es por
+**polling**: el cron `round_clientes_sync` (cada hora) + un sync en background
+al abrir *Clientes* releen `getClientesByManager`/`getClienteSimple` y vuelcan
+`enabled`, `name`, `email`, etc. a `cliente_cache`. Verificado que la relación
+**activo/archivado (NP) ↔ activo/inactivo (web)** está consistente (0
+discrepancias de `enabled` en 676 clientes), **pero NO es en tiempo real**: si
+en NoofitPro se archiva/activa un cliente, la web puede tardar **hasta ~1 h** en
+reflejarlo.
+
+> El sentido inverso (Round → NoofitPro) **ya existe**: al programar una baja o
+> una inactividad temporal, Round llama a `archivar_cliente`/`reactivar_cliente`
+> (`enabled=false/true` + `motivoArchivado`) contra NoofitPro. Lo que falta es el
+> **push de NoofitPro hacia Round** para no depender del cron.
+
+**Lo que necesitamos que NoofitPro desarrolle:** un **webhook saliente** que
+NoofitPro dispare **cada vez que cambie el estado o los datos de un cliente**,
+llamando a un endpoint que Round expondrá. Así la web se actualiza al instante
+y el cron horario queda solo como *backstop* de reconciliación.
+
+### Endpoint que Round expondrá (lo implementamos nosotros)
+
+```
+POST https://noofit.wiemspro.com/api/webhooks/noofit/cliente
+Content-Type: application/json
+X-Noofit-Signature: <HMAC-SHA256(body, SECRET) en hex>     # firma del cuerpo
+```
+
+- **Seguridad:** secreto compartido por entorno. NoofitPro firma el cuerpo con
+  `HMAC-SHA256` usando el secreto; Round valida la firma antes de procesar
+  (rechaza 401 si no cuadra). Alternativa mínima aceptable: cabecera
+  `X-Noofit-Token: <secreto>` fijo. **Sin firma/token válido → 401.**
+- **Respuesta:** `200 {ok:true}` si procesado; Round responde rápido (<500 ms) y
+  procesa el upsert. NoofitPro debe **reintentar** (p.ej. 3 intentos con backoff)
+  si recibe 5xx o timeout.
+
+### Eventos mínimos
+
+| `event` | Cuándo lo dispara NoofitPro |
+|---|---|
+| `cliente.archivado` | se pone `enabled=false` (manual o por proceso) |
+| `cliente.activado` | se pone `enabled=true` (reactivación) |
+| `cliente.creado` | alta de un cliente nuevo |
+| `cliente.actualizado` | cambio de nombre/email/teléfono/dni/categoría… |
+| `cliente.borrado` *(si existe)* | eliminación real |
+
+### Payload (cuerpo del POST)
+
+```json
+{
+  "event": "cliente.archivado",
+  "timestamp": "2026-06-05T09:14:33+02:00",
+  "idManager": 7673,
+  "idTrainer": 17675,
+  "cliente": {
+    "id": 1817691,
+    "enabled": false,
+    "motivoArchivado": "baja voluntaria",
+    "name": "Cristobal",
+    "surname": "Garcia Bandera",
+    "email": "...",
+    "cellPhone": "...",
+    "dni": "...",
+    "editionDate": "2026-06-05T09:14:33+02:00"
+  }
+}
+```
+
+- **Imprescindible** que venga **`idTrainer`** (y a poder ser `idManager`): Round
+  es multi-tenant y necesita saber a qué centro pertenece el cliente para no
+  mezclar datos entre trainers. Sin `idTrainer`, Round tendría que resolverlo por
+  jerarquía (más frágil).
+- Basta con que el objeto `cliente` traiga **al menos `id` + `enabled` +
+  `motivoArchivado`**; el resto de campos son bienvenidos para mantener la cache
+  completa sin un `getClienteSimple` extra.
+
+### Comportamiento de Round al recibirlo
+
+1. Valida firma/token → 401 si inválida.
+2. **UPSERT** en `cliente_cache` por `(id_manager, id)` con el `enabled` y los
+   campos recibidos (idempotente — repetir el mismo evento no rompe nada).
+3. Registra la transición en `cliente_estado_log` (activo↔inactivo) con fecha y
+   motivo.
+4. Emite evento interno para refrescar la UI abierta (sin recargar).
+
+### Qué sustituye / convive
+
+- El **webhook da tiempo real**; el cron `round_clientes_sync` pasa a ser un
+  **reconciliador** (p.ej. cada 6-12 h) para capturar eventos perdidos (webhook
+  caído, reintentos agotados). No se elimina, baja de frecuencia.
+- Cierra el último hueco de la regla "estado siempre coherente NP ↔ web":
+  hoy coherente con lag de cron; con el webhook, coherente al instante.
+
+> **Relación con la sección 7 (CRM):** este mismo webhook de
+> archivar/reactivar permite además sincronizar el CRM Odoo automáticamente
+> (mover lead a "baja"/"reactivado") — resuelve el "webhook al
+> reactivar/inactivar un cliente" que pedíamos allí.
+
+---
+
+## 18. [INTERNO Round/Odoo — NO es gap NoofitPro] Modelo de facturación: asiento por recibo vs trimestral
+
+> Seguimiento del trabajo de facturación Odoo (junio 2026). No depende de
+> NoofitPro; se guarda aquí para retomarlo. **Regla objetivo del dueño:**
+> *"cada recibo que se cree (manual o emisión) debe crear el asiento en Odoo;
+> la facturación será según el modelo elegido."*
+
+### El "modelo elegido" YA existe como config (pero la emisión no lo respeta)
+
+Campo `manager_config.modo_facturacion` VARCHAR(20) DEFAULT `'recibo_trimestre'`
+(UI: **Configuración → Forma de facturar**, `FormaFacturarTab.jsx`;
+endpoints `routes/modo_facturacion.py`; checklist `chk_modo_facturacion`). 3 valores:
+
+| valor | Opción UI | Comportamiento previsto |
+|---|---|---|
+| `recibo_trimestre` *(default)* | 1 · Recibos mensuales + facturación trimestral | recibo BD mensual; **asiento al cierre trimestral** |
+| `factura_draft` | 2 · Facturas borrador mensuales + posteo trimestral | account.move **borrador** mensual; postear trimestral |
+| `factura_directa` | 3 · Facturación directa mensual | **factura posteada por recibo, al momento** (= la regla del dueño) |
+
+### Qué hace HOY cada pieza (verificado)
+
+- **Emisión mensual** `routes/preemision_v2.generar` → crea filas en `recibo`
+  (origen `cron_emision`) **SIN asiento Odoo**. **No mira `modo_facturacion`**
+  (siempre se comporta como `recibo_trimestre`).
+- `routes/emision_v2.emitir` → crea `account.payment` de los pagados (cobro),
+  **no la factura**.
+- **Alta de cliente** `odoo_alta.crear_alta_cliente` → SÍ crea factura+pago al
+  momento (por eso los 2 únicos asientos de junio Málaga eran de altas).
+- **Cierre trimestral** `routes/facturacion_trimestre.facturar` → crea el
+  `account.move` (agregado por cliente). **Ya corregido hoy** (ver abajo).
+- **Recibo MANUAL** `routes/recibos.py` (INSERT recibo) → **no crea asiento**.
+
+➡️ **Conclusión:** la Opción 3 (`factura_directa`, asiento por recibo al
+momento) **NO está implementada**; las Opciones 1/2 dependen del cierre
+trimestral. La regla del dueño exige que la creación de recibo (manual +
+emisión) cree el asiento según `modo_facturacion`.
+
+### Ya CORREGIDO/HECHO hoy (junio 2026)
+
+- **Identidad manager/trainer por `X-TRAINER_MANAGER`** + anti-fantasma
+  (commit `40118d6`). Manager ROUND = 17677; trainers 17674/17675/17676.
+- **Devoluciones SEPA acotadas al manager** (`_call_scoped`, `get_cuotas(g.id_manager)`)
+  + notif devolución multimanager (commits `2db6cd8`, `32b303e`).
+- **`facturacion_trimestre` arreglado** (commit `c1ef2ea`): factura **todos**
+  los recibos sin asiento (`pagado`+`impagado`+`devuelto`, no solo pagados);
+  **analítica por trainer** del cliente (antes hardcodeada a "Round Málaga
+  Centro"); **company del manager** (antes env fijo =3); idempotente por
+  `account_move_id`. Frontend muestra impagados + columna Estado.
+- **Backfill datos**: 201 asientos `RB-<recibo_id>` de **junio Málaga**
+  creados en Odoo (cuenta 700000, IVA 21% tax 171, diario venta, pago para
+  pagados). Operación de datos, sin commit. Idempotente; el cierre trimestral
+  los salta (ya tienen `account_move_id`).
+- Purga del **tenant fantasma 16702** (cuenta NoofitPro ajena de Hugo) +
+  archivado de partners huérfanos.
+
+### PENDIENTE (retomar) — implementar la regla "recibo → asiento según modelo"
+
+1. **Helper único** `emitir_recibo_a_odoo(recibo)` idempotente
+   (`ref='RB-<recibo_id>'`, salta si ya tiene `account_move_id`): crea el
+   `account.move`, lo postea, concilia pago si `estado='pagado'`, fija
+   `account_move_id`/`account_move_ref`. Analítica por trainer + company del
+   manager (reutilizar `_resolve_analytic_for_partner`, `o.company_id`). Receta
+   verificada = la del backfill de junio Málaga.
+2. **Enganchar el helper** según `modo_facturacion`:
+   - `factura_directa` → al crear recibo **manual** (`recibos.py`) y al
+     **emitir** (`preemision_v2`/`emision_v2`): crear factura **posteada** al
+     momento.
+   - `factura_draft` → crear `account.move` **borrador** mensual; postear en el
+     cierre trimestral.
+   - `recibo_trimestre` → comportamiento actual (asiento al cierre trimestral).
+3. **Fail-soft**: si Odoo está caído, el recibo se crea igual y queda
+   pendiente de asiento; un cron de reconciliación reintenta (no romper la
+   creación del recibo). Marcar los pendientes para reintento.
+4. **Cron de respaldo**: barrer recibos sin `account_move_id` cuyo manager sea
+   `factura_directa`/`factura_draft` y crear el asiento que falte (igual que el
+   backfill de junio, pero recurrente).
+5. **Coherencia**: junio Málaga ya está por-recibo (`factura_directa` de facto);
+   abril/mayo seguirían el modelo trimestral. Decidir desde qué periodo aplica
+   el modelo nuevo por manager.
+6. **Riesgos**: no duplicar (idempotencia por `ref`/`account_move_id`); respetar
+   aislamiento (analítica/company por trainer/manager); SII no activo hoy en
+   company 3 (verificado), revisar si se activa.
+
+> Relacionado: el **webhook NP→Round (sección 17)** es independiente; aquí es
+> facturación interna Round↔Odoo.
+
+---
+
+## 19. Clases/salas NO separadas por centro (trainer)
+
+**Estado (verificado jun 2026):** `getSalasByManagerByRange` /
+`getSalasByManager` devuelven **TODAS las clases del grupo bajo
+`idTrainer=17675`** (el manager), **aunque consultes con las credenciales de
+otro trainer** (probado con `roundanoreta@noofit.com` → mismas 187 clases, todas
+`idTrainer=17675`, `idCreador=17675`). Ningún campo del objeto sala distingue el
+centro: `idTecnico` (26/27) / `nameTrainer` ("Trainer "/"NooFit") solo separan
+**tipo de actividad** (RT vs Ciclo), no el trainer/centro.
+
+**Síntoma:** un trainer (p.ej. Añoreta) ve las clases de Málaga; no se pueden
+aislar por centro porque en NoofitPro no están separadas.
+
+**Lo que necesitamos de NoofitPro:**
+1. Que cada sala/clase lleve el **`idTrainer` del centro real** al que pertenece
+   (Añoreta=17674, Málaga=17675, …), no siempre el del manager.
+2. (o) Que `getSalasByManagerByRange` con el token de un trainer devuelva **solo
+   las clases de ese trainer**.
+
+**Impacto en la web:** el filtro por `idTrainer` ya existe (proxy
+`/api/trainer-data/salas` filtra por el trainer del usuario_web). En cuanto
+NoofitPro etiquete las clases por centro, **el aislamiento funciona solo, sin
+cambios en la web**. Hasta entonces, un trainer ve 0 (si se filtra) o todas (si
+no) — ninguna correcta.
+
+> **Hecho en la web (jun 2026):** todas las vías de listado de clases filtran
+> por trainer — `getSalas`/`getSalasRango`/`getSalasByRange` (usuario_web por el
+> proxy server-side; login NoofitPro directo por `roundTrainerId` de la sesión).
+> Un trainer solo ve SUS clases (Añoreta=0 hasta crear las suyas).
+>
+> **Residual (defensa en profundidad, ligado a este gap):**
+> `getUsuariosBySala(salaId)` (asistentes de una clase) es llamada directa a
+> NoofitPro sin validar que la sala sea del trainer. Hoy no explotable (el
+> `salaId` solo sale del listado ya filtrado, y todas las salas son 17675).
+> Cuando NoofitPro separe salas por centro, conviene un proxy que valide
+> `sala.idTrainer == g.id_trainer` antes de devolver asistentes.
+
+---
+
 ## Resumen ejecutivo (para hablar con NoofitPro)
 
 **Cambios "urgentes" (afectan funcionalidad existente):**
@@ -418,6 +667,10 @@ persistiéndose en BD como `fallida` para auditoría, pero no llegan al móvil.
    permanente).
 7. Endpoint de "reserva prueba" que no cree todavía un cliente real.
 8. Metadata "centro" por trainer (slug, dirección, mapa).
+9. **Webhook NoofitPro → Round (sección 17)**: push en tiempo real al
+   archivar/activar/crear/editar un cliente, contra
+   `POST /api/webhooks/noofit/cliente` (firmado HMAC). Hoy la web se entera por
+   cron horario; el webhook lo haría instantáneo y de paso sincronizaría el CRM.
 
 **No urgentes / no necesarios (Round los gestiona y no necesita
 NoofitPro):**

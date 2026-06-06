@@ -11,6 +11,39 @@ módulo de contabilidad, remesas y CRM en Odoo.
 
 ---
 
+## ⛔ REGLA ARQUITECTÓNICA — una BASE DE DATOS Odoo por manager
+
+**Cuando un manager activa una empresa Odoo (al contratar contabilidad, cuotas
+o CRM) se crea una BASE DE DATOS Odoo NUEVA y dedicada para ese manager — NO
+una `res.company` dentro de la base de datos `round_facturacion`.**
+
+- **Aislamiento por BD = aislamiento total**: dos managers nunca comparten base
+  de datos, así que es imposible que uno vea/escriba datos de otro. Es el
+  blindaje multi-tenant definitivo (superior al multi-company por filas).
+- `manager_config.odoo_url` (y/o un `odoo_db` por manager) identifica la
+  instancia/BD del manager; la conexión XML-RPC se hace contra ESA BD.
+- **Dentro de la BD del manager**, los trainers se separan así:
+  - trainer SIN entidad jurídica propia → **analítica** (`trainer_analytic_id`)
+    dentro de la company del manager.
+  - trainer CON entidad jurídica distinta (CIF propio) → **`res.company`
+    propia dentro de la BD del manager** (`trainer_empresa.odoo_company_id`).
+
+  Frontera de **BD = manager**; dentro, frontera de **company = entidad
+  jurídica** (manager o trainer-entidad).
+- `resolve_company(manager, trainer)` (guard B1, `odoo_cuotas.py`) resuelve la
+  company DENTRO de la BD del manager; la resolución de la **BD/URL** se hace
+  por `odoo_url`/`odoo_db` del manager (ya soportado en
+  `OdooCuotas._ensure_identity`). La company `1` legacy ("BEST TRAINING legacy
+  USA - NO USAR") está en la lista negra `ODOO_LEGACY_COMPANY_IDS` y se rechaza.
+- **Estado actual (jun 2026)**: solo opera Round (17675) en la BD histórica
+  `round_facturacion` (company 3). Los **próximos** managers que activen módulos
+  estrenarán BD propia. ⚠️ **Pendiente en el provisioner** (`odoo_provisioner.py`,
+  hoy hace `ensure_company` dentro de `round_facturacion`): al entrar el primer
+  manager nuevo debe **crear la BD** (no solo la company) y registrar
+  `odoo_url`/`odoo_db` en `manager_config`.
+
+---
+
 ## Fase 6 — Activación granular por módulo (mayo 2026)
 
 A partir de Fase 6 el despliegue **deja de ser monolítico**. En lugar de

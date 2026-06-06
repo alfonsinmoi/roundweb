@@ -89,6 +89,16 @@ export async function borrarNota(user, id) {
   await fetchJson(`/api/notas/${id}`, { method: 'DELETE', headers: buildHeaders(user) })
 }
 
+// POST /api/notas/enviar — crea N notas en bloque para receptores variados
+// (trabajadores y/o clientes). Endpoint nuevo mayo 2026 para soportar el
+// botón "Nueva nota" general desde la página /notas.
+//   payload = { contenido, destinatarios: [{tipo, id}], fecha_entrega?, fecha_vencimiento? }
+export async function enviarNota(user, payload) {
+  return fetchJson('/api/notas/enviar', {
+    method: 'POST', headers: buildHeaders(user), body: JSON.stringify(payload),
+  })
+}
+
 // ─── Endpoints "yo" (banner + página /notas) ─────────────────────────────────
 export async function misNotasBanner(user) {
   const r = await fetchJson(`/api/notas/me/banner`, { headers: buildHeaders(user) })

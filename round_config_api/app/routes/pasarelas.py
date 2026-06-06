@@ -10,8 +10,9 @@ Reglas:
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
+from ..audit_log import log_action, actor_from_request
 
 bp = Blueprint('pasarelas', __name__)
 log = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ def list_all():
 
 @bp.route('/<id_trainer>', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.pasarelas.editar')
 def upsert(id_trainer):
     """Crea o actualiza una credencial. Body:
       { proveedor: 'paycomet', api_token: '...', terminal: '...',
@@ -116,6 +118,15 @@ def upsert(id_trainer):
                   bool(d.get('sandbox')), bool(d.get('active', True)),
                   d.get('notas')))
             row = cur.fetchone()
+        # Audit: registrar QUIÉN tocó credenciales y QUÉ campos, sin secretos.
+        campos = [k for k in ('proveedor', 'api_token', 'terminal', 'url_ok',
+                              'url_ko', 'url_notif', 'sandbox', 'active', 'notas')
+                  if d.get(k) is not None]
+        log_action(actor_from_request(), 'pasarela_credenciales', 'update',
+                   entidad_id=str(id_trainer),
+                   resumen=f'Credenciales {proveedor} actualizadas',
+                   cambios={'campos_modificados': campos,
+                            'api_token_actualizado': bool((d.get('api_token') or '').strip())})
         return jsonify({'ok': True, 'row': _safe_row(row)})
     except Exception as e:
         log.exception('pasarelas upsert')
@@ -124,6 +135,7 @@ def upsert(id_trainer):
 
 @bp.route('/<id_trainer>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.pasarelas.editar')
 def delete(id_trainer):
     err = _manager_only()
     if err: return err
@@ -135,6 +147,10 @@ def delete(id_trainer):
                  WHERE id_manager=%s AND id_trainer=%s AND proveedor=%s
             """, (g.id_manager, str(id_trainer), proveedor))
             n = cur.rowcount
+        log_action(actor_from_request(), 'pasarela_credenciales', 'delete',
+                   entidad_id=str(id_trainer),
+                   resumen=f'Credenciales {proveedor} eliminadas',
+                   cambios={'proveedor': proveedor, 'filas_eliminadas': n})
         return jsonify({'ok': True, 'deleted': n})
     except Exception as e:
         log.exception('pasarelas delete')

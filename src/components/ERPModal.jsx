@@ -283,7 +283,7 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
   }
 
   return (
-    <Modal open={!!cliente} onClose={onClose} disabled={saving}
+    <Modal open={!!cliente} onClose={onClose} disabled={saving} maxWidth={920}
            title="Enviar ERP" subtitle={cliente ? `${cliente.name} ${cliente.surname}` : ''}>
       {/* Form — scrollea internamente si es largo */}
       <div style={{ padding: '28px 32px', flex: 1, overflowY: 'auto', minHeight: 0 }}>
@@ -335,7 +335,9 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
             )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px 24px' }}>
+          <div style={{ display: 'grid',
+                         gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))',
+                         gap: '18px 24px' }}>
             {campos.sort((a, b) => a.orden - b.orden).map(campo => {
               const key = campo.nombreCampo
               const isDate = key.startsWith('datetime')

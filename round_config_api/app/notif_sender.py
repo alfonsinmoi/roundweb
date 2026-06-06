@@ -121,6 +121,54 @@ def _render_si_plantilla(tipo_id, titulo, cuerpo, plantilla_vars):
     return titulo_final, cuerpo_final
 
 
+# ── Aislamiento por manager/trainer ────────────────────────────────────────
+# Regla: cada manager/trainer se comunica EXCLUSIVAMENTE con SUS clientes.
+def _clientes_del_emisor(id_manager, id_trainer):
+    """Set de cliente_idnoofit (str) que el emisor puede notificar: los del
+    trainer si `id_trainer`, si no todos los del manager. Set vacío si no hay."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            if id_trainer:
+                cur.execute("SELECT id::text AS id FROM cliente_cache "
+                            "WHERE id_manager=%s AND id_trainer::text=%s",
+                            (str(id_manager), str(id_trainer)))
+            else:
+                cur.execute("SELECT id::text AS id FROM cliente_cache WHERE id_manager=%s",
+                            (str(id_manager),))
+            return {r['id'] for r in cur.fetchall()}
+    except Exception:
+        log.exception('_clientes_del_emisor')
+        return set()
+
+
+def _trainers_del_manager(id_manager):
+    """Ids de trainer (str) registrados bajo el manager (trainer_noofit_creds)."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT id_trainer FROM trainer_noofit_creds "
+                        "WHERE id_manager=%s AND activo=TRUE", (str(id_manager),))
+            return {str(r['id_trainer']) for r in cur.fetchall() if r['id_trainer']}
+    except Exception:
+        log.exception('_trainers_del_manager')
+        return set()
+
+
+def _broadcast_filters(id_manager, id_trainer):
+    """Filtros OneSignal (por tag `idTrainer`, que mynoofit pobla en cada device)
+    para acotar un broadcast a los clientes del emisor. NUNCA global.
+    Trainer → su idTrainer; manager → OR de los idTrainer de sus trainers.
+    Devuelve [] si no hay trainers (en ese caso NO se hace broadcast global)."""
+    trainers = [str(id_trainer)] if id_trainer else sorted(_trainers_del_manager(id_manager))
+    if not trainers:
+        return []
+    filt = []
+    for i, t in enumerate(trainers):
+        if i > 0:
+            filt.append({'operator': 'OR'})
+        filt.append({'field': 'tag', 'key': 'idTrainer', 'relation': '=', 'value': str(t)})
+    return filt
+
+
 # ── Función principal ─────────────────────────────────────────────────────
 def enviar_notificacion(*,
         id_manager,
@@ -159,6 +207,19 @@ def enviar_notificacion(*,
     except ValueError as e:
         return {'ok': False, 'error': str(e)}
 
+    # ── Aislamiento: el emisor solo puede notificar a SUS clientes ──
+    # (trainer → sus clientes; manager → clientes de todos sus trainers).
+    # Defensa server-side aunque el frontend ya liste solo los suyos.
+    if scope in ('cliente', 'lista', 'cluster') and clientes:
+        permitidos = _clientes_del_emisor(id_manager, id_trainer)
+        antes = len(clientes)
+        clientes = [c for c in clientes if str(c) in permitidos]
+        if len(clientes) != antes:
+            log.warning(f'notif: descartados {antes - len(clientes)} destinatarios ajenos '
+                        f'al emisor (manager={id_manager}, trainer={id_trainer})')
+        if not clientes:
+            return {'ok': False, 'error': 'audiencia_vacia_tras_aislamiento'}
+
     # Render plantilla
     titulo_f, cuerpo_f = _render_si_plantilla(tipo, titulo, cuerpo, plantilla_vars)
     if not titulo_f:
@@ -188,7 +249,14 @@ def enviar_notificacion(*,
                 },
             }
             if scope == 'broadcast':
-                kwargs['segments'] = ['Subscribed Users']
+                # Broadcast ACOTADO a los clientes del emisor vía tag idTrainer
+                # (mynoofit etiqueta cada device con idTrainer). NUNCA global
+                # ('Subscribed Users' mandaba a todos los gimnasios → fuga).
+                bf = _broadcast_filters(id_manager, id_trainer)
+                if not bf:
+                    raise OneSignalError(
+                        'broadcast sin trainers para acotar — no se envía global')
+                kwargs['filters'] = bf
             elif scope == 'subscription':
                 # Subscription IDs van en player_ids (v1) — extraerlos de scope_ref
                 sub_ids = json.loads(scope_ref).get('subscription_ids', [])

@@ -16,6 +16,12 @@ ODOO_PWD     = os.getenv('CONFIG_ODOO_PWD',  '')
 ODOO_COMPANY = int(os.getenv('CONFIG_ODOO_COMPANY', '1'))
 ODOO_SYNC_ENABLED = os.getenv('CONFIG_ODOO_SYNC', '1') == '1'
 
+# B1 — Companies Odoo "legacy/prohibidas": NUNCA se escribe en ellas.
+# Por defecto la company 1 ("BEST TRAINING legacy USA - NO USAR").
+ODOO_LEGACY_COMPANY_IDS = {
+    int(x) for x in os.getenv('CONFIG_ODOO_LEGACY_COMPANIES', '1').split(',') if x.strip()
+}
+
 # Token compartido entre frontend Round y este backend
 API_TOKEN = os.getenv('CONFIG_API_TOKEN', '')
 
@@ -41,7 +47,8 @@ CORS_ORIGINS = [
 FORMAS_PAGO = ['sepa', 'tpv', 'efectivo', 'tokenizacion']
 PERIODICIDADES = ['mensual', 'bimensual', 'trimestral', 'semestral', 'anual']
 TIPOS_MODIFICACION = ['descuento', 'cargo_extra', 'precio_alternativo']
-TIPOS_DESCUENTO = ['porcentaje', 'importe', 'precio_combo', 'varias_cuotas', 'familiares']
+TIPOS_DESCUENTO = ['porcentaje', 'importe', 'precio_combo', 'varias_cuotas',
+                   'familiares', 'familiar_trabajador', 'restar_cuota']
 
 def conn_string():
     return (f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} "

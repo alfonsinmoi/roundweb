@@ -17,8 +17,30 @@ from . import noofit_client as nc
 log = logging.getLogger(__name__)
 
 
+def _creds_para_slot(id_manager, id_trainer):
+    """Devuelve (email, password) priorizando el trainer (más específico) y
+    cayendo al manager parent si no hay credenciales del trainer."""
+    with get_conn() as conn, conn.cursor() as cur:
+        if id_trainer:
+            cur.execute("""SELECT noofit_email, noofit_password
+                             FROM trainer_noofit_creds
+                            WHERE id_manager=%s AND id_trainer=%s AND activo=TRUE
+                            LIMIT 1""", (str(id_manager), str(id_trainer)))
+            t = cur.fetchone()
+            if t:
+                return t['noofit_email'], t['noofit_password']
+        cur.execute("""SELECT noofit_email, noofit_password
+                         FROM manager_config
+                        WHERE id_manager=%s AND activo=TRUE LIMIT 1""",
+                    (str(id_manager),))
+        m = cur.fetchone()
+        return (m['noofit_email'], m['noofit_password']) if m else (None, None)
+
+
 def liberar_expiradas():
-    """Devuelve número de reservas liberadas."""
+    """Devuelve número de reservas liberadas. Para cancelar en NoofitPro
+    autentica como el trainer del slot (o el manager si no hay creds de
+    trainer), nunca con un token global default."""
     n = 0
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -32,10 +54,20 @@ def liberar_expiradas():
     for r in rows:
         try:
             if r.get('noofit_sala_id') and r.get('noofit_cliente_id'):
-                try:
-                    nc.cancelar_reserva(r['noofit_sala_id'], r['noofit_cliente_id'])
-                except Exception as e:
-                    log.warning(f'cancelar reserva sala={r["noofit_sala_id"]} cliente={r["noofit_cliente_id"]}: {e}')
+                email, pwd = _creds_para_slot(r.get('id_manager'), r.get('id_trainer'))
+                if not email:
+                    log.warning(f'slot {r["id"]}: sin credenciales para '
+                                f'manager={r.get("id_manager")} '
+                                f'trainer={r.get("id_trainer")}')
+                else:
+                    try:
+                        nc.cancelar_reserva_with_creds(
+                            r['noofit_sala_id'], r['noofit_cliente_id'],
+                            email, pwd)
+                    except Exception as e:
+                        log.warning(f'cancelar reserva sala={r["noofit_sala_id"]} '
+                                    f'cliente={r["noofit_cliente_id"]} '
+                                    f'auth={email}: {e}')
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute("UPDATE slot_reserva SET estado='expirada' WHERE id=%s",
                             (r['id'],))

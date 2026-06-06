@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { Users, ChevronDown } from 'lucide-react'
 import { useTrainerFilter } from '../contexts/TrainerFilterContext'
 import { getEntrenadores } from '../utils/api'
+import { QrCentroButton } from './QrAltaCliente'
 
 export default function TrainerFilterBar() {
   const { available, selectedTrainerId, setSelectedTrainerId } = useTrainerFilter()
@@ -61,6 +62,11 @@ export default function TrainerFilterBar() {
         ))}
       </select>
       <ChevronDown size={11} style={{ marginLeft: -10, color: 'var(--text-3)', pointerEvents: 'none' }} aria-hidden="true" />
+      {/* QR del trainer: al seleccionar un centro concreto, aparece aquí el
+          QR cifrado del perfil del trainer (TRAINER;id;manager;nombre). */}
+      {selectedTrainerId && (
+        <QrCentroButton trainerId={String(selectedTrainerId)} nombreCentro={label} />
+      )}
     </div>
   )
 }

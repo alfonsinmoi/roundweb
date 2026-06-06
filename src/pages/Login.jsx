@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Eye, EyeOff, Loader2, Building2, ChevronRight } from 'lucide-react'
 
 const MAX_PASSWORD_LENGTH = 128
 
@@ -12,6 +12,22 @@ export default function Login() {
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')   // mensaje neutro (must_change_password)
   const [loading, setLoading] = useState(false)
+  // Si el usuario tiene acceso a varios centros, mostramos selector.
+  const [trainerChoice, setTrainerChoice] = useState(null)  // { trainers, message } | null
+
+  // Reintento del login con el centro elegido. Sólo se llama desde el selector.
+  const elegirCentro = async (idTrainer) => {
+    setError(''); setLoading(true)
+    const result = await login(email.trim(), password, String(idTrainer))
+    setLoading(false)
+    if (result.ok) { setTrainerChoice(null); return }
+    if (result.multiTrainer) {
+      // No debería volver a pasar (ya pasamos id_trainer) — refrescar lista
+      setTrainerChoice({ trainers: result.trainers, message: result.message })
+      return
+    }
+    setError(result.error || 'No se pudo acceder al centro elegido')
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -25,6 +41,11 @@ export default function Login() {
     if (result.ok) return
     if (result.mustChangePassword) {
       setInfo(result.message || 'Te hemos enviado un email para que actualices tu contraseña.')
+      return
+    }
+    if (result.multiTrainer) {
+      // El usuario tiene acceso a varios centros — mostrar selector
+      setTrainerChoice({ trainers: result.trainers || [], message: result.message })
       return
     }
     setError(result.error ?? 'Credenciales incorrectas')
@@ -79,7 +100,72 @@ export default function Login() {
           </p>
         </div>
 
-        {/* Form card */}
+        {/* Selector de centro — si el usuario tiene acceso a varios trainers */}
+        {trainerChoice ? (
+          <div style={{
+            background: 'var(--bg-1)', border: '1px solid var(--line)',
+            borderRadius: 24, padding: '40px 36px',
+          }}>
+            <h2 style={{
+              fontFamily: 'Outfit, sans-serif', fontSize: 22, fontWeight: 700,
+              color: 'var(--text-0)', margin: 0, display: 'flex',
+              alignItems: 'center', gap: 10,
+            }}>
+              <Building2 size={22} aria-hidden="true" /> Elige el centro
+            </h2>
+            <p style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 12, marginBottom: 28, lineHeight: 1.5 }}>
+              {trainerChoice.message || 'Tienes acceso a varios centros. Elige con cuál quieres trabajar en esta sesión.'}
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {(trainerChoice.trainers || []).map(t => (
+                <button key={t.id_trainer}
+                        onClick={() => elegirCentro(t.id_trainer)}
+                        disabled={loading}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          padding: '16px 20px', borderRadius: 16, fontSize: 15,
+                          background: 'var(--bg-2)', border: '1px solid var(--line)',
+                          color: 'var(--text-0)', cursor: loading ? 'wait' : 'pointer',
+                          textAlign: 'left', width: '100%', fontFamily: 'inherit',
+                          transition: 'border-color 0.2s, background 0.2s',
+                        }}
+                        onMouseEnter={e => { if (!loading) e.currentTarget.style.borderColor = 'var(--green)' }}
+                        onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--line)'}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>
+                      {/* Prioridad: nombre del centro (centro_contacto) →
+                          email del trainer (sin @dominio) → fallback id. */}
+                      {t.nombre_centro
+                        || (t.email_trainer ? t.email_trainer.replace(/@.*$/, '') : `Centro ${t.id_trainer}`)}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                      ID NoofitPro: {t.id_trainer}
+                      {t.email_trainer ? ` · ${t.email_trainer}` : ''}
+                    </div>
+                  </div>
+                  <ChevronRight size={18} aria-hidden="true" style={{ color: 'var(--text-3)' }} />
+                </button>
+              ))}
+            </div>
+            {error && (
+              <div role="alert" style={{
+                marginTop: 24, padding: '14px 18px', borderRadius: 14, fontSize: 13,
+                color: 'var(--red)', background: 'rgba(248,113,133,0.06)',
+                border: '1px solid rgba(248,113,133,0.12)',
+              }}>{error}</div>
+            )}
+            <button onClick={() => { setTrainerChoice(null); setPassword(''); setError('') }}
+                    disabled={loading}
+                    style={{
+                      marginTop: 20, background: 'transparent', border: 'none',
+                      color: 'var(--text-3)', fontSize: 13, cursor: 'pointer',
+                      textDecoration: 'underline',
+                    }}>
+              ← Volver al login
+            </button>
+          </div>
+        ) : (
+        /* Form card normal */
         <div style={{
           background: 'var(--bg-1)',
           border: '1px solid var(--line)',
@@ -214,6 +300,7 @@ export default function Login() {
 
           </form>
         </div>
+        )}
 
         <p style={{
           textAlign: 'center',

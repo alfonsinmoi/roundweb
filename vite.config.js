@@ -1,11 +1,48 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { writeFileSync } from 'fs'
+import { join } from 'path'
+
+/**
+ * Plugin que emite `version.json` al final del build con un timestamp + hash
+ * único por build. El frontend hace polling cada N segundos a ese archivo
+ * (cache-busted) y si el `build` cambia respecto al que se cargó al arranque,
+ * muestra un banner "Nueva versión disponible".
+ */
+function emitVersionPlugin() {
+  return {
+    name: 'emit-version-json',
+    apply: 'build',
+    writeBundle(options) {
+      const outDir = options.dir || 'dist'
+      // Hash corto basado en timestamp — suficiente para detectar cambios.
+      // Si quieres reproducibilidad puedes usar el commit hash de git en su lugar.
+      const ts = Date.now()
+      const build = `${ts.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      const payload = {
+        build,
+        builtAt: new Date(ts).toISOString(),
+      }
+      writeFileSync(join(outDir, 'version.json'), JSON.stringify(payload, null, 2))
+      // Inyectar el build id en una constante global para que el JS sepa con
+      // qué versión arrancó (lo usa el hook `useVersionCheck`).
+      // Se hace generando un .js que el index.html puede leer; pero más simple:
+      // lo escribimos en window.__ROUND_BUILD__ dentro de index.html.
+      // En la práctica el hook lee la respuesta inicial de /version.json y se
+      // queda con ese valor — no es estrictamente necesario inyectarlo.
+      // Lo dejamos solo en version.json para mantenerlo simple.
+      // eslint-disable-next-line no-console
+      console.log(`[version] build=${build} (${payload.builtAt})`)
+    },
+  }
+}
 
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    emitVersionPlugin(),
   ],
   server: {
     allowedHosts: ['localhost'],

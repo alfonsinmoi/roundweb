@@ -3,18 +3,26 @@
 Lee NoofitPro: para cada cliente con enabled=False, cancela TODAS sus
 subscriptions activas en Odoo (fecha_fin=hoy, estado=cancelada).
 
+Itera TODOS los managers activos (manager_config) y todos sus trainers
+(trainer_noofit_creds) para obtener una lista completa de clientes. Cada
+manager/trainer en NoofitPro tiene su propio espacio de clientes; sin
+iterar nos perdemos los clientes que pertenecen al espacio del trainer
+hijo y no del manager parent.
+
 Idempotente: subs ya canceladas no se tocan.
 
 Modo:
   CONFIRM=1 para aplicar
   default = dry-run
-  Sin parámetros = lee dump local NoofitPro
+  USE_LIVE=1 → API en vivo (todos los managers/trainers)
+  USE_LIVE!=1 → lee dump local
 """
-import os, sys, json, hashlib, requests, urllib3, datetime
+import os, sys, json, urllib3, datetime
 sys.path.insert(0, '/opt/round_config_api')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from app.db import get_conn
 from app.odoo_alta import OdooAlta
+from app import noofit_client as nc
 
 CONFIRM = os.getenv('CONFIRM') == '1'
 COMPANY_ID = int(os.getenv('ODOO_COMPANY', '3'))
@@ -23,28 +31,51 @@ USE_LIVE = os.getenv('USE_LIVE') == '1'  # si true, llama API en vivo
 
 
 def get_clientes_nf():
-    """Devuelve lista de clientes NF. Si USE_LIVE, hace login y getClienteSimple,
-    si no, lee del dump local."""
-    if USE_LIVE:
-        # Login con credenciales del manager
+    """Devuelve lista deduplicada de clientes NF (mezclando todos los
+    managers activos + sus trainers con credenciales)."""
+    if not USE_LIVE:
+        return json.load(open(NF_DUMP, 'r', encoding='utf-8')).get('clientes', [])
+
+    # 1) Managers activos
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id_manager, noofit_email, noofit_password
+                         FROM manager_config WHERE activo=TRUE""")
+        managers = cur.fetchall()
+
+    all_clientes = {}  # id_cliente → dict (el último gana, prevalece trainer)
+    for m in managers:
+        idm = str(m['id_manager'])
+        # 1a) Como manager parent
+        try:
+            tok, mhdr = nc._login(m['noofit_email'], m['noofit_password'])
+            r = nc._request_as(tok, mhdr, 'GET', '/api/dispositivos/getClienteSimple')
+            r.raise_for_status()
+            clis = ((r.json() or {}).get('clientes')) or []
+            for c in clis:
+                if c.get('id') is not None:
+                    all_clientes[int(c['id'])] = c
+            print(f'  manager {idm}: {len(clis)} clientes (parent)')
+        except Exception as e:
+            print(f'  manager {idm}: ERROR {e}')
+
+        # 1b) Como cada trainer con credenciales
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT noofit_email, noofit_password FROM manager_config WHERE activo=TRUE LIMIT 1")
-            row = cur.fetchone()
-        if not row: return []
-        body = {'email': row['noofit_email'], 'appVersion': '1.8.39',
-                'password': hashlib.md5(row['noofit_password'].encode()).hexdigest().upper()}
-        r = requests.post('https://pro.wiemspro.com/wiemspro/account/loginEasy',
-                          json=body, verify=False, timeout=30)
-        tok = r.headers.get('X-CustomToken')
-        mgr = r.headers.get('X-TRAINER_MANAGER', '')
-        h = {'X-CustomToken': tok, 'X-TRAINER_MANAGER': mgr,
-             'locale': 'es', 'appVersion': '1.8.39', 'appId': '1'}
-        r = requests.get('https://pro.wiemspro.com/wiemspro/api/dispositivos/getClienteSimple',
-                         headers=h, verify=False, timeout=60)
-        d = r.json()
-        return d.get('clientes', [])
-    # Modo dump
-    return json.load(open(NF_DUMP, 'r', encoding='utf-8')).get('clientes', [])
+            cur.execute("""SELECT id_trainer, noofit_email, noofit_password
+                             FROM trainer_noofit_creds
+                            WHERE id_manager=%s AND activo=TRUE""", (idm,))
+            trainers = cur.fetchall()
+        for t in trainers:
+            try:
+                clis_t = nc.get_clientes_as_trainer(
+                    t['noofit_email'], t['noofit_password']) or []
+                for c in clis_t:
+                    if c.get('id') is not None:
+                        all_clientes[int(c['id'])] = c
+                print(f'  trainer {t["id_trainer"]} ({idm}): {len(clis_t)} clientes')
+            except Exception as e:
+                print(f'  trainer {t["id_trainer"]} ({idm}): ERROR {e}')
+
+    return list(all_clientes.values())
 
 
 clientes = get_clientes_nf()
@@ -91,15 +122,21 @@ sub_ids = [s['id'] for s in subs]
 o._call('round.subscription', 'write', [sub_ids],
     {'fecha_fin': hoy, 'estado': 'cancelada'})
 
-# Audit log
+# Audit log: id_manager por suscripción (vía company → manager).
+# Para simplicidad: usamos el primer manager activo como label, pero el
+# resumen indica el partner_id real para trazabilidad.
 with get_conn() as conn, conn.cursor() as cur:
+    cur.execute("""SELECT id_manager FROM manager_config
+                    WHERE activo=TRUE ORDER BY id_manager LIMIT 1""")
+    row = cur.fetchone()
+    actor_mgr = str(row['id_manager']) if row else ''
     for s in subs:
         cur.execute("""
             INSERT INTO accion_log
               (id_manager, actor_kind, actor_label, entidad, entidad_id, accion, resumen)
             VALUES (%s, 'cron', 'sync_nf_subs', 'subscription', %s, 'cancel',
                     %s)
-        """, ('17677', str(s['id']),
+        """, (actor_mgr, str(s['id']),
               f'Cancelada por cron — cliente NF inactivo (partner_id={s["partner_id"][0]})'))
 
 print(f'\n✓ {len(sub_ids)} subs canceladas.')

@@ -15,7 +15,7 @@ import logging
 import secrets
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..auth_usuario import (
     hash_password, random_token, audit,
@@ -67,12 +67,12 @@ def _send_reset_by_manager(usuario):
     body_text = (
         f"Hola {usuario.get('nombre') or ''},\n\n"
         f"El manager ha restablecido tu contraseña. Pulsa el enlace para crear una nueva:\n"
-        f"{link}\n\n(Válido {RESET_TTL_MINUTES} min)\n\n— Round Training Center"
+        f"{link}\n\n(Válido {RESET_TTL_MINUTES // 60} horas)\n\n— Round Training Center"
     )
     body_html = f"""<p>Hola <b>{usuario.get('nombre') or ''}</b>,</p>
 <p>El manager ha restablecido tu contraseña. Pulsa el enlace para crear una nueva:</p>
 <p><a href="{link}" style="display:inline-block;padding:10px 20px;background:#2DD4A8;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Crear nueva contraseña</a></p>
-<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES} minutos.</p>
+<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES // 60} horas.</p>
 <p style="font-size:11px;color:#aaa;margin-top:24px">— Round Training Center</p>"""
     try:
         enviar(usuario['email'], subject, body_text, body_html=body_html,
@@ -89,19 +89,36 @@ def _send_reset_by_manager(usuario):
 @bp.route('/', methods=['GET'])
 @auth_required
 def list_usuarios():
-    """Lista usuarios web del manager. Trainer filtra por su id_trainer si se
-    pasa ?trainer=<id>."""
+    """Lista usuarios web del manager. Filtros opcionales:
+       - ?trainer=<id>  → usuarios con ese trainer en el pivote
+       - ?email=<email> → usuarios cuyo email coincide (case-insensitive).
+         Útil para chequear desde la ficha del cliente si un usuario_web
+         ya existe con su email (y mostrar badge en vez de botón "Crear").
+       Cada fila incluye `id_trainers` (array, desde el pivote
+       usuario_web_trainer) — un usuario puede tener acceso a múltiples centros."""
     trainer_filter = request.args.get('trainer')
+    email_filter = (request.args.get('email') or '').strip().lower()
     where = ['u.id_manager = %s']; vals = [str(g.id_manager)]
+    extra_join = ''
     if trainer_filter:
-        where.append('u.id_trainer = %s'); vals.append(trainer_filter)
+        # Filtrar por trainer: usuarios que tienen ESE trainer en el pivote
+        extra_join = ' JOIN usuario_web_trainer uwt ON uwt.usuario_id = u.id '
+        where.append('uwt.id_trainer = %s'); vals.append(str(trainer_filter))
+    if email_filter:
+        where.append('LOWER(u.email) = %s'); vals.append(email_filter)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f"""
             SELECT u.id, u.id_trainer, u.email, u.nombre, u.apellidos, u.telefono,
                    u.email_verificado, u.must_change_password, u.last_password_change,
                    u.last_login_at, u.activo, u.locked_until,
-                   p.id AS perfil_id, p.nombre AS perfil_nombre, p.is_admin AS perfil_admin
+                   p.id AS perfil_id, p.nombre AS perfil_nombre, p.is_admin AS perfil_admin,
+                   COALESCE(
+                     (SELECT array_agg(t.id_trainer ORDER BY t.id_trainer)
+                        FROM usuario_web_trainer t WHERE t.usuario_id = u.id),
+                     ARRAY[]::varchar[]
+                   ) AS id_trainers
               FROM usuario_web u
+              {extra_join}
               LEFT JOIN perfil p ON p.id = u.perfil_id
              WHERE {' AND '.join(where)}
              ORDER BY u.activo DESC, u.email ASC
@@ -110,9 +127,41 @@ def list_usuarios():
     return jsonify({'ok': True, 'usuarios': rows})
 
 
+def _sync_pivot_trainers(cur, usuario_id, id_manager, id_trainers):
+    """Sincroniza el pivote `usuario_web_trainer` con la lista dada.
+    `id_trainers` es una lista de strings (ids NoofitPro). Devuelve la lista
+    normalizada que quedó en BD. Si la lista está vacía, deja el pivote vacío
+    (el usuario quedará como "corporativo" — sin centro asignado)."""
+    # Normalizar: a strings no vacíos, sin duplicados, ordenados
+    seen = set()
+    norm = []
+    for t in (id_trainers or []):
+        if t is None: continue
+        s = str(t).strip()
+        if s and s not in seen:
+            seen.add(s); norm.append(s)
+    # Borrar las que ya no están + insertar las nuevas
+    if norm:
+        cur.execute("""
+            DELETE FROM usuario_web_trainer
+             WHERE usuario_id = %s AND NOT (id_trainer = ANY(%s))
+        """, (usuario_id, norm))
+        for t in norm:
+            cur.execute("""
+                INSERT INTO usuario_web_trainer (usuario_id, id_trainer)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+            """, (usuario_id, t))
+    else:
+        cur.execute("DELETE FROM usuario_web_trainer WHERE usuario_id = %s",
+                    (usuario_id,))
+    return norm
+
+
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
+@require_permission('configuracion.usuarios_web.crear')
 def create_usuario():
     d = request.get_json() or {}
     email = (d.get('email') or '').strip().lower()
@@ -120,7 +169,19 @@ def create_usuario():
     apellidos = (d.get('apellidos') or '').strip()
     telefono = (d.get('telefono') or '').strip()
     perfil_id = d.get('perfil_id')
-    id_trainer = (d.get('id_trainer') or '').strip() or None
+    # Aceptamos `id_trainers` (array — nuevo, multi-centro) o `id_trainer`
+    # (string singular — retrocompat). Si llegan ambos, gana el array.
+    id_trainers_payload = d.get('id_trainers')
+    if id_trainers_payload is None:
+        single = (d.get('id_trainer') or '').strip()
+        id_trainers_payload = [single] if single else []
+    elif not isinstance(id_trainers_payload, list):
+        return jsonify({'ok': False, 'error': 'id_trainers_must_be_array'}), 400
+    # `id_trainer` (columna singular) = primer centro asignado (default de
+    # sesión si el usuario no elige en login). NULL si no tiene ninguno
+    # (usuario corporativo).
+    id_trainer = (str(id_trainers_payload[0]).strip()
+                  if id_trainers_payload else None) or None
 
     if not email or '@' not in email:
         return jsonify({'ok': False, 'error': 'email_invalid'}), 400
@@ -159,6 +220,8 @@ def create_usuario():
             """, (str(g.id_manager), id_trainer, perfil_id, email,
                   nombre, apellidos, telefono, pwd_hash, verif_token, verif_exp))
             row = cur.fetchone()
+            # Sincronizar el pivote con la lista completa
+            _sync_pivot_trainers(cur, row['id'], str(g.id_manager), id_trainers_payload)
         except Exception as e:
             err = str(e).lower()
             if 'unique' in err or 'duplicate' in err:
@@ -183,24 +246,47 @@ def create_usuario():
 
 @bp.route('/<int:uid>', methods=['PATCH', 'PUT'])
 @auth_required
+@require_permission('configuracion.usuarios_web.editar')
 def update_usuario(uid):
     d = request.get_json() or {}
+    # Si llega `id_trainers` (array), sincronizamos el pivote y ponemos el
+    # primero como `id_trainer` singular (default de sesión). Si llega solo
+    # `id_trainer`, lo tratamos como array de uno (compat retro).
+    id_trainers_payload = d.get('id_trainers')
+    update_pivot = False
+    if id_trainers_payload is not None:
+        if not isinstance(id_trainers_payload, list):
+            return jsonify({'ok': False, 'error': 'id_trainers_must_be_array'}), 400
+        d['id_trainer'] = (str(id_trainers_payload[0]).strip()
+                           if id_trainers_payload else None) or None
+        update_pivot = True
     sets, vals = [], []
     for f in ('nombre', 'apellidos', 'telefono', 'id_trainer', 'perfil_id', 'activo'):
         if f in d:
             sets.append(f"{f} = %s"); vals.append(d[f])
-    if not sets:
+    if not sets and not update_pivot:
         return jsonify({'ok': False, 'error': 'no_fields'}), 400
-    vals.extend([str(g.id_manager), uid])
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(f"""
-            UPDATE usuario_web SET {', '.join(sets)}
-             WHERE id_manager=%s AND id=%s
-            RETURNING id, email, nombre, apellidos, telefono, id_trainer, perfil_id, activo
-        """, vals)
-        row = cur.fetchone()
-    if not row:
-        return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if sets:
+            vals2 = vals + [str(g.id_manager), uid]
+            cur.execute(f"""
+                UPDATE usuario_web SET {', '.join(sets)}
+                 WHERE id_manager=%s AND id=%s
+                RETURNING id, email, nombre, apellidos, telefono, id_trainer, perfil_id, activo
+            """, vals2)
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'not_found'}), 404
+        else:
+            cur.execute("""SELECT id, email, nombre, apellidos, telefono, id_trainer,
+                                  perfil_id, activo FROM usuario_web
+                            WHERE id_manager=%s AND id=%s""",
+                        (str(g.id_manager), uid))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if update_pivot:
+            _sync_pivot_trainers(cur, uid, str(g.id_manager), id_trainers_payload)
     audit(uid, row['email'], 'usuario_update_by_manager', json.dumps(d, default=str))
     log_action(actor_from_request(), entidad='usuario_web', entidad_id=uid,
                accion='update', resumen=f"Usuario actualizado: {row['email']}",
@@ -210,6 +296,7 @@ def update_usuario(uid):
 
 @bp.route('/<int:uid>/reset-password', methods=['POST'])
 @auth_required
+@require_permission('configuracion.usuarios_web.reset_password')
 def reset_password(uid):
     """Manager fuerza un reset. Genera nuevo token y manda email.
 
@@ -257,6 +344,7 @@ def reset_password(uid):
 
 @bp.route('/<int:uid>/resend-verification', methods=['POST'])
 @auth_required
+@require_permission('configuracion.usuarios_web.editar')
 def resend_verification(uid):
     """Reenvía email de verificación si el usuario no completó el alta."""
     token = random_token()
@@ -285,6 +373,7 @@ def resend_verification(uid):
 
 @bp.route('/<int:uid>', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.usuarios_web.borrar')
 def delete_usuario(uid):
     """Soft delete: marca activo=false. Hard delete con ?hard=1."""
     hard = request.args.get('hard') == '1'

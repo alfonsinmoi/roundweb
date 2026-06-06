@@ -27,9 +27,10 @@ from pathlib import Path
 from datetime import datetime, date
 from flask import Blueprint, request, jsonify, g, send_file, abort
 from werkzeug.utils import secure_filename
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_seccion
 from ..odoo_guard import require_feature
 from ..db import get_conn, seed_gasto_categorias_for_manager
+from ..audit_log import log_action, actor_from_request, diff_dict
 
 bp = Blueprint('contabilidad', __name__)
 log = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ def _hash_file(path: Path) -> str:
 @bp.route('/config', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_contab_config():
     """Devuelve { trainers: [{id_trainer, activo, notas, ...}] } del manager."""
     err = _manager_only()
@@ -117,6 +119,7 @@ def get_contab_config():
 @bp.route('/config/<id_trainer>', methods=['PUT'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('configuracion.contabilidad_tab.editar')
 def put_contab_config(id_trainer):
     err = _manager_only()
     if err: return err
@@ -137,6 +140,10 @@ def put_contab_config(id_trainer):
         # Si activo=true y aún no hay categorías, sembramos defaults
         if activo:
             seed_gasto_categorias_for_manager(g.id_manager)
+        log_action(actor_from_request(), 'contab_config',
+                   'activar' if activo else 'desactivar',
+                   entidad_id=str(id_trainer),
+                   resumen=f'Control contable {"activado" if activo else "desactivado"} para trainer {id_trainer}')
         return jsonify({'ok': True, 'config': row})
     except Exception as e:
         log.exception('put_contab_config')
@@ -146,6 +153,7 @@ def put_contab_config(id_trainer):
 @bp.route('/config/listados', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_listados_visibilidad():
     """Devuelve catálogo listados + visibilidad per (manager, trainer)."""
     try:
@@ -169,6 +177,7 @@ def get_listados_visibilidad():
 @bp.route('/config/listados/<id_trainer>/<listado_id>', methods=['PUT'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('configuracion.contabilidad_tab.editar')
 def put_listado_visibilidad(id_trainer, listado_id):
     err = _manager_only()
     if err: return err
@@ -184,6 +193,10 @@ def put_listado_visibilidad(id_trainer, listado_id):
                 RETURNING *
             """, (g.id_manager, str(id_trainer), listado_id, visible))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'listado_visibilidad', 'update',
+                   entidad_id=f'{id_trainer}/{listado_id}',
+                   resumen=f'Visibilidad listado {listado_id} para trainer {id_trainer} = {visible}',
+                   cambios={'visible': visible})
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('put_listado_visibilidad')
@@ -195,6 +208,7 @@ def put_listado_visibilidad(id_trainer, listado_id):
 @bp.route('/categorias', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def list_categorias():
     """Lista categorías + visibilidad per trainer (filtrada si trainer impersona)."""
     try:
@@ -229,6 +243,7 @@ def list_categorias():
 @bp.route('/categorias', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.editar')
 def create_categoria():
     err = _manager_only()
     if err: return err
@@ -264,6 +279,10 @@ def create_categoria():
                 bool(d.get('activa', True)),
             ))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'gasto_categoria', 'create',
+                   entidad_id=row.get('id') if row else None,
+                   resumen=f'Categoría de gasto creada: {codigo} ({nombre})',
+                   cambios={'codigo': codigo, 'nombre': nombre, 'tipo': tipo})
         return jsonify({'ok': True, 'categoria': row})
     except Exception as e:
         log.exception('create_categoria')
@@ -273,6 +292,7 @@ def create_categoria():
 @bp.route('/categorias/<int:cat_id>', methods=['PATCH'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.editar')
 def update_categoria(cat_id):
     err = _manager_only()
     if err: return err
@@ -288,6 +308,9 @@ def update_categoria(cat_id):
             return jsonify({'ok': False, 'error': 'no_fields'}), 400
         vals.extend([g.id_manager, cat_id])
         with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT * FROM gasto_categoria WHERE id_manager=%s AND id=%s",
+                        (g.id_manager, cat_id))
+            before = cur.fetchone()
             cur.execute(f"""
                 UPDATE gasto_categoria SET {', '.join(sets)}
                  WHERE id_manager=%s AND id=%s
@@ -296,6 +319,10 @@ def update_categoria(cat_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'gasto_categoria', 'update',
+                   entidad_id=cat_id,
+                   resumen=f'Categoría de gasto editada: {row.get("codigo")}',
+                   cambios=diff_dict(dict(before) if before else {}, dict(row)))
         return jsonify({'ok': True, 'categoria': row})
     except Exception as e:
         log.exception('update_categoria')
@@ -305,6 +332,7 @@ def update_categoria(cat_id):
 @bp.route('/categorias/<int:cat_id>', methods=['DELETE'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.editar')
 def delete_categoria(cat_id):
     err = _manager_only()
     if err: return err
@@ -320,12 +348,20 @@ def delete_categoria(cat_id):
                     RETURNING *
                 """, (g.id_manager, cat_id))
                 row = cur.fetchone()
+                log_action(actor_from_request(), 'gasto_categoria', 'update',
+                           entidad_id=cat_id,
+                           resumen=f'Categoría de gasto desactivada (en uso por {n} documentos)',
+                           cambios={'activa': {'before': True, 'after': False}})
                 return jsonify({'ok': True, 'mode': 'deactivated', 'in_use': n, 'categoria': row})
             cur.execute("""
                 DELETE FROM gasto_categoria
                  WHERE id_manager=%s AND id=%s
             """, (g.id_manager, cat_id))
-            return jsonify({'ok': True, 'mode': 'hard', 'deleted': cur.rowcount})
+            deleted = cur.rowcount
+        log_action(actor_from_request(), 'gasto_categoria', 'delete',
+                   entidad_id=cat_id,
+                   resumen=f'Categoría de gasto borrada (id={cat_id})')
+        return jsonify({'ok': True, 'mode': 'hard', 'deleted': deleted})
     except Exception as e:
         log.exception('delete_categoria')
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -334,6 +370,7 @@ def delete_categoria(cat_id):
 @bp.route('/categorias/<int:cat_id>/visibilidad/<id_trainer>', methods=['PUT'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.categorias.visibilidad')
 def put_categoria_visibilidad(cat_id, id_trainer):
     err = _manager_only()
     if err: return err
@@ -353,6 +390,10 @@ def put_categoria_visibilidad(cat_id, id_trainer):
                 RETURNING *
             """, (cat_id, str(id_trainer), visible))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'gasto_categoria_visibilidad', 'update',
+                   entidad_id=f'{cat_id}/{id_trainer}',
+                   resumen=f'Visibilidad categoría {cat_id} para trainer {id_trainer} = {visible}',
+                   cambios={'visible': visible})
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('put_categoria_visibilidad')
@@ -364,6 +405,7 @@ def put_categoria_visibilidad(cat_id, id_trainer):
 @bp.route('/documentos', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def list_documentos():
     """Filtros: estado, categoria_id, id_trainer, periodo, desde, hasta, tipo, q"""
     try:
@@ -412,6 +454,7 @@ def list_documentos():
 @bp.route('/documentos', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.subir')
 def upload_documento():
     """Upload multipart/form-data: campo 'file' + form fields opcionales:
     categoria_id, id_trainer, proveedor, num_factura, fecha_documento,
@@ -483,6 +526,10 @@ def upload_documento():
                     ))
                     existing = cur.fetchone()
                     revivido = True
+                log_action(actor_from_request(), 'documento_contable', 'update',
+                           entidad_id=existing['id'],
+                           resumen=f'Documento rechazado reactivado a borrador (id={existing["id"]})',
+                           cambios={'estado': {'before': 'rechazado', 'after': 'borrador'}})
             mensaje = (f'Documento ya existente (id={existing["id"]}, {existing["filename_original"]}). '
                        + ('Estaba RECHAZADO — lo he reactivado a borrador. ' if revivido else '')
                        + 'Se abre el original para que lo revises.')
@@ -531,6 +578,11 @@ def upload_documento():
             ))
             row = cur.fetchone()
         log.info(f'gasto_documento.upload id={row["id"]} size={size} hash={h[:8]}…')
+        log_action(actor_from_request(), 'documento_contable', 'create',
+                   entidad_id=row['id'],
+                   resumen=f'Documento contable subido: {f.filename}',
+                   cambios={'filename': f.filename, 'categoria_id': categoria_id,
+                            'id_trainer': id_trainer, 'importe_total': _num('importe_total')})
         return jsonify({'ok': True, 'documento': row})
     except Exception as e:
         log.exception('upload_documento')
@@ -540,6 +592,7 @@ def upload_documento():
 @bp.route('/documentos/<int:doc_id>', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_documento(doc_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -561,6 +614,7 @@ def get_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/file', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def get_documento_file(doc_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -586,6 +640,7 @@ def get_documento_file(doc_id):
 @bp.route('/documentos/<int:doc_id>', methods=['PATCH'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.subir')
 def patch_documento(doc_id):
     try:
         d = request.get_json() or {}
@@ -600,6 +655,9 @@ def patch_documento(doc_id):
             return jsonify({'ok': False, 'error': 'no_fields'}), 400
         vals.extend([doc_id, g.id_manager])
         with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT * FROM gasto_documento WHERE id=%s AND id_manager=%s",
+                        (doc_id, g.id_manager))
+            before = cur.fetchone()
             cur.execute(f"""
                 UPDATE gasto_documento SET {', '.join(sets)}
                  WHERE id=%s AND id_manager=%s
@@ -608,6 +666,10 @@ def patch_documento(doc_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'documento_contable', 'update',
+                   entidad_id=doc_id,
+                   resumen=f'Metadatos de documento contable editados (id={doc_id})',
+                   cambios=diff_dict(dict(before) if before else {}, dict(row)))
         return jsonify({'ok': True, 'documento': row})
     except Exception as e:
         log.exception('patch_documento')
@@ -617,6 +679,7 @@ def patch_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/escanear', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.subir')
 def escanear_documento(doc_id):
     """Llama al LLM para extraer campos del archivo y rellena el doc.
 
@@ -792,6 +855,13 @@ def escanear_documento(doc_id):
                                          for c in centros],
             }
 
+        log_action(actor_from_request(), 'documento_contable', 'escanear',
+                   entidad_id=doc_id,
+                   resumen=f'Documento escaneado por LLM (id={doc_id}, subtipo={subtipo})',
+                   cambios={'subtipo': subtipo, 'categoria_id': cat_id,
+                            'trainer_auto_asignado': nuevo_trainer,
+                            'requiere_autorizacion': requiere_auth,
+                            'confianza_llm': float(ext.get('confidence') or 0)})
         return jsonify({
             'ok': True,
             'documento': row,
@@ -913,6 +983,13 @@ def validar_documento(doc_id):
                 log.exception('crear_factura_proveedor')
                 odoo_result = {'ok': False, 'error': str(e)[:500]}
 
+        log_action(actor_from_request(), 'documento_contable', 'validar',
+                   entidad_id=doc_id,
+                   resumen=f'Documento contable validado (id={doc_id})',
+                   cambios={'estado': {'before': 'borrador', 'after': 'validado'},
+                            'doble_auth': doble_auth,
+                            'odoo_move_id': row.get('odoo_move_id'),
+                            'odoo_move_state': row.get('odoo_move_state')})
         return jsonify({
             'ok': True,
             'documento': row,
@@ -926,6 +1003,7 @@ def validar_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/a-borrador', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.a_borrador')
 def desvalidar_documento(doc_id):
     """Revierte un documento validado a estado 'borrador'.
 
@@ -997,6 +1075,14 @@ def desvalidar_documento(doc_id):
             """, (nota_extra, odoo_action, odoo_action, g.id_manager, doc_id))
             row = cur.fetchone()
 
+        log_action(actor_from_request(), 'documento_contable', 'a_borrador',
+                   entidad_id=doc_id,
+                   resumen=f'Documento devuelto a borrador (id={doc_id})'
+                           + (f' · motivo: {motivo}' if motivo else ''),
+                   cambios={'estado': {'before': 'validado', 'after': 'borrador'},
+                            'motivo': motivo or None,
+                            'odoo_action': odoo_action,
+                            'odoo_warning': odoo_warning})
         return jsonify({
             'ok': True,
             'documento': row,
@@ -1011,6 +1097,7 @@ def desvalidar_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/asiento', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def asiento_documento(doc_id):
     """Devuelve el asiento contable de un documento.
 
@@ -1397,6 +1484,7 @@ def asiento_documento(doc_id):
 @bp.route('/documentos/<int:doc_id>/rechazar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.documentos.rechazar')
 def rechazar_documento(doc_id):
     try:
         d = request.get_json() or {}
@@ -1415,6 +1503,11 @@ def rechazar_documento(doc_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'documento_contable', 'rechazar',
+                   entidad_id=doc_id,
+                   resumen=f'Documento contable rechazado (id={doc_id})'
+                           + (f' · motivo: {motivo}' if motivo else ''),
+                   cambios={'estado': {'after': 'rechazado'}, 'motivo': motivo or None})
         return jsonify({'ok': True, 'documento': row})
     except Exception as e:
         log.exception('rechazar_documento')
@@ -1426,6 +1519,7 @@ def rechazar_documento(doc_id):
 @bp.route('/listados/totales', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_totales():
     """Totales agregados de gasto_documento.
 
@@ -1481,6 +1575,7 @@ def listado_totales():
 @bp.route('/listados/faltantes', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_faltantes():
     """Detecta categorías con periodicidad cuyo período tiene 0 documentos.
 
@@ -1613,6 +1708,7 @@ def listado_faltantes():
 @bp.route('/listados/faltantes/ignorar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.faltantes.archivar')
 def faltante_ignorar():
     """Archiva un faltante para que no aparezca en el listado.
     Body: { categoria_id, periodo_faltante, motivo? }
@@ -1637,6 +1733,11 @@ def faltante_ignorar():
                 RETURNING *
             """, (g.id_manager, cat_id, periodo, actor, d.get('motivo')))
             row = cur.fetchone()
+        log_action(actor_from_request(), 'gasto_faltante', 'ignorar',
+                   entidad_id=f'{cat_id}/{periodo}',
+                   resumen=f'Faltante archivado (categoría {cat_id}, periodo {periodo})',
+                   cambios={'categoria_id': cat_id, 'periodo': periodo,
+                            'motivo': d.get('motivo')})
         return jsonify({'ok': True, 'row': row})
     except Exception as e:
         log.exception('faltante_ignorar')
@@ -1646,6 +1747,7 @@ def faltante_ignorar():
 @bp.route('/listados/faltantes/ignorar/<int:cat_id>/<periodo>', methods=['DELETE'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.faltantes.designorar')
 def faltante_restaurar(cat_id, periodo):
     """Quita el archivado: el faltante volverá a aparecer."""
     err = _manager_only()
@@ -1657,6 +1759,10 @@ def faltante_restaurar(cat_id, periodo):
                  WHERE id_manager=%s AND categoria_id=%s AND periodo=%s
             """, (g.id_manager, cat_id, periodo))
             n = cur.rowcount
+        log_action(actor_from_request(), 'gasto_faltante', 'designorar',
+                   entidad_id=f'{cat_id}/{periodo}',
+                   resumen=f'Faltante restaurado (categoría {cat_id}, periodo {periodo})',
+                   cambios={'categoria_id': cat_id, 'periodo': periodo, 'removed': n})
         return jsonify({'ok': True, 'removed': n})
     except Exception as e:
         log.exception('faltante_restaurar')
@@ -1815,6 +1921,7 @@ def _periodo_a_rango(periodo: str):
 @bp.route('/listados/resultados/disponibles', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_resultados_disponibles():
     """Devuelve qué meses/trimestres/años tienen al menos 1 movimiento
     (gasto Round o ingreso Odoo) en los últimos 5 años.
@@ -1876,6 +1983,7 @@ def listado_resultados_disponibles():
 @bp.route('/listados/resultados', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def listado_resultados():
     """Cuenta de resultados (P&L) por período.
 
@@ -2008,6 +2116,7 @@ def listado_resultados():
 @bp.route('/banco/importar', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.banco.importar_extracto')
 def banco_importar():
     """Sube un extracto bancario (CSV / XLSX) y crea filas en banco_movimiento.
 
@@ -2107,6 +2216,13 @@ def banco_importar():
                     else: duplicated += 1
                 except Exception as e:
                     log.warning(f'banco_movimiento insert fallo: {e}')
+        log_action(actor_from_request(), 'banco_import', 'importar',
+                   entidad_id=doc_origen_id,
+                   resumen=f'Extracto bancario importado: {f.filename} '
+                           f'({inserted} insertadas, {duplicated} duplicadas)',
+                   cambios={'archivo': f.filename, 'parseadas': len(rows),
+                            'insertadas': inserted, 'duplicadas': duplicated,
+                            'id_trainer': request.form.get('id_trainer')})
         return jsonify({
             'ok': True,
             'archivo': f.filename,
@@ -2124,6 +2240,7 @@ def banco_importar():
 @bp.route('/banco/movimientos', methods=['GET'])
 @auth_required
 @require_feature("contabilidad")
+@require_seccion('economico.contabilidad')
 def banco_movimientos():
     """Lista movimientos bancarios con filtros."""
     try:
@@ -2164,6 +2281,7 @@ def banco_movimientos():
 @bp.route('/banco/movimientos/<int:mov_id>', methods=['PATCH'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.banco.vincular_manual')
 def banco_movimiento_link(mov_id):
     """Vincula un movimiento a una factura, lo desvincula o cambia estado.
 
@@ -2194,6 +2312,10 @@ def banco_movimiento_link(mov_id):
             row = cur.fetchone()
         if not row:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        log_action(actor_from_request(), 'banco_movimiento', 'update',
+                   entidad_id=mov_id,
+                   resumen=f'Movimiento bancario actualizado (id={mov_id})',
+                   cambios={'factura_id': factura_id, 'estado': row.get('estado')})
         return jsonify({'ok': True, 'movimiento': row})
     except Exception as e:
         log.exception('banco_movimiento_link')
@@ -2203,6 +2325,7 @@ def banco_movimiento_link(mov_id):
 @bp.route('/banco/matching', methods=['POST'])
 @auth_required
 @require_feature("contabilidad")
+@require_permission('economico.contabilidad.banco.cuadrar_automatico')
 def banco_matching():
     """Ejecuta matching 1:1 entre movimientos sin cuadrar y facturas validadas.
 
@@ -2253,6 +2376,14 @@ def banco_matching():
                          WHERE id=%s AND id_manager=%s AND estado='sin_cuadrar'
                     """, (m['factura_id'], m['movimiento_id'], g.id_manager))
                     if cur.rowcount > 0: applied += 1
+        log_action(actor_from_request(), 'banco_matching', 'match',
+                   resumen=f'Matching banco ejecutado ({len(matches)} propuestos, '
+                           f'{applied} auto-aplicados)',
+                   cambios={'auto_apply': auto_apply,
+                            'movimientos_sin_cuadrar': len(movs),
+                            'facturas_disponibles': len(facs),
+                            'matches_propuestos': len(matches),
+                            'auto_aplicados': applied})
         return jsonify({
             'ok': True,
             'movimientos_sin_cuadrar': len(movs),
@@ -2295,6 +2426,11 @@ def delete_documento(doc_id):
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("DELETE FROM gasto_documento WHERE id=%s AND id_manager=%s",
                         (doc_id, g.id_manager))
+        log_action(actor_from_request(), 'documento_contable', 'delete',
+                   entidad_id=doc_id,
+                   resumen=f'Documento contable borrado (id={doc_id})',
+                   cambios={'storage_path': row.get('storage_path'),
+                            'odoo_move_id': row.get('odoo_move_id')})
         return jsonify({'ok': True, 'deleted': True})
     except Exception as e:
         log.exception('delete_documento')

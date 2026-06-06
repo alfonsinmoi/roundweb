@@ -1,14 +1,16 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
-  Users, Loader2, RefreshCw, Mail, Phone, Building2, Filter, AlertTriangle, X, BarChart3,
+  Users, Loader2, RefreshCw, Mail, Phone, Building2, Filter, AlertTriangle, X, BarChart3, Plus,
 } from 'lucide-react'
 import { Card, Btn, SectionTitle } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import {
   getRoundIdentity, leadsList, leadUpdate, crmStages, centrosList,
-  crmLostReasons, crmFunnel,
+  crmLostReasons, crmFunnel, leadManualCreate,
 } from '../../utils/configApi'
+import Modal from '../../components/Modal'
+import { useCan } from '../../hooks/useCan'
 
 const SCORE_COLOR = {
   green: { bg: 'var(--green-bg)',  fg: 'var(--green)',  border: 'var(--green-border)'  },
@@ -21,6 +23,9 @@ export default function CrmPage() {
   const { user, isImpersonating } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const toast = useToast()
+  // Gates UI: mover lead entre etapas (drag&drop) y crear lead manual.
+  const canMoverLead = useCan('crm.leads.mover_etapa')
+  const canCrearLeadManual = useCan('crm.lead_manual.crear_manual')
   const [leads, setLeads] = useState([])
   const [stages, setStages] = useState([])
   const [centros, setCentros] = useState([])
@@ -33,6 +38,7 @@ export default function CrmPage() {
   const [hoverStageId, setHoverStageId] = useState(null)
   const [showFunnel, setShowFunnel] = useState(false)
   const [lostModal, setLostModal] = useState(null)     // { lead, stageId }
+  const [crearLeadOpen, setCrearLeadOpen] = useState(false)
 
   async function reload() {
     setLoading(true)
@@ -89,6 +95,7 @@ export default function CrmPage() {
 
   async function moveTo(lead, stageId, lostReason = null) {
     setDraggingId(null); setHoverStageId(null)
+    if (!canMoverLead) return
     if (!lead.lead?.id || stageId === lead.lead?.stage_id?.[0]) return
     if (stageId === '_sin_etapa' || stageId === 'placeholder') return
     const stageIdInt = parseInt(stageId, 10)
@@ -155,6 +162,12 @@ export default function CrmPage() {
           <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
             {leadsFiltered.length} lead{leadsFiltered.length !== 1 ? 's' : ''}
           </span>
+          {canCrearLeadManual && (
+            <Btn size="sm" variant="primary" onClick={() => setCrearLeadOpen(true)}
+                 title="Registrar un lead presencial (alguien que ha venido al gimnasio sin pasar por la web)">
+              <Plus size={13} /> Nuevo lead
+            </Btn>
+          )}
           <Btn size="sm" variant="secondary" onClick={() => setShowFunnel(s => !s)}>
             <BarChart3 size={13} /> {showFunnel ? 'Ocultar' : 'Ver'} embudo
           </Btn>
@@ -227,6 +240,7 @@ export default function CrmPage() {
                                             isImpersonating={isImpersonating}
                                             draggingId={draggingId}
                                             setDraggingId={setDraggingId}
+                                            canMover={canMoverLead}
                                             fullName={fullName} formatDate={formatDate}
                                             trainerName={trainerName} />)}
                   {items.length === 0 && (
@@ -248,12 +262,21 @@ export default function CrmPage() {
           onConfirm={r => { const m = lostModal; setLostModal(null); moveTo(m.lead, m.stageId, r) }}
         />
       )}
+
+      {crearLeadOpen && (
+        <NuevoLeadModal
+          identity={identity}
+          centros={centros}
+          onClose={() => setCrearLeadOpen(false)}
+          onCreated={() => reload()}
+        />
+      )}
     </div>
   )
 }
 
 
-function LeadCard({ l, isImpersonating, draggingId, setDraggingId, fullName, formatDate, trainerName }) {
+function LeadCard({ l, isImpersonating, draggingId, setDraggingId, canMover = true, fullName, formatDate, trainerName }) {
   const score = l.score ?? 0
   const color = SCORE_COLOR[l.score_color || 'gray']
   const warn = l.warning_sin_contactar
@@ -261,13 +284,13 @@ function LeadCard({ l, isImpersonating, draggingId, setDraggingId, fullName, for
   const qual = l.qualification || {}
 
   return (
-    <div draggable
-         onDragStart={e => { setDraggingId(l.odoo_lead_id); e.dataTransfer.setData('lead-id', String(l.odoo_lead_id)) }}
-         onDragEnd={() => setDraggingId(null)}
+    <div draggable={canMover}
+         onDragStart={canMover ? (e => { setDraggingId(l.odoo_lead_id); e.dataTransfer.setData('lead-id', String(l.odoo_lead_id)) }) : undefined}
+         onDragEnd={canMover ? (() => setDraggingId(null)) : undefined}
          style={{
            background: 'var(--bg-2)',
            border: warn ? '1px solid var(--red-border)' : '1px solid var(--line)',
-           borderRadius: 10, padding: 12, cursor: 'grab',
+           borderRadius: 10, padding: 12, cursor: canMover ? 'grab' : 'default',
            opacity: draggingId === l.odoo_lead_id ? 0.4 : 1,
            position: 'relative',
          }}>
@@ -550,4 +573,116 @@ const selectStyle = {
   padding: '6px 10px', borderRadius: 8, fontSize: 13,
   background: 'var(--bg-1)', border: '1px solid var(--line)',
   color: 'var(--text-0)',
+}
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Modal "Nuevo lead manual" — para registrar personas que llegan al
+// gimnasio sin haber rellenado el formulario web. Backend:
+// POST /api/crm/lead-manual (con auth manager). Mismas validaciones que el
+// público pero sin honeypot ni rate-limit, y con origen='manual_erp'.
+// ──────────────────────────────────────────────────────────────────────────
+function NuevoLeadModal({ identity, centros, onClose, onCreated }) {
+  const toast = useToast()
+  const [form, setForm] = useState({
+    nombre: '', apellidos: '', email: '', telefono: '',
+    id_trainer: '', cuota_interes: '', objetivo: '', mensaje: '',
+  })
+  const [saving, setSaving] = useState(false)
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const handleSubmit = async () => {
+    if (!form.nombre.trim() && !form.apellidos.trim()) {
+      toast.error('Indica al menos un nombre o apellido'); return
+    }
+    if (!form.email.trim() && !form.telefono.trim()) {
+      toast.error('Necesitas email o teléfono'); return
+    }
+    setSaving(true)
+    try {
+      const r = await leadManualCreate(identity, form)
+      toast.success(`Lead creado · asignado a ${r.centro}`)
+      onCreated && onCreated(r)
+      onClose && onClose()
+    } catch (e) {
+      toast.error('Error: ' + (e.message || 'no se pudo crear el lead'))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open={true} onClose={onClose} maxWidth={520}
+           title={<><Plus size={16} style={{ marginRight: 6 }} /> Nuevo lead presencial</>}>
+      <div style={{ padding: 24, flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 16, lineHeight: 1.5 }}>
+          Registra aquí a una persona que se ha pasado por el gimnasio (sin
+          rellenar el formulario web). Quedará como lead normal en el embudo,
+          con origen <code style={{
+            background: 'var(--bg-2)', padding: '1px 6px', borderRadius: 4,
+            fontFamily: 'monospace', fontSize: 11,
+          }}>manual_erp</code>.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <FieldM label="Nombre *">
+            <input value={form.nombre} onChange={e => set('nombre', e.target.value)} style={inputModal} />
+          </FieldM>
+          <FieldM label="Apellidos">
+            <input value={form.apellidos} onChange={e => set('apellidos', e.target.value)} style={inputModal} />
+          </FieldM>
+        </div>
+        <FieldM label="Email">
+          <input type="email" value={form.email} onChange={e => set('email', e.target.value)} style={inputModal} />
+        </FieldM>
+        <FieldM label="Teléfono">
+          <input type="tel" value={form.telefono} onChange={e => set('telefono', e.target.value)} style={inputModal} />
+        </FieldM>
+        <FieldM label="Centro asignado"
+                hint="Por defecto, round-robin. Selecciona uno para forzar la asignación.">
+          <select value={form.id_trainer} onChange={e => set('id_trainer', e.target.value)} style={inputModal}>
+            <option value="">— Automático (round-robin) —</option>
+            {centros.map(c => (
+              <option key={c.id_trainer} value={c.id_trainer}>{c.nombre_centro}</option>
+            ))}
+          </select>
+        </FieldM>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <FieldM label="Cuota de interés">
+            <input value={form.cuota_interes} onChange={e => set('cuota_interes', e.target.value)}
+                   placeholder="RT 2 dias, I MYGYM…" style={inputModal} />
+          </FieldM>
+          <FieldM label="Objetivo">
+            <input value={form.objetivo} onChange={e => set('objetivo', e.target.value)}
+                   placeholder="Pérdida de peso, tonificar…" style={inputModal} />
+          </FieldM>
+        </div>
+        <FieldM label="Notas / mensaje (opcional)">
+          <textarea value={form.mensaje} onChange={e => set('mensaje', e.target.value)}
+                    rows={3} style={{ ...inputModal, resize: 'vertical', fontFamily: 'inherit' }} />
+        </FieldM>
+      </div>
+      <div style={{ padding: '16px 24px', borderTop: '1px solid var(--line)',
+                    display: 'flex', gap: 10, justifyContent: 'flex-end',
+                    flexShrink: 0, background: 'var(--bg-2)' }}>
+        <Btn variant="secondary" onClick={onClose} disabled={saving}>Cancelar</Btn>
+        <Btn variant="primary" onClick={handleSubmit} disabled={saving}>
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+          {' Crear lead'}
+        </Btn>
+      </div>
+    </Modal>
+  )
+}
+
+const inputModal = {
+  width: '100%', padding: 10, borderRadius: 10, fontSize: 13,
+  background: 'var(--bg-2)', border: '1px solid var(--line)', color: 'var(--text-0)',
+}
+
+function FieldM({ label, hint, children }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <label style={{ display: 'block', fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>{label}</label>
+      {children}
+      {hint && <p style={{ fontSize: 11, color: 'var(--text-3)', margin: '4px 0 0 0' }}>{hint}</p>}
+    </div>
+  )
 }

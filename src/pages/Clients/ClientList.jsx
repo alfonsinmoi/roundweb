@@ -8,11 +8,22 @@ import { getClientes, peekCache, peekPersistedCache, getERPConfiguraciones, inva
 import { useAuth } from '../../contexts/AuthContext'
 import { useGympassMap } from '../../hooks/useGympassMap'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
-import { getRoundIdentity, fechaBajaPorCliente, bajaProgramadaList } from '../../utils/configApi'
+import { getRoundIdentity, fechaBajaPorCliente, bajaProgramadaList, temporalInactivoList } from '../../utils/configApi'
+import { coincideTexto } from '../../utils/texto'
+import { QrCentroButton } from '../../components/QrAltaCliente'
 import NotasPopover from '../../components/notas/NotasPopover'
 import { useCan } from '../../hooks/useCan'
 
 const PAGE_SIZE = 15
+
+// Etiquetas legibles de los motivos de pausa (inactividad temporal)
+const MOTIVO_PAUSA_LABEL = {
+  baja_medica: 'Baja médica',
+  lesion: 'Lesión',
+  vacaciones: 'Vacaciones',
+  cambio_trabajo_domicilio: 'Cambio de trabajo/domicilio',
+  otros: 'Otros',
+}
 
 /**
  * Devuelve los números de página a mostrar, con elipsis (…) para saltos.
@@ -59,6 +70,8 @@ export default function ClientList() {
   const [fechasBaja, setFechasBaja] = useState({})    // { clienteId: fechaIso }
   // Bajas programadas pendientes: { clienteIdnoofit: {fecha_baja, motivo} }
   const [bajasProgramadas, setBajasProgramadas] = useState({})
+  // Pausas (inactividad temporal) activas: { clienteIdnoofit: <pausa> }
+  const [temporales, setTemporales] = useState({})
   const [fotoFailed,  setFotoFailed]  = useState(false)
   // Reset del fallo al cambiar de foto
   useEffect(() => { setFotoFailed(false) }, [fotoPreview?.imgUrl])
@@ -111,6 +124,20 @@ export default function ClientList() {
       .catch(() => setBajasProgramadas({}))
   }, [identity.managerId])
 
+  // Cargar pausas activas (inactividad temporal: programada|en_curso) del
+  // manager → map por cliente_idnoofit. Sirve para el badge "Pausa" y el
+  // filtro "Temporal inactivo".
+  useEffect(() => {
+    if (!identity?.managerId) return
+    temporalInactivoList(identity)
+      .then(rows => {
+        const m = {}
+        for (const r of (rows || [])) m[String(r.cliente_idnoofit)] = r
+        setTemporales(m)
+      })
+      .catch(() => setTemporales({}))
+  }, [identity.managerId])
+
   // ERP activo si existe alguna configuración con al menos un campo definido
   const [tieneERP, setTieneERP] = useState(false)
   const [erpConfig, setErpConfig] = useState(null)
@@ -136,22 +163,26 @@ export default function ClientList() {
   // Sistema nuevo: catálogo de categorías + asignación cliente↔categoría
   const { categorias, getCategoria } = useCategoriasMap()
   const canExportarExcel = useCan('clientes.exportar_excel')
+  const canCrearCliente  = useCan('clientes.crear')
 
   const filtered = useMemo(() => clientes.filter(c => {
-    const q = deferredSearch.toLowerCase()
-    const match = `${clientFullName(c)} ${c.email} ${c.gympassId || ''} ${c.alias || ''}`.toLowerCase().includes(q)
-    if (!match) return false
+    // Búsqueda case+accent-insensitive. "Jimenez" matchea "Jiménez",
+    // "MARIA" matchea "María", "perez" matchea "Pérez", etc.
+    const haystack = `${clientFullName(c)} ${c.email || ''} ${c.gympassId || ''} ${c.alias || ''} ${c.dni || ''}`
+    if (!coincideTexto(haystack, deferredSearch)) return false
     if (filtroCategoria) {
       const cat = getCategoria(c)
       if (filtroCategoria === 'sin') { if (cat) return false }
       else if (!cat || String(cat.id) !== String(filtroCategoria)) return false
     }
     const bajaProg = bajasProgramadas[String(c.id)]
-    if (filtro === 'activos')   return c.enabled !== false && !bajaProg
-    if (filtro === 'inactivos') return c.enabled === false
-    if (filtro === 'baja_prog') return !!bajaProg && c.enabled !== false
+    const temporal = temporales[String(c.id)]
+    if (filtro === 'activos')   return c.enabled !== false && !bajaProg && !temporal
+    if (filtro === 'inactivos') return c.enabled === false && !temporal
+    if (filtro === 'baja_prog') return !!bajaProg && c.enabled !== false && !temporal
+    if (filtro === 'temporal')  return !!temporal
     return true
-  }), [clientes, deferredSearch, filtro, filtroCategoria, getCategoria, bajasProgramadas])
+  }), [clientes, deferredSearch, filtro, filtroCategoria, getCategoria, bajasProgramadas, temporales])
 
   // Paginación: calcular total y ajustar la página actual si el filtro la deja
   // fuera de rango (p.ej. estábamos en pág. 5 y el nuevo filtro sólo tiene 3).
@@ -217,7 +248,7 @@ export default function ClientList() {
           </div>
 
           <div role="group" aria-label="Filtrar clientes" style={{ display: 'flex', borderRadius: 10, overflow: 'hidden', border: '1px solid var(--line)' }}>
-            {[['activos','Activos'],['baja_prog','Con baja prog.'],['inactivos','Inactivos'],['todos','Todos']].map(([v, l]) => (
+            {[['activos','Activos'],['baja_prog','Con baja prog.'],['inactivos','Inactivos'],['temporal','Temporal inactivo'],['todos','Todos']].map(([v, l]) => (
               <button key={v} onClick={() => { setFiltro(v); setPage(1) }}
                       aria-pressed={filtro === v}
                       style={{
@@ -283,9 +314,18 @@ export default function ClientList() {
           </Btn>
           )}
 
-          <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
-            <Plus size={15} aria-hidden="true" /> Nuevo cliente
-          </Btn>
+          {/* QR del centro: aparece arriba a la derecha cuando el modo de
+              "Alta de cliente" del trainer activo es 'centro' o 'ambos'.
+              Se actualiza solo si el gestor cambia la configuración. */}
+          {identity?.trainerId && (
+            <QrCentroButton trainerId={String(identity.trainerId)}
+                            nombreCentro={identity.trainerName} />
+          )}
+          {canCrearCliente && (
+            <Btn size="md" onClick={() => navigate('/clientes/nuevo')}>
+              <Plus size={15} aria-hidden="true" /> Nuevo cliente
+            </Btn>
+          )}
         </div>
 
         {(() => {
@@ -430,6 +470,26 @@ export default function ClientList() {
                     </Badge>
                   )
                 })() : (() => {
+                  // Prioridad: pausa (inactividad temporal) > baja programada > activo.
+                  const tmp = temporales[String(c.id)]
+                  if (tmp) {
+                    let iniStr = '', finStr = ''
+                    try {
+                      iniStr = new Date(tmp.fecha_inicio).toLocaleDateString('es-ES',
+                        { day: '2-digit', month: '2-digit', year: '2-digit' })
+                    } catch {}
+                    try {
+                      finStr = new Date(tmp.fecha_fin).toLocaleDateString('es-ES',
+                        { day: '2-digit', month: '2-digit', year: '2-digit' })
+                    } catch {}
+                    const motivoLbl = MOTIVO_PAUSA_LABEL[tmp.motivo] || tmp.motivo || '—'
+                    return (
+                      <Badge color="amber"
+                             title={`Pausa: ${motivoLbl} · ${iniStr} → ${finStr}`}>
+                        Pausa: {motivoLbl} · {iniStr}→{finStr}
+                      </Badge>
+                    )
+                  }
                   // Si hay baja programada pendiente, mostrar fecha en amarillo.
                   // Si NO la hay, badge verde "Activo" estándar.
                   const bp = bajasProgramadas[String(c.id)]

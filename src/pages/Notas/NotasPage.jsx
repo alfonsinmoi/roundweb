@@ -1,12 +1,13 @@
 // Página /notas — listado completo con filtros y agrupaciones
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { MessageSquare, Filter, ArrowLeft, Loader2 } from 'lucide-react'
+import { MessageSquare, Filter, ArrowLeft, Loader2, Plus } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { useToast } from '../../components/Toast'
 import { Card, Btn, Badge } from '../../components/UI'
 import NotaCard from '../../components/notas/NotaCard'
 import NotaModal from '../../components/notas/NotaModal'
+import EnviarNotaModal from '../../components/notas/EnviarNotaModal'
 import {
   misNotas, archivarNota, recordatorioNota, borrarNota, listarNotasCliente,
 } from '../../utils/notasApi'
@@ -42,6 +43,7 @@ export default function NotasPage() {
   const [estado, setEstado] = useState('')
   const [agrupacion, setAgrupacion] = useState('fecha')
   const [busqueda, setBusqueda] = useState('')
+  const [enviarOpen, setEnviarOpen] = useState(false)
 
   const reload = async () => {
     setLoading(true)
@@ -113,6 +115,10 @@ export default function NotasPage() {
         <Badge color="gray" style={{ marginLeft: 'auto' }}>
           {notasFiltradas.length} {notasFiltradas.length === 1 ? 'nota' : 'notas'}
         </Badge>
+        <Btn variant="primary" size="sm" onClick={() => setEnviarOpen(true)}
+             title="Crear una nota y enviarla a trabajadores o clientes">
+          <Plus size={13} /> Nueva nota
+        </Btn>
       </div>
 
       <Card style={{ padding: 16, marginBottom: 16 }}>
@@ -175,6 +181,14 @@ export default function NotasPage() {
                  onSaved={() => { setResponding(null); reload() }}
                  parentNota={responding}
                  cliente={responding ? { id: responding.cliente_idnoofit, nombre: responding.cliente_nombre } : null} />
+
+      {enviarOpen && (
+        <EnviarNotaModal
+          user={user}
+          onClose={() => setEnviarOpen(false)}
+          onSaved={() => { setEnviarOpen(false); reload() }}
+        />
+      )}
     </div>
   )
 }

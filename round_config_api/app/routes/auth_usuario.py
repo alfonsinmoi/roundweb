@@ -20,6 +20,7 @@ from flask import Blueprint, request, jsonify, g, current_app
 
 from ..db import get_conn
 from ..email_sender import enviar
+from ..audit_log import log_action
 from ..auth_usuario import (
     hash_password, verify_password, random_token, issue_jwt,
     audit, usuario_web_required, password_expired,
@@ -29,6 +30,11 @@ from ..auth_usuario import (
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 NOOFIT_BASE = 'https://pro.wiemspro.com/wiemspro'
 NOOFIT_APP_VERSION = '1.8.39'
+# Timeout corto para el login NoofitPro durante el login web: si NoofitPro
+# está caído/lento NO debe bloquear el acceso del trainer ya verificado (sus
+# datos Round van por otro backend). El token NoofitPro queda null y la web
+# avisa al consultar datos de NoofitPro.
+NF_LOGIN_TIMEOUT = 7
 
 
 def _noofit_login_with_manager_creds(id_manager: str):
@@ -59,13 +65,77 @@ def _noofit_login_with_manager_creds(id_manager: str):
         }
         r = requests.post(f'{NOOFIT_BASE}/account/loginEasy',
                           json=body, headers={'Content-Type': 'application/json'},
-                          verify=False, timeout=20)
+                          verify=False, timeout=NF_LOGIN_TIMEOUT)
         if r.status_code != 200:
             return None, None
         return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', '')
     except Exception as e:
         logging.getLogger(__name__).warning(f'noofit_login error: {e}')
         return None, None
+
+
+def _noofit_login_raw(email: str, password: str):
+    """loginEasy con email+password en claro.
+
+    Devuelve (token, trainer_manager, network_ok):
+      - network_ok=False → NoofitPro inalcanzable (timeout/conexión): no merece
+        la pena reintentar con otras creds, fallaría igual.
+      - network_ok=True  → hubo respuesta HTTP (aunque sea 401 por creds malas).
+    """
+    try:
+        body = {
+            'email': email,
+            'appVersion': NOOFIT_APP_VERSION,
+            'password': hashlib.md5(password.encode()).hexdigest().upper(),
+        }
+        r = requests.post(f'{NOOFIT_BASE}/account/loginEasy',
+                          json=body, headers={'Content-Type': 'application/json'},
+                          verify=False, timeout=NF_LOGIN_TIMEOUT)
+        if r.status_code != 200:
+            return None, None, True
+        return r.headers.get('X-CustomToken'), r.headers.get('X-TRAINER_MANAGER', ''), True
+    except requests.exceptions.RequestException as e:
+        logging.getLogger(__name__).warning(f'noofit_login_raw NF inalcanzable: {e}')
+        return None, None, False
+    except Exception as e:
+        logging.getLogger(__name__).warning(f'noofit_login_raw error: {e}')
+        return None, None, True
+
+
+def _noofit_login_for_session(id_manager: str, id_trainer=None):
+    """Token NoofitPro para la sesión de un usuario_web.
+
+    Prioriza las credenciales del TRAINER del centro activo (token scoped a
+    ese centro) y cae a las del manager si no hay creds de trainer o el login
+    falla. Así un usuario_web ve en las pantallas NoofitPro (monitores,
+    clases, agenda, etc.) SOLO los datos de su centro, no los de todo el
+    manager. Un usuario_web representa a un trainer.
+    """
+    if id_trainer:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    SELECT noofit_email, noofit_password
+                      FROM trainer_noofit_creds
+                     WHERE id_manager=%s AND id_trainer=%s AND activo=TRUE
+                       AND noofit_email IS NOT NULL AND noofit_password IS NOT NULL
+                     LIMIT 1
+                """, (str(id_manager), str(id_trainer)))
+                row = cur.fetchone()
+            if row:
+                tok, mgr, net_ok = _noofit_login_raw(row['noofit_email'], row['noofit_password'])
+                if tok:
+                    return tok, mgr
+                if not net_ok:
+                    # NoofitPro caído: el fallback al manager también fallaría.
+                    # No esperamos otro timeout — el login web sigue sin token NF.
+                    return None, None
+                logging.getLogger(__name__).warning(
+                    f'noofit trainer-creds login falló (mgr={id_manager} trn={id_trainer}) → fallback manager')
+        except Exception as e:
+            logging.getLogger(__name__).warning(f'noofit trainer-creds error: {e}')
+    # Fallback: creds del manager (cubre usuarios corporativos sin trainer fijo).
+    return _noofit_login_with_manager_creds(id_manager)
 
 bp = Blueprint('auth_usuario', __name__)
 log = logging.getLogger(__name__)
@@ -111,13 +181,13 @@ def _send_reset_email(usuario, motivo='reset'):
         intro = 'Has solicitado restablecer tu contraseña. Pulsa el enlace para crear una nueva.'
     body_text = (
         f"Hola {usuario.get('nombre') or ''},\n\n{intro}\n\n"
-        f"Enlace (válido {RESET_TTL_MINUTES} minutos):\n{link}\n\n"
+        f"Enlace (válido {RESET_TTL_MINUTES // 60} horas):\n{link}\n\n"
         f"Si no fuiste tú, ignora este mensaje.\n\n— Round Training Center"
     )
     body_html = f"""<p>Hola <b>{usuario.get('nombre') or ''}</b>,</p>
 <p>{intro}</p>
 <p><a href="{link}" style="display:inline-block;padding:10px 20px;background:#2DD4A8;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Crear nueva contraseña</a></p>
-<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES} minutos.<br/>
+<p style="font-size:12px;color:#888">Enlace válido durante {RESET_TTL_MINUTES // 60} horas.<br/>
 Si no fuiste tú, ignora este mensaje.</p>
 <p style="font-size:11px;color:#aaa;margin-top:24px">— Round Training Center</p>"""
     try:
@@ -218,6 +288,71 @@ def login():
         }), 200
 
     # ── Login válido ──
+    # Antes de emitir el JWT, comprobamos el pivote `usuario_web_trainer`.
+    # Si el usuario tiene acceso a >1 trainer (centro) y NO especificó cuál
+    # quiere usar (`id_trainer` en el body), devolvemos la lista para que el
+    # frontend muestre un selector y vuelva a llamar al login con la elección.
+    id_trainer_choice = (d.get('id_trainer') or '').strip() or None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT id_trainer FROM usuario_web_trainer
+             WHERE usuario_id = %s ORDER BY id_trainer
+        """, (u['id'],))
+        trainers_allowed = [r['id_trainer'] for r in cur.fetchall()]
+    # Si el pivote está vacío (usuario antiguo sin migrar) caemos al valor
+    # singular `usuario_web.id_trainer` como única opción posible.
+    if not trainers_allowed and u['id_trainer']:
+        trainers_allowed = [u['id_trainer']]
+
+    if len(trainers_allowed) > 1 and not id_trainer_choice:
+        # Multi-trainer y aún no eligió → devolver la lista. NO emitimos JWT.
+        # Enriquecemos con el NOMBRE del centro (centro_contacto.nombre_centro)
+        # para mostrarlo en lugar del id_trainer crudo. Si no hay fila en
+        # centro_contacto (centro recién creado), caemos al email del trainer.
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_trainer, noofit_email
+                  FROM trainer_noofit_creds
+                 WHERE id_manager = %s AND id_trainer = ANY(%s) AND activo = TRUE
+            """, (u['id_manager'], trainers_allowed))
+            extra = {r['id_trainer']: r for r in cur.fetchall()}
+            cur.execute("""
+                SELECT id_trainer, nombre_centro, slug
+                  FROM centro_contacto
+                 WHERE id_manager = %s AND id_trainer = ANY(%s)
+            """, (u['id_manager'], trainers_allowed))
+            centros = {r['id_trainer']: r for r in cur.fetchall()}
+        opciones = []
+        for t in trainers_allowed:
+            cinfo = centros.get(t) or {}
+            opciones.append({
+                'id_trainer': t,
+                'nombre_centro': cinfo.get('nombre_centro'),
+                'slug': cinfo.get('slug'),
+                'email_trainer': extra.get(t, {}).get('noofit_email')
+                                  if extra.get(t) else None,
+            })
+        audit(u['id'], email, 'login_needs_trainer_choice',
+              f'trainers={trainers_allowed}')
+        return jsonify({
+            'ok': True,
+            'multi_trainer': True,
+            'trainers': opciones,
+            'usuario': {'id': u['id'], 'email': u['email'], 'nombre': u['nombre']},
+            'message': 'Selecciona el centro al que quieres acceder.',
+        })
+
+    # Si el usuario eligió un trainer, validar que tenga acceso
+    if id_trainer_choice:
+        if trainers_allowed and id_trainer_choice not in trainers_allowed:
+            audit(u['id'], email, 'login_fail', f'trainer_no_permitido={id_trainer_choice}')
+            return jsonify({'ok': False, 'error': 'trainer_not_allowed'}), 403
+        id_trainer_for_session = id_trainer_choice
+    elif trainers_allowed:
+        id_trainer_for_session = trainers_allowed[0]
+    else:
+        id_trainer_for_session = u['id_trainer']  # NULL en usuarios corporativos
+
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             UPDATE usuario_web
@@ -227,14 +362,21 @@ def login():
              WHERE id = %s
         """, ((request.headers.get('X-Real-IP') or request.remote_addr or '')[:64], u['id']))
 
-    token = issue_jwt(u['id'], u['id_manager'], u['id_trainer'], u['perfil_id'])
-    audit(u['id'], email, 'login_ok')
+    token = issue_jwt(u['id'], u['id_manager'], id_trainer_for_session, u['perfil_id'])
+    audit(u['id'], email, 'login_ok', f'trainer={id_trainer_for_session}')
+    # Registro del LOGIN también en el accion_log unificado (quién + cuándo).
+    log_action(
+        {'kind': 'usuario_web', 'id': u['id'], 'email': u['email'],
+         'label': f"{u['nombre'] or ''} {u['apellidos'] or ''}".strip() or u['email'],
+         'id_manager': u['id_manager'], 'id_trainer': id_trainer_for_session},
+        entidad='sesion', accion='login', entidad_id=u['id'],
+        resumen=f"Login web · {u['email']} · centro {id_trainer_for_session}")
 
     # Login automático en NoofitPro usando las credenciales del manager.
     # Esto permite al frontend usar el token NoofitPro para llamar a los
     # endpoints clásicos (clientes, clases, etc.) sin que el usuario_web
     # tenga que conocer credenciales NoofitPro.
-    nf_token, nf_manager = _noofit_login_with_manager_creds(u['id_manager'])
+    nf_token, nf_manager = _noofit_login_for_session(u['id_manager'], id_trainer_for_session)
 
     return jsonify({
         'ok': True,
@@ -242,7 +384,11 @@ def login():
         'usuario': {
             'id': u['id'], 'email': u['email'],
             'nombre': u['nombre'], 'apellidos': u['apellidos'],
-            'id_manager': u['id_manager'], 'id_trainer': u['id_trainer'],
+            'id_manager': u['id_manager'],
+            # id_trainer = el ELEGIDO para esta sesión (no necesariamente el
+            # default de la fila usuario_web — puede haber elegido otro entre
+            # los trainers a los que tiene acceso).
+            'id_trainer': id_trainer_for_session,
             'perfil_id': u['perfil_id'],
         },
         'noofit': {

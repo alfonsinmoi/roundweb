@@ -12,11 +12,14 @@ import {
   familiaAddCliente, familiaRemoveCliente,
 } from '../../utils/configApi'
 import { getClientes } from '../../utils/api'
+import { useCan } from '../../hooks/useCan'
 
 export default function FamiliaresClienteCard({ cliente }) {
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const toast = useToast()
+  const canAsignar = useCan('clientes.familias.asignar')
+  const canBorrar = useCan('clientes.familias.borrar')
 
   const [familia, setFamilia] = useState(null)
   const [clientes, setClientes] = useState([])
@@ -172,12 +175,14 @@ export default function FamiliaresClienteCard({ cliente }) {
                                      fontFamily: 'var(--font-mono)' }}>
                         #{m.cliente_idnoofit}
                       </span>
-                      <button onClick={() => handleRemoveOtro(m.cliente_idnoofit)}
-                              title="Quitar de la familia"
-                              style={{ background: 'none', border: 'none', cursor: 'pointer',
-                                       color: 'var(--red)', padding: 4 }}>
-                        <XIcon size={13} />
-                      </button>
+                      {canAsignar && (
+                        <button onClick={() => handleRemoveOtro(m.cliente_idnoofit)}
+                                title="Quitar de la familia"
+                                style={{ background: 'none', border: 'none', cursor: 'pointer',
+                                         color: 'var(--red)', padding: 4 }}>
+                          <XIcon size={13} />
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -188,10 +193,12 @@ export default function FamiliaresClienteCard({ cliente }) {
           {/* Botones acción */}
           {!adding ? (
             <div style={{ display: 'flex', gap: 6 }}>
-              <Btn variant="secondary" size="sm" onClick={() => setAdding(true)}>
-                <Plus size={12} /> Añadir familiar
-              </Btn>
-              {familia && (
+              {canAsignar && (
+                <Btn variant="secondary" size="sm" onClick={() => setAdding(true)}>
+                  <Plus size={12} /> Añadir familiar
+                </Btn>
+              )}
+              {familia && canAsignar && (
                 <Btn variant="secondary" size="sm" onClick={handleRemoveSelf}>
                   Salir del grupo
                 </Btn>

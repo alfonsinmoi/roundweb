@@ -11,6 +11,8 @@ from .routes.descuentos       import bp as bp_descuentos
 from .routes.modificaciones   import bp as bp_modificaciones
 from .routes.familias          import bp as bp_familias
 from .routes.clientes_atendidos import bp as bp_clientes_atendidos
+from .routes.entradas_puntuales import bp as bp_entradas_puntuales
+from .routes.integridad import bp as bp_integridad
 from .routes.retos          import bp as bp_retos
 from .routes.estado_fisico  import bp as bp_estado_fisico
 from .routes.cuotas_clientes  import bp as bp_cuotas_clientes
@@ -24,6 +26,7 @@ from .routes.crm               import bp as bp_crm
 from .routes.email_config      import bp as bp_email_config
 from .routes.email_templates   import bp as bp_email_templates
 from .routes.slots             import bp as bp_slots
+from .routes.lead_forms        import bp as bp_lead_forms
 from .routes.clientes_log      import bp as bp_clientes_log
 from .routes.social            import bp as bp_social
 from .routes.auth_usuario      import bp as bp_auth_usuario
@@ -42,10 +45,24 @@ from .routes.auth_bootstrap    import bp as bp_auth_bootstrap
 from .routes.preemision_validar import bp as bp_preemision_validar
 from .routes.preemision_v2     import bp as bp_preemision_v2
 from .routes.emision_v2        import bp as bp_emision_v2
+from .routes.sepa              import bp as bp_sepa
+from .routes.pos_productos     import bp as bp_pos_productos
+from .routes.pos_ventas        import bp as bp_pos_ventas
+from .routes.pos_descuentos    import bp as bp_pos_descuentos
+from .routes.pos_caja          import bp as bp_pos_caja
+from .routes.pos_proveedores   import bp as bp_pos_proveedores
+from .routes.incidencias       import bp as bp_incidencias
 from .routes.facturacion_trimestre import bp as bp_fact_trim
 from .routes.trimestre         import bp as bp_trimestre
 from .routes.canales_captacion import bp as bp_canales_captacion
 from .routes.baja_programada   import bp as bp_baja_programada
+from .routes.inactivo_temporal import bp as bp_inactivo_temporal
+from .routes.informe_clientes  import bp as bp_informe_clientes
+from .routes.horario           import bp as bp_horario
+from .routes.horario_fichaje   import bp as bp_horario_fichaje
+from .routes.horario_ausencias import bp as bp_horario_ausencias
+from .routes.horario_planificacion import bp as bp_horario_planif
+from .routes.cliente_portal    import bp as bp_cliente_portal
 
 
 def create_app():
@@ -109,6 +126,12 @@ def create_app():
     for prefix in ('/clientes-atendidos', '/api/clientes-atendidos'):
         app.register_blueprint(bp_clientes_atendidos,
                                 name=f'cat_b{prefix}', url_prefix=prefix)
+    for prefix in ('/entradas-puntuales', '/api/entradas-puntuales'):
+        app.register_blueprint(bp_entradas_puntuales,
+                                name=f'ep{prefix}', url_prefix=prefix)
+    for prefix in ('/integridad', '/api/integridad'):
+        app.register_blueprint(bp_integridad,
+                                name=f'intg{prefix}', url_prefix=prefix)
     for prefix in ('/retos', '/api/retos'):
         app.register_blueprint(bp_retos, name=f'retos{prefix}', url_prefix=prefix)
     for prefix in ('/estado-fisico', '/api/estado-fisico'):
@@ -138,9 +161,17 @@ def create_app():
     # Las rutas internas del blueprint ya empiezan con /api/crm o /reserva
     app.register_blueprint(bp_slots, name='slots_public', url_prefix='')
 
+    # ── Form builder embebible (rutas públicas /api/crm/form + CRUD
+    # /api/config/formularios; ya llevan path completo, sin prefijo). ──────
+    app.register_blueprint(bp_lead_forms, name='lead_forms', url_prefix='')
+
     # ── Clientes log (cambios de estado activo↔archivado) ─────────────────
     for prefix in ('/clientes', '/api/clientes'):
         app.register_blueprint(bp_clientes_log, name=f'cli_log{prefix}', url_prefix=prefix)
+
+    # ── Informe agregado de clientes ──────────────────────────────────────
+    for prefix in ('/informes', '/api/informes'):
+        app.register_blueprint(bp_informe_clientes, name=f'inf_cli{prefix}', url_prefix=prefix)
 
     # ── Redes sociales (cuentas Meta + agenda) ────────────────────────────
     for prefix in ('/social', '/api/social'):
@@ -203,6 +234,28 @@ def create_app():
         app.register_blueprint(bp_preemision_v2, name=f'pv2{prefix}', url_prefix=prefix)
     for prefix in ('/emitir-v2', '/api/cuotas/emitir-v2'):
         app.register_blueprint(bp_emision_v2, name=f'ev2{prefix}', url_prefix=prefix)
+    # Generador SEPA pain.008 (mayo 2026)
+    for prefix in ('/sepa', '/api/cuotas/sepa'):
+        app.register_blueprint(bp_sepa, name=f'sp{prefix}', url_prefix=prefix)
+    # POS — Punto de venta: productos + categorías + stock (Fase 1, mayo 2026)
+    for prefix in ('/pos', '/api/pos'):
+        app.register_blueprint(bp_pos_productos, name=f'pp{prefix}', url_prefix=prefix)
+    # POS — Ventas del TPV (Fase 2, mayo 2026)
+    for prefix in ('/pos', '/api/pos'):
+        app.register_blueprint(bp_pos_ventas, name=f'pv{prefix}', url_prefix=prefix)
+    # POS — Catálogo de descuentos (Fase 2.5, mayo 2026)
+    for prefix in ('/pos', '/api/pos'):
+        app.register_blueprint(bp_pos_descuentos, name=f'pd{prefix}', url_prefix=prefix)
+    # POS — Cuadre diario de caja (Fase 8, mayo 2026)
+    for prefix in ('/pos', '/api/pos'):
+        app.register_blueprint(bp_pos_caja, name=f'pc{prefix}', url_prefix=prefix)
+    # POS — Facturas de proveedor (Fase 7, mayo 2026) — reglas carajfam
+    for prefix in ('/pos', '/api/pos'):
+        app.register_blueprint(bp_pos_proveedores, name=f'pp7{prefix}', url_prefix=prefix)
+    # Bandeja de incidencias internas del admin (junio 2026).
+    # Sprint 7 H4: solo /api/incidencias (antes había también '' suelto que
+    # exponía /incidencias en raíz — innecesario y confuso).
+    app.register_blueprint(bp_incidencias, url_prefix='/api')
 
     # ── Facturación trimestral
     for prefix in ('/facturacion-trimestre', '/api/cuotas/facturacion-trimestre'):
@@ -222,5 +275,21 @@ def create_app():
     for prefix in ('/clientes', '/api/clientes'):
         app.register_blueprint(bp_baja_programada,
                                 name=f'bp{prefix}', url_prefix=prefix)
+        app.register_blueprint(bp_inactivo_temporal,
+                                name=f'bp_inactivo{prefix}', url_prefix=prefix)
+
+    # ── Control horario laboral (módulo Fase 1: endpoints admin)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario, name=f'hor{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_fichaje, name=f'horf{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_ausencias, name=f'hora{prefix}', url_prefix=prefix)
+    for prefix in ('/horario', '/api/horario'):
+        app.register_blueprint(bp_horario_planif, name=f'horp{prefix}', url_prefix=prefix)
+
+    # ── Portal del cliente NoofitPro (login + me)
+    for prefix in ('/cliente', '/api/cliente'):
+        app.register_blueprint(bp_cliente_portal, name=f'cli{prefix}', url_prefix=prefix)
 
     return app

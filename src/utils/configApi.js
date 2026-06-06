@@ -34,16 +34,27 @@ export const PERIODICIDADES = [
   { id: 'semestral',   label: 'Semestral',   meses: 6 },
   { id: 'anual',       label: 'Anual',       meses: 12 },
 ]
+// Tipos de modificación. La math se rige por el SIGNO de `valor` para
+// los tipos de ajuste (descuento/cargo_extra): valor positivo suma al
+// recibo, negativo resta. `precio_alternativo` sustituye el precio base
+// por el valor absoluto. `descuento` queda como histórico/etiqueta.
 export const TIPOS_MODIFICACION = [
-  { id: 'descuento',           label: 'Descuento puntual' },
-  { id: 'cargo_extra',         label: 'Cargo extra' },
-  { id: 'precio_alternativo',  label: 'Precio alternativo' },
+  { id: 'cargo_extra',         label: 'Ajuste (suma/resta según signo)' },
+  { id: 'precio_alternativo',  label: 'Precio alternativo (sustituye precio)' },
+  { id: 'descuento',           label: 'Descuento (histórico)' },
 ]
 export const TIPOS_DESCUENTO = [
-  { id: 'porcentaje',    label: 'Descuento %' },
-  { id: 'importe',       label: 'Restar €' },
-  { id: 'varias_cuotas', label: 'Varias cuotas (precio combinado)' },
-  { id: 'familiares',    label: 'Familiares (automático ≥2 miembros)' },
+  { id: 'porcentaje',          label: 'Descuento %' },
+  { id: 'importe',             label: 'Restar €' },
+  { id: 'restar_cuota',        label: 'Restar € a una cuota' },
+  { id: 'varias_cuotas',       label: 'Varias cuotas (precio combinado)' },
+  { id: 'familiares',          label: 'Familiares (automático ≥2 miembros)' },
+  { id: 'familiar_trabajador', label: 'Familiar de trabajador (manual)' },
+]
+
+// Relaciones para el descuento familiar_trabajador (lista + 'otro').
+export const RELACIONES_TRABAJADOR = [
+  'Cónyuge', 'Pareja', 'Hijo/a', 'Padre/Madre', 'Hermano/a', 'Otro',
 ]
 
 // ── Helpers de identidad ─────────────────────────────────────────────────────
@@ -73,6 +84,25 @@ function pickId(...candidates) {
 
 export function getRoundIdentity(user) {
   if (!user) return { managerId: null, trainerId: null }
+  // usuario_web (login propio Round con perfil): el id_trainer viene en
+  // user.id_trainer — se fija al elegir centro al login y queda bloqueado
+  // durante toda la sesión (para cambiar hay que cerrar sesión).
+  if (user.kind === 'usuario_web') {
+    return {
+      managerId: String(pickId(user.manager, user.id)),
+      trainerId: user.id_trainer ? String(user.id_trainer) : null,
+    }
+  }
+  // NoofitPro: si el backend (round-bootstrap) resolvió la identidad —tenant +
+  // rol por X-TRAINER_MANAGER (manager `true` / trainer `false`)— es la fuente
+  // de verdad. roundManagerId = tenant; roundTrainerId = null para el manager
+  // (ve todos los centros del grupo) o su propio id para el trainer (scopeado).
+  if (user.roundManagerId) {
+    return {
+      managerId: String(user.roundManagerId),
+      trainerId: user.roundTrainerId ? String(user.roundTrainerId) : null,
+    }
+  }
   if (user.originalSession) {
     const o = user.originalSession
     return {
@@ -82,7 +112,7 @@ export function getRoundIdentity(user) {
   }
   return {
     managerId: String(pickId(user.manager, user.id)),
-    trainerId: null,   // Manager directo: opera con plantillas
+    trainerId: null,   // fallback (sin bootstrap): manager directo NoofitPro
   }
 }
 
@@ -104,7 +134,11 @@ function headers(identity) {
     'X-Round-Manager-Id': identity.managerId || '',
   }
   // Prioridad: trainerId explícito de identity (impersonación clásica) > selector admin
-  const tid = identity.trainerId || _trainerOverride()
+  // Override del selector global (admin) tiene prioridad sobre identity.trainerId.
+  // Esto permite que un usuario_web admin vinculado a un trainer concreto pueda
+  // cambiar de centro en el selector. Si no hay override en sessionStorage,
+  // _trainerOverride() devuelve null y se usa identity.trainerId.
+  const tid = _trainerOverride() || identity.trainerId
   if (tid) h['X-Round-Trainer-Id'] = tid
   return _withBearer(h)
 }
@@ -181,6 +215,48 @@ export const familiaAddCliente = (identity, idnoofit, body) =>
 export const familiaRemoveCliente = (identity, idnoofit) =>
   _requestRoot('DELETE', `/api/familias/cliente/${encodeURIComponent(idnoofit)}`, identity)
 
+// ── Entradas puntuales (drop-in / pago por visita) ───────────────────────────
+// Usan /api/entradas-puntuales (no /api/config) → _requestRoot.
+export const epAltasList   = (identity, params = {}) => {
+  const qs = new URLSearchParams(params).toString()
+  return _requestRoot('GET', `/api/entradas-puntuales/altas${qs ? '?' + qs : ''}`, identity)
+    .then(d => d.altas)
+}
+export const epAltaCreate  = (identity, body) =>
+  _requestRoot('POST', '/api/entradas-puntuales/altas', identity, body).then(d => d.alta)
+export const epAltaDelete  = (identity, id) =>
+  _requestRoot('DELETE', `/api/entradas-puntuales/altas/${id}`, identity)
+export const epPendientes  = (identity) =>
+  _requestRoot('GET', '/api/entradas-puntuales/pendientes', identity)
+export const epEventosList = (identity, params = {}) => {
+  const qs = new URLSearchParams(params).toString()
+  return _requestRoot('GET', `/api/entradas-puntuales/eventos${qs ? '?' + qs : ''}`, identity)
+    .then(d => d.eventos)
+}
+export const epCobrar      = (identity, evtId, body = {}) =>
+  _requestRoot('POST', `/api/entradas-puntuales/eventos/${evtId}/cobrar`, identity, body)
+export const epAnular      = (identity, evtId) =>
+  _requestRoot('POST', `/api/entradas-puntuales/eventos/${evtId}/anular`, identity)
+export const epEmitirMes   = (identity, mes) =>
+  _requestRoot('POST', '/api/entradas-puntuales/emitir-mes', identity, { mes })
+export const epDetectar    = (identity, dias_atras = 7) =>
+  _requestRoot('POST', '/api/entradas-puntuales/detectar', identity, { dias_atras })
+
+// Tipos de cuota + modos/formas de pago de entrada puntual
+export const TIPOS_CUOTA = [
+  { id: 'recurrente',      label: 'Recurrente (mensual / trimestral / …)' },
+  { id: 'entrada_puntual', label: 'Entrada puntual (pago por visita)' },
+]
+export const EP_FORMAS_POR_ENTRADA = [
+  { id: 'efectivo',     label: 'Efectivo' },
+  { id: 'tpv_fisico',   label: 'TPV físico (datáfono)' },
+  { id: 'tarjeta_token', label: 'Tarjeta tokenizada' },
+]
+export const EP_FORMAS_POR_MES = [
+  { id: 'sepa',          label: 'SEPA (domiciliación)' },
+  { id: 'tarjeta_token', label: 'Tarjeta tokenizada' },
+]
+
 // ── Banner "Nuevos clientes esperando cobro" — dismiss persistente ─────────
 // Usa /api/clientes-atendidos (no /api/config), de ahí el path completo
 async function _requestRoot(method, path, identity, body = null) {
@@ -213,6 +289,60 @@ export const clientesAtendidosReset = (identity) =>
 // Pertenecen a la tabla local `recibo`, que ya tiene los recibos
 // importados desde GestPlus (origen=gestplus_migracion) además de los
 // emitidos vía preemision_v2.
+// GET /api/clientes/<id>/trazabilidad — historial completo del cliente
+// (altas/bajas detectadas por cron + bajas programadas + audit log de
+// cuotas/descuentos/modificaciones/etc.). Devuelve array ordenado descendente.
+export const clienteTrazabilidad = (identity, idCliente) =>
+  _requestRoot('GET', `/api/clientes/${idCliente}/trazabilidad`, identity)
+    .then(d => d.eventos || [])
+
+// GET /api/recibos?cliente=<id>&estado=impagado — recibos impagados/devueltos
+// del cliente. Lo usamos para el banner de impagados en la ficha.
+export const recibosImpagadosCliente = (identity, idCliente) =>
+  _requestRoot('GET',
+    `/api/recibos?cliente=${encodeURIComponent(idCliente)}&limit=50`,
+    identity).then(d => (d.recibos || []).filter(r =>
+      r.estado === 'impagado' || r.estado === 'devuelto'))
+
+// POST /api/recibos — crea un recibo manual para un cliente.
+// payload: {cliente_idnoofit, cliente_nombre?, cuota_id?, cuota_codigo?,
+//   cuota_descripcion?, periodo?, fecha_desde?, fecha_hasta?, periodicidad?,
+//   importe_total, iva_pct?, importe_base?, importe_iva?, metodo_pago,
+//   estado?, fecha_emision?, fecha_pago?, origen?, notas?}
+export const reciboCreate = (identity, payload) =>
+  _requestRoot('POST', '/api/recibos', identity, payload).then(d => d.id)
+
+// PATCH /api/recibos/<id> — edición de campos. Junio 2026:
+//   Estados editable_full (borrador_remesa, pendiente, impagado, devuelto)
+//   admiten todos los campos incluido metodo_pago, importes, fechas, periodo.
+//   Estados pagado/facturado solo permiten notas/descripciones.
+//   Backend exige permiso 'economico.cuotas_mensuales.modificar_recibo'.
+export const reciboUpdate = (identity, id, payload) =>
+  _requestRoot('PATCH', `/api/recibos/${id}`, identity, payload).then(d => d.ok)
+
+// DELETE /api/recibos/<id> — el backend rechaza si está pagado/facturado.
+export const reciboDelete = (identity, id) =>
+  _requestRoot('DELETE', `/api/recibos/${id}`, identity).then(d => d.ok)
+
+// POST /api/recibos/<id>/marcar-pagado — marca un recibo BD como pagado.
+// payload opcional: {metodo, fecha} para cambiar método al cobrar y registrar fecha.
+export const reciboMarcarPagado = (identity, id, payload = {}) =>
+  _requestRoot('POST', `/api/recibos/${id}/marcar-pagado`, identity, payload)
+
+// POST /api/recibos/<id>/marcar-devuelto — marca un recibo BD como devuelto.
+// payload: {motivo?: str, reactivar_impagado?: bool}.
+// Si reactivar_impagado=true (default) el recibo vuelve a `impagado` (re-cobrable).
+// Si false, queda en estado `devuelto` (final).
+// El backend cancela el `account.payment` Odoo asociado.
+export const reciboMarcarDevuelto = (identity, id, payload = {}) =>
+  _requestRoot('POST', `/api/recibos/${id}/marcar-devuelto`, identity, payload)
+
+// GET /api/recibos/manuales/<mes> — borradores manuales del mes (los del
+// tab "Recibos manuales para remesa"). Filtrados por trainer si toca.
+export const recibosManualesMes = (identity, mes) =>
+  _requestRoot('GET', `/api/recibos/manuales/${encodeURIComponent(mes)}`, identity)
+    .then(d => d.recibos || [])
+
 export const recibosList = (identity, params = {}) => {
   const qs = new URLSearchParams()
   if (params.cliente) qs.set('cliente', params.cliente)
@@ -292,6 +422,24 @@ export const bajaProgramadaList = (identity, incluirEjecutadas = false) =>
     identity).then(d => d.bajas || [])
 
 
+// ── Inactividad temporal (pausa con fecha inicio/fin) ────────────────────
+// La pestaña vive en /api/clientes (no /api/config). Endpoints:
+//   GET    /api/clientes/<id>/inactivo-temporal  → null o { id, fecha_inicio, fecha_fin, motivo, estado, ... }
+//   POST   /api/clientes/<id>/inactivo-temporal  → crea (si fecha_inicio<=hoy ejecuta)
+//   DELETE /api/clientes/<id>/inactivo-temporal  → cancela/termina la pausa activa
+//   GET    /api/clientes/inactivo-temporal       → lista pausas activas del manager
+export const temporalInactivoGet = (identity, clienteId) =>
+  _requestRoot('GET', `/api/clientes/${clienteId}/inactivo-temporal`, identity)
+    .then(d => d.pausa)
+export const temporalInactivoCreate = (identity, clienteId, datos) =>
+  _requestRoot('POST', `/api/clientes/${clienteId}/inactivo-temporal`, identity, datos)
+export const temporalInactivoCancel = (identity, clienteId) =>
+  _requestRoot('DELETE', `/api/clientes/${clienteId}/inactivo-temporal`, identity)
+export const temporalInactivoList = (identity) =>
+  _requestRoot('GET', `/api/clientes/inactivo-temporal`, identity)
+    .then(d => d.items || [])
+
+
 // ── Canales de captación (mapping UTM → canal con nombre) ────────────────
 export const canalesList = (identity, incluirInactivos = false) =>
   _request('GET',
@@ -345,6 +493,18 @@ export const centroUpsert = (identity, idTrainer, data) =>
 export const centroDelete = (identity, idTrainer) =>
   _request('DELETE', `/centros/${idTrainer}`, identity)
 
+// ── Alta de cliente — modo per-trainer (QR centro / QR ficha / ambos) ─────
+// modo: 'centro' | 'individual' | 'ambos'
+export const altaModoGet = (identity, idTrainer) => {
+  const path = idTrainer
+    ? `/centros/${idTrainer}/alta-cliente-modo`
+    : '/centros/alta-cliente-modo'
+  return _request('GET', path, identity).then(d => d.modo)
+}
+export const altaModoSet = (identity, idTrainer, modo) =>
+  _request('PUT', `/centros/${idTrainer}/alta-cliente-modo`, identity, { modo })
+    .then(d => d.modo)
+
 // ── Credenciales NoofitPro por trainer (proxy server-side) ─────────────────
 export const trainerCredsList = (identity) =>
   _request('GET', '/trainer-creds', identity).then(d => d.creds || [])
@@ -377,6 +537,13 @@ export const leadsList = (identity) =>
   _crmRequest('GET', '/leads', identity).then(d => d.leads || [])
 export const leadUpdate = (identity, leadId, vals) =>
   _crmRequest('PATCH', `/leads/${leadId}`, identity, vals).then(d => d.lead)
+/**
+ * Crea un lead manualmente desde el ERP (autenticado, sin honeypot).
+ * Útil cuando una persona llega presencialmente al gimnasio sin pasar
+ * por el formulario web. Devuelve {ok, lead_id, asignacion_id, centro}.
+ */
+export const leadManualCreate = (identity, payload) =>
+  _crmRequest('POST', '/lead-manual', identity, payload)
 export const crmStages = (identity) =>
   _crmRequest('GET', '/stages', identity).then(d => d.stages || [])
 export const crmLostReasons = (identity) =>
@@ -729,3 +896,32 @@ export const managerTrainersContabilidad = (identity) =>
 export const managerSetTrainerContabilidad = (identity, idTrainer, heredar, nombreTrainer = '') =>
   _requestRoot('PATCH', `/api/manager/trainers-contabilidad/${idTrainer}`, identity,
                { heredar_contabilidad: heredar, nombre_trainer: nombreTrainer })
+
+
+// ── Incidencias del sistema (bandeja /incidencias) ──────────────────────────
+// Eventos generados por backend cuando algo requiere atención humana
+// (sync Odoo fallido, SEPA rechazada, recibos descuadrados, etc.).
+// Endpoints viven en /api/incidencias (NO bajo /api/config), por eso
+// _requestRoot. Filtros opcionales: solo_pendientes, tipo, severidad,
+// id_trainer, limit. El backend filtra automáticamente por X-Round-Manager-Id.
+export const incidenciasList = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.solo_pendientes) qs.set('solo_pendientes', '1')
+  if (params.tipo)            qs.set('tipo', params.tipo)
+  if (params.severidad)       qs.set('severidad', params.severidad)
+  if (params.id_trainer)      qs.set('id_trainer', params.id_trainer)
+  if (params.limit)           qs.set('limit', String(params.limit))
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return _requestRoot('GET', `/api/incidencias${suffix}`, identity)
+    .then(d => d.incidencias || [])
+}
+
+/** Contador rápido de pendientes para el badge del sidebar.
+ *  Respuesta: { ok: true, pendientes: N }. */
+export const incidenciasCount = (identity) =>
+  _requestRoot('GET', '/api/incidencias/count', identity)
+    .then(d => Number(d.pendientes || 0))
+
+/** Marca una incidencia como leída (la firma `leida_por` la pone el backend). */
+export const incidenciaMarcarLeida = (identity, id) =>
+  _requestRoot('POST', `/api/incidencias/${id}/marcar-leida`, identity)

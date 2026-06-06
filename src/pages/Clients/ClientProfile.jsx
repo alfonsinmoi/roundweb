@@ -7,7 +7,8 @@ import {
   Activity, Smartphone, Settings, Shield, Mail, Phone, Pencil, Dumbbell,
   BarChart3, TrendingUp, TrendingDown, Clock, Users, Download, Code, Copy, Check,
   Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2, Receipt, RefreshCw,
-  QrCode, Bell, MessageCircle, Zap,
+  QrCode, Bell, MessageCircle, Zap, UserCog, History, StickyNote, ShoppingBag,
+  PauseCircle,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
@@ -22,19 +23,40 @@ import {
   getSalasByRange, getUsuariosBySala,
 } from '../../utils/api'
 import { useCategoriasMap } from '../../hooks/useCategoriasMap'
+import { listarNotasCliente } from '../../utils/notasApi'
 import { useOdooStatus } from '../../hooks/useOdooStatus'
+import { useCan } from '../../hooks/useCan'
 import AltaClienteModal from '../../components/AltaClienteModal'
+import GenerarReciboModal from '../../components/GenerarReciboModal'
+import CrearUsuarioWebDesdeClienteModal from '../../components/CrearUsuarioWebDesdeClienteModal'
+import TrazabilidadModal from '../../components/TrazabilidadModal'
+import { useAltaModo } from '../../components/QrAltaCliente'
+import DevolverReciboBtn from '../../components/recibos/DevolverReciboBtn'
+import { usuarioWebFindByEmail } from '../../utils/authUsuarioApi'
+import { recibosImpagadosCliente } from '../../utils/configApi'
 import InformesEstadoFisicoButton from '../../components/InformesEstadoFisicoButton'
 import ClienteNotasTab from '../../components/notas/ClienteNotasTab'
+import TabComprasTPV from './TabComprasTPV'
 import CuotasClienteCard from '../../components/subs/CuotasClienteCard'
 import DescuentosClienteCard from '../../components/subs/DescuentosClienteCard'
 import ModificacionesClienteCard from '../../components/subs/ModificacionesClienteCard'
 import FamiliaresClienteCard from '../../components/subs/FamiliaresClienteCard'
 import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate,
-         bajaProgramadaGet, bajaProgramadaCreate, bajaProgramadaCancel } from '../../utils/configApi'
+         bajaProgramadaGet, bajaProgramadaCreate, bajaProgramadaCancel,
+         temporalInactivoGet, temporalInactivoCreate, temporalInactivoCancel } from '../../utils/configApi'
 import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
+
+// Motivos de inactividad temporal (pausa). Keys = lo que espera el backend.
+const MOTIVOS_PAUSA = [
+  ['baja_medica', 'Baja médica'],
+  ['lesion', 'Lesión'],
+  ['vacaciones', 'Vacaciones'],
+  ['cambio_trabajo_domicilio', 'Cambio de trabajo/domicilio'],
+  ['otros', 'Otros'],
+]
+const MOTIVO_PAUSA_LABEL = Object.fromEntries(MOTIVOS_PAUSA)
 
 // Tab "Datos ERP" eliminado: la gestión de cuotas/descuentos/forma de pago
 // del cliente vive ahora en "Datos personales → Cuota y fechas" (componente
@@ -46,6 +68,7 @@ const tabs = [
   { id: 'clases',   label: 'Clases realizadas', icon: CalendarCheck },
   { id: 'analisis', label: 'Análisis uso',      icon: BarChart3 },
   { id: 'cuotas',   label: 'Recibos',           icon: Receipt },
+  { id: 'compras',  label: 'Compras TPV',       icon: ShoppingBag },
   { id: 'notificaciones', label: 'Notificaciones', icon: Bell },
 ]
 
@@ -299,10 +322,59 @@ export default function ClientProfile() {
   // relacionados (cuotas, descuentos, modificaciones, familiares, alta ERP).
   const { odooEnabled: hasOdoo } = useOdooStatus()
 
+  // Gates UI nuevos (baja programada). El botón "Inactivar/Reactivar" usa
+  // pausar/archivar — aquí ramificamos: el flujo "programar baja futura"
+  // requiere el permiso correspondiente y el de cancelarla otro distinto.
+  const canProgramarBaja = useCan('clientes.baja_programada.programar')
+  const canCancelarBajaProg = useCan('clientes.baja_programada.cancelar_programacion')
+  // Gates UI acciones de la hero card / pestaña notificaciones.
+  const canArchivar     = useCan('clientes.archivar')
+  const canCrearUw      = useCan('configuracion.usuarios_web.crear')
+  const canNotificar    = useCan('clientes.notificar')
+  // TODO(perms): no existe en el catálogo una clave para "Generar recibo
+  // manual" ni para "Desvincular cliente". Quedan sin gate fino hasta que se
+  // añadan al catálogo (reportado).
+
   const [confirmArchivar, setConfirmArchivar] = useState(false)
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
   const [motivoModal, setMotivoModal] = useState(false)
   const [motivo, setMotivo] = useState('')
+  // Modales de acciones operativas (Atender re-disparo, Generar recibo manual).
+  // "Atender" reabre el wizard AltaClienteModal — útil si el operador se
+  // equivocó al atender al cliente (categoría/cuota mal asignada, etc.) y
+  // quiere repetir el flujo desde cero.
+  const [atenderOpen, setAtenderOpen] = useState(false)
+  const [generarReciboOpen, setGenerarReciboOpen] = useState(false)
+  // Modal "Crear usuario web" — solo aparece para clientes con categoría
+  // Trabajador que aún no tienen usuario_web activo con su email.
+  const [crearUwOpen, setCrearUwOpen] = useState(false)
+  const [trazaOpen, setTrazaOpen] = useState(false)
+  // Estado del posible usuario_web asociado al email del cliente. null = no
+  // existe / no activo. Si existe y activo, mostramos un badge en la cabecera.
+  // Lo refrescamos al cargar la ficha y tras crear/desactivar.
+  const [usuarioWebAsociado, setUsuarioWebAsociado] = useState(null)
+  // Fechas del cliente (alta, baja, etc.) y recibos impagados — se muestran
+  // como banner/badge prominente en la cabecera para que el operador los
+  // vea al instante sin tener que bajar a la card de Cuota y fechas.
+  const [fechasCliente, setFechasCliente] = useState(null)
+  const [recibosImpagados, setRecibosImpagados] = useState([])
+  // Junio 2026 — última nota del cliente, mostrada en cabecera de la ficha
+  // (sustituye al bloque "Objetivo" que estaba casi siempre vacío).
+  const [ultimaNota, setUltimaNota] = useState(null)
+  const [ultimaNotaLoading, setUltimaNotaLoading] = useState(false)
+  // Doble confirmación. inactivarStep: 1 = formulario (fecha + motivo);
+  // 2 = aviso final + checkbox. desvincularConfirmText: texto que el usuario
+  // debe tipear para habilitar el botón rojo (= 'DESVINCULAR').
+  const [inactivarStep, setInactivarStep] = useState(1)
+  const [inactivarConfirmCheck, setInactivarConfirmCheck] = useState(false)
+  const [desvincularConfirmText, setDesvincularConfirmText] = useState('')
+  // Hook de categorías a nivel main ClientProfile (también está en TabPersonal
+  // pero lo necesitamos aquí para el badge + botón "Crear usuario web").
+  const { getCategoria: getCategoriaMain } = useCategoriasMap()
+  const categoriaCliente = cliente ? getCategoriaMain(cliente) : null
+  const esTrabajador = !!(categoriaCliente?.nombre &&
+    /trabaj/i.test(categoriaCliente.nombre))
+  const identityMain = useMemo(() => getRoundIdentity(user), [user])
   // Fecha de inicio de inactividad. Default: hoy. Si el manager elige una
   // fecha futura, NoofitPro mantiene al cliente activo hasta esa fecha y el
   // cron `round_baja_programada` lo desactiva la noche del día indicado.
@@ -310,7 +382,28 @@ export default function ClientProfile() {
   // Baja programada pendiente cargada del backend (null si no hay).
   const [bajaPendiente, setBajaPendiente] = useState(null)
   const [confirmCancelarBaja, setConfirmCancelarBaja] = useState(false)
+  // ── Inactividad temporal (pausa) ──────────────────────────────────────
+  // Pausa activa del cliente (estado programada|en_curso) o null.
+  const [pausaActiva, setPausaActiva] = useState(null)
+  const [pausaModal, setPausaModal] = useState(false)
+  const [pausaInicio, setPausaInicio] = useState('')
+  const [pausaFin, setPausaFin] = useState('')
+  const [pausaMotivo, setPausaMotivo] = useState('')
+  const [pausaDetalle, setPausaDetalle] = useState('')
+  const [confirmCancelarPausa, setConfirmCancelarPausa] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
+  // Modo "Alta de cliente" del trainer al que pertenece este cliente.
+  // Si modo='centro', el QR de la ficha NO se muestra (solo el del centro
+  // del menú clientes). Si 'individual' o 'ambos' → se muestra.
+  const trainerIdCliente = String(cliente?.idTrainer || cliente?.id_trainer || identityMain?.trainerId || '')
+  const altaModo = useAltaModo(trainerIdCliente)
+  // Junio 2026 — formato confirmado por NoofitPro (docs/QR_TRAINER_CLIENTE.md):
+  //   "TRAINERLINK;<idCliente>" para cedeDatos=true (defecto).
+  //   "cedeDatosFalse:<idCliente>:<dni>:<idTrainer>" si cedeDatos=false.
+  // Hasta que el flag llegue por API, asumimos cedeDatos=true.
+  // El QR de la ficha se muestra SIEMPRE (antes dependía del modo de alta y
+  // por eso había desaparecido para algunos clientes).
+  const mostrarQrFicha = true
 
   const identity = getRoundIdentity(user)
 
@@ -335,6 +428,76 @@ export default function ClientProfile() {
     return () => { cancel = true }
   }, [id, identity?.managerId])
 
+  // Cargar pausa (inactividad temporal) activa del cliente (si la hay).
+  useEffect(() => {
+    if (!id || !identity?.managerId) return
+    let cancel = false
+    temporalInactivoGet(identity, id)
+      .then(p => { if (!cancel) setPausaActiva(p || null) })
+      .catch(() => { if (!cancel) setPausaActiva(null) })
+    return () => { cancel = true }
+  }, [id, identity?.managerId])
+
+  // Comprueba si el email del cliente está dado de alta como usuario_web.
+  // Se ejecuta cuando carga el cliente (tenemos email) y tras crear/cambiar
+  // un usuario_web (re-llamamos `refreshUsuarioWeb`). Si el usuario_web está
+  // inactivo lo tratamos como "no asociado" → el banner desaparece.
+  const refreshUsuarioWeb = async () => {
+    if (!cliente?.email) { setUsuarioWebAsociado(null); return }
+    try {
+      const uw = await usuarioWebFindByEmail(identityMain, cliente.email)
+      setUsuarioWebAsociado(uw && uw.activo ? uw : null)
+    } catch { setUsuarioWebAsociado(null) }
+  }
+  useEffect(() => { refreshUsuarioWeb() }, [cliente?.email, cliente?.id])
+
+  // Cargar fechas (alta/baja/inactivo) — se muestran en el header.
+  useEffect(() => {
+    if (!cliente?.id || !identityMain?.managerId) return
+    let cancel = false
+    clienteFechas(identityMain, cliente.id)
+      .then(f => { if (!cancel) setFechasCliente(f || null) })
+      .catch(() => { if (!cancel) setFechasCliente(null) })
+    return () => { cancel = true }
+  }, [cliente?.id, identityMain?.managerId])
+
+  // Cargar recibos impagados/devueltos para banner rojo prominente.
+  useEffect(() => {
+    if (!cliente?.id || !identityMain?.managerId || !hasOdoo) return
+    let cancel = false
+    recibosImpagadosCliente(identityMain, cliente.id)
+      .then(r => { if (!cancel) setRecibosImpagados(r || []) })
+      .catch(() => { if (!cancel) setRecibosImpagados([]) })
+    return () => { cancel = true }
+  }, [cliente?.id, identityMain?.managerId, hasOdoo])
+
+  // Cargar la última nota (no archivada) para la cabecera.
+  useEffect(() => {
+    if (!cliente?.id) return
+    let cancel = false
+    setUltimaNotaLoading(true)
+    listarNotasCliente(user, cliente.id, { limit: 1, archivadas: false })
+      .then(ns => { if (!cancel) setUltimaNota((ns && ns[0]) || null) })
+      .catch(() => { if (!cancel) setUltimaNota(null) })
+      .finally(() => { if (!cancel) setUltimaNotaLoading(false) })
+    return () => { cancel = true }
+  }, [cliente?.id, user])
+
+  // Re-comprueba el usuario_web cuando la ventana vuelve a foco. Caso de uso:
+  // el manager está en esta ficha, abre otra pestaña a Configuración → Usuarios
+  // web → desactiva el usuario → vuelve a esta pestaña → el banner debe
+  // desaparecer sin tener que recargar.
+  useEffect(() => {
+    const onFocus = () => refreshUsuarioWeb()
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cliente?.email])
+
   const handleArchivar = () => {
     if (!cliente) return
     // Si ya está inactivo en NoofitPro → reactivar (flujo clásico)
@@ -344,6 +507,8 @@ export default function ClientProfile() {
     // Si no, abrir modal con fecha + motivo
     setFechaBaja(new Date().toISOString().slice(0,10))   // default: hoy
     setMotivo('')
+    setInactivarStep(1)               // arranca en paso 1 (formulario)
+    setInactivarConfirmCheck(false)
     setMotivoModal(true)
   }
 
@@ -403,6 +568,65 @@ export default function ClientProfile() {
       toast.success('Baja programada cancelada')
     } catch (e) {
       toast.error('Error al cancelar: ' + (e.body?.error || e.message))
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  // ── Inactividad temporal (pausa) ────────────────────────────────────
+  const abrirPausaModal = () => {
+    const hoy = new Date().toISOString().slice(0, 10)
+    setPausaInicio(hoy)
+    setPausaFin('')
+    setPausaMotivo('')
+    setPausaDetalle('')
+    setPausaModal(true)
+  }
+
+  const doCrearPausa = async () => {
+    if (!pausaInicio || !pausaFin) { toast.error('Indica fecha de inicio y fin'); return }
+    if (pausaFin < pausaInicio) { toast.error('La fecha de fin debe ser igual o posterior al inicio'); return }
+    if (!pausaMotivo) { toast.error('Elige un motivo'); return }
+    setPausaModal(false)
+    setActionLoading('pausa')
+    try {
+      const r = await temporalInactivoCreate(identity, cliente.id, {
+        fecha_inicio: pausaInicio,
+        fecha_fin: pausaFin,
+        motivo: pausaMotivo,
+        motivo_detalle: pausaMotivo === 'otros' ? (pausaDetalle || null) : null,
+        cliente_nombre: `${cliente.name || ''} ${cliente.surname || ''}`.trim(),
+        cliente_email: cliente.email || null,
+      })
+      setPausaActiva(r.pausa)
+      if (r.aplicada_inmediato) {
+        // Refrescar el cliente para reflejar enabled=false en NoofitPro.
+        const refreshed = (await getClientes()).find(c => String(c.id) === String(id))
+        if (refreshed) setCliente(refreshed)
+      }
+      const nAnulados = r.recibos_anulados || 0
+      toast.success(nAnulados > 0
+        ? `Pausa creada. ${nAnulados} recibo(s) sin pagar anulado(s).`
+        : 'Pausa creada correctamente.')
+    } catch (e) {
+      toast.error('Error al crear la pausa: ' + (e.body?.error || e.message))
+    } finally {
+      setActionLoading('')
+    }
+  }
+
+  const doCancelarPausa = async () => {
+    setConfirmCancelarPausa(false)
+    setActionLoading('pausa')
+    try {
+      await temporalInactivoCancel(identity, cliente.id)
+      setPausaActiva(null)
+      // El cliente puede haber sido reactivado en NoofitPro al terminar.
+      const refreshed = (await getClientes()).find(c => String(c.id) === String(id))
+      if (refreshed) setCliente(refreshed)
+      toast.success('Pausa cancelada/terminada')
+    } catch (e) {
+      toast.error('Error al cancelar la pausa: ' + (e.body?.error || e.message))
     } finally {
       setActionLoading('')
     }
@@ -474,17 +698,28 @@ export default function ClientProfile() {
                   {cliente.cellPhone && <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Phone size={13} aria-hidden="true" /> {cliente.cellPhone}</span>}
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {cliente.enabled === false
-                  ? <Badge color="gray"><Archive size={10} aria-hidden="true" /> Inactivo</Badge>
-                  : bajaPendiente
-                    ? <Badge color="amber" title={bajaPendiente.motivo || ''}>
-                        <Clock size={10} aria-hidden="true" />
-                        {' '}Inactivo desde {new Date(bajaPendiente.fecha_baja).toLocaleDateString('es-ES')}
-                      </Badge>
-                    : cliente.activo === false ? <Badge color="yellow">No activo</Badge> : <Badge color="green">Activo</Badge>
-                }
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {/* Badge GRANDE de estado con fecha incrustada. Es lo que más
+                    rápido se debe leer al entrar en la ficha. */}
+                <BigStatusBadge cliente={cliente} bajaPendiente={bajaPendiente}
+                                fechas={fechasCliente} />
+                {/* Botón trazabilidad: historial completo (altas/bajas + cambios) */}
+                <Btn size="sm" variant="secondary" onClick={() => setTrazaOpen(true)}
+                     title="Ver historial completo de altas, bajas y cambios">
+                  <History size={13} aria-hidden="true" /> Trazabilidad
+                </Btn>
                 {cliente.nivelConocimiento != null && <Badge color="blue">Nivel {cliente.nivelConocimiento}</Badge>}
+                {/* Badge "Usuario web": visible si existe un usuario_web ACTIVO
+                    asociado al email del cliente. Si el manager desactiva al
+                    usuario desde Configuración → Usuarios web, este badge
+                    desaparece al volver a la ficha (ver `refreshUsuarioWeb`
+                    en focus). Tooltip con perfil + nº centros. */}
+                {usuarioWebAsociado && (
+                  <Badge color="purple"
+                         title={`Perfil: ${usuarioWebAsociado.perfil_nombre || '—'} · Centros: ${(usuarioWebAsociado.id_trainers || []).length}`}>
+                    <UserCog size={10} aria-hidden="true" /> Usuario web
+                  </Badge>
+                )}
               </div>
             </div>
 
@@ -508,39 +743,171 @@ export default function ClientProfile() {
               ))}
             </div>
 
-            {cliente.objective && (
+            {/* Junio 2026 — sustituye al bloque "Objetivo" (estaba casi siempre
+                vacío). Mostramos la última nota del cliente, con fecha y
+                autor. Si no hay notas, mostramos el objetivo como fallback. */}
+            {ultimaNota ? (
+              <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 14,
+                            background: 'var(--bg-3)' }}>
+                <div style={{ display: 'flex', alignItems: 'center',
+                              justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                    Última nota
+                    {ultimaNota.estado && ultimaNota.estado !== 'abierta' && (
+                      <span style={{ marginLeft: 6, color: 'var(--amber)' }}>
+                        · {ultimaNota.estado}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                    {ultimaNota.created_by_label || 'Sistema'}
+                    {ultimaNota.created_at && (() => {
+                      try {
+                        const d = new Date(ultimaNota.created_at)
+                        if (isNaN(d.getTime())) return ''
+                        return ' · ' + d.toLocaleDateString('es-ES')
+                      } catch { return '' }
+                    })()}
+                  </span>
+                </div>
+                <p style={{ fontSize: 14, color: 'var(--text-0)', marginTop: 4,
+                            lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>
+                  {ultimaNota.contenido && ultimaNota.contenido.length > 280
+                    ? ultimaNota.contenido.slice(0, 280) + '…'
+                    : (ultimaNota.contenido || '')}
+                </p>
+              </div>
+            ) : !ultimaNotaLoading && cliente.objective ? (
               <div style={{ marginTop: 24, padding: '16px 20px', borderRadius: 14, background: 'var(--bg-3)' }}>
                 <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Objetivo</span>
                 <p style={{ fontSize: 14, color: 'var(--text-0)', marginTop: 4 }}>{cliente.objective}</p>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
 
-        {/* Actions */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 28, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
-          <Btn variant="secondary" size="md" onClick={() => setQrOpen(true)}>
-            <QrCode size={15} aria-hidden="true" /> Mostrar QR
-          </Btn>
+        {/* Actions — fila compacta. Usamos size="sm" + nowrap para que quepan
+            todos en una sola línea en pantallas ≥1100px. En móvil / panel
+            estrecho cae a wrap (gap más pequeño). */}
+        <div className="cliente-actions-row" style={{
+          display: 'flex', flexWrap: 'wrap', gap: 8,
+          marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--line)',
+        }}>
+          {/* QR de la ficha: solo si modo Alta de cliente del trainer es
+              'individual' o 'ambos' (configurado en Configuración → Alta
+              de cliente). */}
+          {mostrarQrFicha && (
+            <Btn variant="secondary" size="sm" onClick={() => setQrOpen(true)}>
+              <QrCode size={13} aria-hidden="true" /> Mostrar QR
+            </Btn>
+          )}
           <InformesEstadoFisicoButton cliente={cliente} />
-          <Btn variant="secondary" size="md" onClick={handleArchivar} disabled={!!actionLoading}>
-            {actionLoading === 'archivar'
-              ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-              : <Archive size={15} aria-hidden="true" />}
-            {cliente.enabled === false
-              ? ' Reactivar'
-              : bajaPendiente
-                ? ' Cancelar baja programada'
-                : ' Inactivar'}
-          </Btn>
-          <Btn variant="danger" size="md" onClick={() => setConfirmDesvincular(true)} disabled={!!actionLoading}>
+          {/* "Atender": vuelve a disparar el wizard AltaClienteModal para
+              que el operador pueda corregir un alta mal hecha (categoría /
+              cuota / descuento equivocado, etc.). Sólo si el manager tiene
+              Odoo desplegado — sin Odoo el wizard no aplica. */}
+          {hasOdoo && (
+            <Btn variant="secondary" size="sm" onClick={() => setAtenderOpen(true)}
+                 disabled={!!actionLoading}
+                 title="Re-procesar al cliente con el wizard de alta (por si el alta anterior fue incorrecta)">
+              <Zap size={13} aria-hidden="true" /> Atender
+            </Btn>
+          )}
+          {/* "Generar recibo": emite un recibo manual puntual (cobro extra,
+              recibo retroactivo, cobro en efectivo del día, etc.) sin esperar
+              al cron mensual ni al wizard trimestral. Sólo si hay Odoo. */}
+          {hasOdoo && (
+            <Btn variant="secondary" size="sm" onClick={() => setGenerarReciboOpen(true)}
+                 disabled={!!actionLoading}
+                 title="Emitir un recibo manual para este cliente">
+              <Receipt size={13} aria-hidden="true" /> Generar recibo
+            </Btn>
+          )}
+          {/* "Crear usuario web": SOLO si el cliente tiene categoría
+              Trabajador y NO existe ya un usuario_web activo con su email.
+              Si ya existe, mostramos en su lugar un botón "Gestionar" que
+              lleva a Configuración → Usuarios web filtrado por su email
+              (deep-link). */}
+          {esTrabajador && !usuarioWebAsociado && canCrearUw && (
+            <Btn variant="secondary" size="sm" onClick={() => setCrearUwOpen(true)}
+                 disabled={!!actionLoading || !cliente.email}
+                 title={cliente.email
+                   ? 'Dar acceso web a este trabajador (email + contraseña propia)'
+                   : 'El cliente no tiene email registrado — añádelo antes'}>
+              <UserCog size={13} aria-hidden="true" /> Crear usuario web
+            </Btn>
+          )}
+          {esTrabajador && usuarioWebAsociado && (
+            <Btn variant="secondary" size="sm"
+                 onClick={() => navigate(`/configuracion?tab=usuarios-web&email=${encodeURIComponent(cliente.email)}`)}
+                 title="Gestionar este usuario web en Configuración → Usuarios web">
+              <UserCog size={13} aria-hidden="true" /> Gestionar usuario web
+            </Btn>
+          )}
+          {canArchivar && (
+            <Btn variant="secondary" size="sm" onClick={handleArchivar} disabled={!!actionLoading}>
+              {actionLoading === 'archivar'
+                ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                : <Archive size={13} aria-hidden="true" />}
+              {cliente.enabled === false
+                ? ' Reactivar'
+                : bajaPendiente
+                  ? ' Cancelar baja prog.'
+                  : ' Inactivar'}
+            </Btn>
+          )}
+          {/* Inactividad temporal (pausa con fecha de inicio/fin). Reusa el
+              mismo permiso que la baja programada (clientes.archivar). */}
+          {canArchivar && (
+            <Btn variant="secondary" size="sm"
+                 onClick={() => pausaActiva ? setConfirmCancelarPausa(true) : abrirPausaModal()}
+                 disabled={!!actionLoading}
+                 title={pausaActiva
+                   ? 'Cancelar/terminar la pausa activa de este cliente'
+                   : 'Pausar temporalmente al cliente entre dos fechas'}>
+              {actionLoading === 'pausa'
+                ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+                : <PauseCircle size={13} aria-hidden="true" />}
+              {pausaActiva ? ' Cancelar pausa' : ' Inactividad temporal'}
+            </Btn>
+          )}
+          <Btn variant="danger" size="sm" onClick={() => setConfirmDesvincular(true)} disabled={!!actionLoading}>
             {actionLoading === 'desvincular'
-              ? <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-              : <UserX size={15} aria-hidden="true" />}
+              ? <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+              : <UserX size={13} aria-hidden="true" />}
             {' Desvincular'}
           </Btn>
         </div>
       </Card>
+
+      {/* Banner rojo de impagados — aparece JUSTO bajo la hero card si hay
+          1+ recibos en estado impagado/devuelto. Click navega a tab Recibos. */}
+      <ImpagadoBanner recibos={recibosImpagados} onClick={() => setTab('cuotas')} />
+
+      {/* Banner ámbar de pausa (inactividad temporal) activa. */}
+      {pausaActiva && (
+        <div role="status" style={{
+          margin: '0 0 16px', padding: '14px 18px', borderRadius: 14,
+          background: 'rgba(251,191,36,0.10)',
+          border: '1.5px solid rgba(251,191,36,0.4)',
+          display: 'flex', alignItems: 'center', gap: 10,
+          fontSize: 13, color: 'var(--text-1)', lineHeight: 1.5,
+        }}>
+          <PauseCircle size={16} aria-hidden="true" style={{ color: 'var(--amber, #d97706)', flexShrink: 0 }} />
+          <span>
+            <strong style={{ color: 'var(--amber, #d97706)' }}>
+              Inactividad temporal {pausaActiva.estado === 'en_curso' ? 'en curso' : 'programada'}
+            </strong>
+            {' · '}{MOTIVO_PAUSA_LABEL[pausaActiva.motivo] || pausaActiva.motivo || '—'}
+            {pausaActiva.motivo === 'otros' && pausaActiva.motivo_detalle
+              ? ` (${pausaActiva.motivo_detalle})` : ''}
+            {' · '}
+            {(() => { try { return new Date(pausaActiva.fecha_inicio).toLocaleDateString('es-ES') } catch { return pausaActiva.fecha_inicio } })()}
+            {' → '}
+            {(() => { try { return new Date(pausaActiva.fecha_fin).toLocaleDateString('es-ES') } catch { return pausaActiva.fecha_fin } })()}
+          </span>
+        </div>
+      )}
 
       {/* Tabs. La pestaña "Recibos" depende de Odoo (lee `cuotas/cliente/<id>`
           que toca account.move). Sin Odoo desplegado la ocultamos del
@@ -570,11 +937,36 @@ export default function ClientProfile() {
       {tab === 'clases'          && <TabClases clienteId={cliente.id} />}
       {tab === 'analisis'        && <TabAnalisis cliente={cliente} />}
       {tab === 'cuotas'          && hasOdoo && <TabCuotas cliente={cliente} />}
+      {tab === 'compras'         && <TabComprasTPV cliente={cliente} />}
       {tab === 'notificaciones'  && <TabNotificaciones cliente={cliente} />}
       {/* Compatibilidad: enlaces antiguos ?tab=erp → redirigen a personal */}
       {tab === 'erp'             && <TabPersonal cliente={cliente} onClienteUpdate={setCliente} />}
 
       {/* Dialogs */}
+      {atenderOpen && (
+        <AltaClienteModal
+          cliente={cliente}
+          onClose={() => setAtenderOpen(false)}
+          onSaved={() => { setAtenderOpen(false); toast.success('Cliente atendido correctamente') }}
+        />
+      )}
+      {generarReciboOpen && (
+        <GenerarReciboModal
+          cliente={cliente}
+          onClose={() => setGenerarReciboOpen(false)}
+          onSaved={() => setGenerarReciboOpen(false)}
+        />
+      )}
+      {crearUwOpen && (
+        <CrearUsuarioWebDesdeClienteModal
+          cliente={cliente}
+          onClose={() => setCrearUwOpen(false)}
+          onSaved={() => { setCrearUwOpen(false); refreshUsuarioWeb() }}
+        />
+      )}
+      {trazaOpen && (
+        <TrazabilidadModal cliente={cliente} onClose={() => setTrazaOpen(false)} />
+      )}
       <ConfirmDialog
         open={confirmArchivar}
         title="Reactivar cliente"
@@ -584,14 +976,68 @@ export default function ClientProfile() {
         onConfirm={() => doArchivar(null)}
         onCancel={() => setConfirmArchivar(false)}
       />
-      <ConfirmDialog
-        open={confirmDesvincular}
-        title="Desvincular cliente"
-        message={`¿Desvincular a ${cliente.name} ${cliente.surname}? Esta acción no se puede deshacer.`}
-        confirmText="Desvincular"
-        onConfirm={doDesvincular}
-        onCancel={() => setConfirmDesvincular(false)}
-      />
+      {/* Desvincular: doble confirmación tipo "type to confirm". El usuario
+          debe tipear DESVINCULAR (sin acentos, case-insensitive) para que
+          el botón rojo se habilite. Acción irreversible. */}
+      <Modal open={confirmDesvincular}
+             onClose={() => { setConfirmDesvincular(false); setDesvincularConfirmText('') }}
+             title="Desvincular cliente — acción irreversible"
+             subtitle={`${cliente.name} ${cliente.surname}`} maxWidth={480}>
+        <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{
+            padding: '16px 18px', borderRadius: 14,
+            background: 'rgba(248,113,133,0.10)',
+            border: '1.5px solid rgba(248,113,133,0.5)',
+            fontSize: 13, color: 'var(--text-1)', lineHeight: 1.6,
+          }}>
+            <strong style={{ color: 'var(--red, #f87185)', display: 'block', marginBottom: 6 }}>
+              ⚠ Esta acción NO se puede deshacer
+            </strong>
+            Vas a desvincular a <strong>{cliente.name} {cliente.surname}</strong> de
+            la cuenta del trainer. El cliente desaparecerá del listado, pero los
+            recibos históricos se conservan por trazabilidad contable.
+            <br/><br/>
+            Si solo quieres pausar al cliente, mejor usa <strong>Inactivar</strong>
+            {' '}(reversible).
+          </div>
+          <div>
+            <label htmlFor="desvincular-confirm" style={{
+              display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8,
+            }}>
+              Para confirmar, escribe <code style={{
+                background: 'var(--bg-2)', padding: '2px 6px', borderRadius: 4,
+                fontFamily: 'var(--font-mono, monospace)', color: 'var(--red)',
+              }}>DESVINCULAR</code> abajo:
+            </label>
+            <input id="desvincular-confirm" type="text" autoComplete="off"
+                   value={desvincularConfirmText}
+                   onChange={e => setDesvincularConfirmText(e.target.value)}
+                   placeholder="DESVINCULAR"
+                   style={{
+                     width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                     background: 'var(--bg-1)',
+                     border: `1.5px solid ${desvincularConfirmText.trim().toUpperCase() === 'DESVINCULAR'
+                       ? 'var(--green)' : 'var(--line)'}`,
+                     color: 'var(--text-0)', fontFamily: 'var(--font-mono, monospace)',
+                     letterSpacing: '0.05em',
+                   }} />
+          </div>
+        </div>
+        <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)',
+                      display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" size="md"
+               onClick={() => { setConfirmDesvincular(false); setDesvincularConfirmText('') }}
+               disabled={!!actionLoading}>Cancelar</Btn>
+          <Btn variant="danger" size="md"
+               onClick={() => { doDesvincular(); setDesvincularConfirmText('') }}
+               disabled={desvincularConfirmText.trim().toUpperCase() !== 'DESVINCULAR' || !!actionLoading}>
+            {actionLoading === 'desvincular'
+              ? <Loader2 size={14} className="animate-spin" />
+              : <UserX size={14} aria-hidden="true" />}
+            {' Sí, desvincular definitivamente'}
+          </Btn>
+        </div>
+      </Modal>
       <Modal open={qrOpen} onClose={() => setQrOpen(false)} title="QR del cliente">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: 4 }}>
           <p style={{ fontSize: 13, color: 'var(--text-2)', textAlign: 'center', maxWidth: 360, lineHeight: 1.5 }}>
@@ -602,8 +1048,10 @@ export default function ClientProfile() {
             background: '#fff', borderRadius: 14, padding: 18,
             display: 'flex', justifyContent: 'center',
           }}>
+            {/* Formato confirmado NoofitPro: "TRAINERLINK;<idCliente>" sin
+                cifrado para cedeDatos=true (caso defecto). */}
             <QRCodeSVG
-              value={`cliente:${cliente.idEspejo ?? cliente.id}`}
+              value={`TRAINERLINK;${cliente.id}`}
               size={320}
               level="M"
               includeMargin={false}
@@ -615,59 +1063,122 @@ export default function ClientProfile() {
             borderRadius: 10, background: 'var(--bg-3)', border: '1px solid var(--line)',
             fontSize: 12, color: 'var(--text-3)', fontFamily: 'monospace',
           }}>
-            <span>cliente:</span>
-            <strong style={{ color: 'var(--text-1)' }}>{cliente.idEspejo ?? cliente.id}</strong>
+            TRAINERLINK;<strong style={{ color: 'var(--text-1)' }}>{cliente.id}</strong>
           </div>
           <Btn variant="secondary" size="md" onClick={() => setQrOpen(false)}>Cerrar</Btn>
         </div>
       </Modal>
 
-      <Modal open={motivoModal} onClose={() => setMotivoModal(false)} title="Inactivar cliente"
+      <Modal open={motivoModal} onClose={() => setMotivoModal(false)}
+             title={inactivarStep === 1 ? 'Inactivar cliente' : 'Confirmar inactivación'}
              subtitle={`${cliente.name} ${cliente.surname}`} maxWidth={480}>
-        <div style={{ padding: '28px 32px', display:'flex', flexDirection:'column', gap:18 }}>
-          <div>
-            <label htmlFor="fecha-baja" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
-              Fecha de inicio de inactividad *
-            </label>
-            <input id="fecha-baja" type="date" value={fechaBaja}
-                   onChange={e => setFechaBaja(e.target.value)}
-                   style={{
-                     width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
-                     background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
-                   }} />
-            <p style={{ fontSize:12, color:'var(--text-3)', marginTop:6, lineHeight:1.5 }}>
-              {(() => {
-                const today = new Date().toISOString().slice(0,10)
-                if (!fechaBaja) return null
-                if (fechaBaja < today) return '⚠️ Fecha en el pasado: el cliente se marca inactivo AHORA y si ya hay recibo del mes con día 1 ≥ fecha, deberás anularlo a mano.'
-                if (fechaBaja === today) return 'El cliente se marca inactivo ahora mismo.'
-                return `Hasta el ${new Date(fechaBaja).toLocaleDateString('es-ES')} el cliente puede seguir reservando con normalidad. El día indicado, el sistema lo desactiva automáticamente.`
-              })()}
-            </p>
-          </div>
-          <div>
-            <label htmlFor="motivo-archivado" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
-              Motivo (opcional)
-            </label>
-            <input id="motivo-archivado" type="text" value={motivo} onChange={e => setMotivo(e.target.value)}
-                   placeholder="Ej: Baja voluntaria, cambio de centro..."
-                   className="form-input"
-                   style={{
-                     width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
-                     background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
-                   }} />
-          </div>
-        </div>
-        <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <Btn variant="secondary" size="md" onClick={() => setMotivoModal(false)}>Cancelar</Btn>
-          <Btn variant="primary" size="md" onClick={doProgramarBaja} disabled={!fechaBaja || !!actionLoading}>
-            {actionLoading === 'archivar' ? <Loader2 size={14} className="animate-spin" /> : 'Confirmar'}
-          </Btn>
-        </div>
+        {inactivarStep === 1 ? (
+          // ── Paso 1: formulario (fecha + motivo) ────────────────────
+          <>
+            <div style={{ padding: '28px 32px', display:'flex', flexDirection:'column', gap:18 }}>
+              <div>
+                <label htmlFor="fecha-baja" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                  Fecha de inicio de inactividad *
+                </label>
+                <input id="fecha-baja" type="date" value={fechaBaja}
+                       onChange={e => setFechaBaja(e.target.value)}
+                       style={{
+                         width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                         background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                       }} />
+                <p style={{ fontSize:12, color:'var(--text-3)', marginTop:6, lineHeight:1.5 }}>
+                  {(() => {
+                    const today = new Date().toISOString().slice(0,10)
+                    if (!fechaBaja) return null
+                    if (fechaBaja < today) return '⚠️ Fecha en el pasado: el cliente se marca inactivo AHORA y si ya hay recibo del mes con día 1 ≥ fecha, deberás anularlo a mano.'
+                    if (fechaBaja === today) return 'El cliente se marca inactivo ahora mismo.'
+                    return `Hasta el ${new Date(fechaBaja).toLocaleDateString('es-ES')} el cliente puede seguir reservando con normalidad. El día indicado, el sistema lo desactiva automáticamente.`
+                  })()}
+                </p>
+              </div>
+              <div>
+                <label htmlFor="motivo-archivado" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                  Motivo (opcional)
+                </label>
+                <input id="motivo-archivado" type="text" value={motivo} onChange={e => setMotivo(e.target.value)}
+                       placeholder="Ej: Baja voluntaria, cambio de centro..."
+                       className="form-input"
+                       style={{
+                         width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                         background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                       }} />
+              </div>
+            </div>
+            <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <Btn variant="secondary" size="md" onClick={() => setMotivoModal(false)}>Cancelar</Btn>
+              {/* Paso 1 → Continuar (pasa a la pantalla de confirmación) */}
+              <Btn variant="primary" size="md"
+                   onClick={() => setInactivarStep(2)}
+                   disabled={!fechaBaja || !!actionLoading}>
+                Continuar
+              </Btn>
+            </div>
+          </>
+        ) : (
+          // ── Paso 2: doble confirmación con checkbox + resumen ─────
+          <>
+            <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{
+                padding: '16px 18px', borderRadius: 14,
+                background: 'rgba(251,191,36,0.10)',
+                border: '1.5px solid rgba(251,191,36,0.4)',
+                fontSize: 13, color: 'var(--text-1)', lineHeight: 1.6,
+              }}>
+                <strong style={{ color: 'var(--amber, #d97706)', display: 'block', marginBottom: 6 }}>
+                  ⚠ Vas a inactivar a este cliente
+                </strong>
+                Confirma los datos antes de continuar:
+                <ul style={{ margin: '10px 0 0 18px', padding: 0 }}>
+                  <li><strong>Cliente:</strong> {cliente.name} {cliente.surname}</li>
+                  <li><strong>Fecha de baja:</strong> {new Date(fechaBaja).toLocaleDateString('es-ES')}</li>
+                  {motivo && <li><strong>Motivo:</strong> {motivo}</li>}
+                </ul>
+              </div>
+              <label style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10,
+                padding: 12, borderRadius: 10,
+                background: 'var(--bg-2)', cursor: 'pointer', fontSize: 13,
+              }}>
+                <input type="checkbox" checked={inactivarConfirmCheck}
+                       onChange={e => setInactivarConfirmCheck(e.target.checked)}
+                       style={{ marginTop: 2, flexShrink: 0 }} />
+                <span style={{ color: 'var(--text-1)', lineHeight: 1.5 }}>
+                  Entiendo que el cliente <strong>no recibirá recibos a partir
+                  del día indicado</strong> y que sus cuotas activas se
+                  cancelarán en esa fecha. Confirmo que quiero proceder.
+                </span>
+              </label>
+            </div>
+            <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center' }}>
+              <Btn variant="secondary" size="md" onClick={() => setInactivarStep(1)}
+                   disabled={!!actionLoading}>
+                ← Volver
+              </Btn>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <Btn variant="secondary" size="md" onClick={() => setMotivoModal(false)}
+                     disabled={!!actionLoading}>Cancelar</Btn>
+                {canProgramarBaja && (
+                  <Btn variant="danger" size="md" onClick={doProgramarBaja}
+                       disabled={!inactivarConfirmCheck || !!actionLoading}>
+                    {actionLoading === 'archivar'
+                      ? <Loader2 size={14} className="animate-spin" />
+                      : <Archive size={14} aria-hidden="true" />}
+                    {' Sí, inactivar'}
+                  </Btn>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </Modal>
 
       <ConfirmDialog
-        open={confirmCancelarBaja}
+        open={confirmCancelarBaja && canCancelarBajaProg}
         title="Cancelar baja programada"
         message={bajaPendiente
           ? `¿Cancelar la baja programada para el ${new Date(bajaPendiente.fecha_baja).toLocaleDateString('es-ES')}? El cliente permanecerá activo.`
@@ -676,6 +1187,107 @@ export default function ClientProfile() {
         variant="primary"
         onConfirm={doCancelarBaja}
         onCancel={() => setConfirmCancelarBaja(false)}
+      />
+
+      {/* ── Modal: inactividad temporal (pausa) ──────────────────────── */}
+      <Modal open={pausaModal} onClose={() => setPausaModal(false)}
+             title="Inactividad temporal"
+             subtitle={cliente ? `${cliente.name} ${cliente.surname}` : ''} maxWidth={480}>
+        <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label htmlFor="pausa-inicio" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                Fecha de inicio *
+              </label>
+              <input id="pausa-inicio" type="date" value={pausaInicio}
+                     onChange={e => setPausaInicio(e.target.value)}
+                     style={{
+                       width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                       background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                     }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label htmlFor="pausa-fin" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                Fecha de fin *
+              </label>
+              <input id="pausa-fin" type="date" value={pausaFin} min={pausaInicio || undefined}
+                     onChange={e => setPausaFin(e.target.value)}
+                     style={{
+                       width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                       background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                     }} />
+            </div>
+          </div>
+          {pausaInicio && pausaFin && pausaFin < pausaInicio && (
+            <p style={{ fontSize: 12, color: 'var(--red)', marginTop: -8 }}>
+              La fecha de fin debe ser igual o posterior al inicio.
+            </p>
+          )}
+          <div>
+            <label htmlFor="pausa-motivo" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+              Motivo *
+            </label>
+            <select id="pausa-motivo" value={pausaMotivo}
+                    onChange={e => setPausaMotivo(e.target.value)}
+                    style={{
+                      width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                      background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                    }}>
+              <option value="">— Elige un motivo —</option>
+              {MOTIVOS_PAUSA.map(([k, l]) => (
+                <option key={k} value={k}>{l}</option>
+              ))}
+            </select>
+          </div>
+          {pausaMotivo === 'otros' && (
+            <div>
+              <label htmlFor="pausa-detalle" style={{ display: 'block', fontSize: 13, color: 'var(--text-2)', marginBottom: 8 }}>
+                Detalle del motivo
+              </label>
+              <input id="pausa-detalle" type="text" value={pausaDetalle}
+                     onChange={e => setPausaDetalle(e.target.value)}
+                     placeholder="Especifica el motivo..."
+                     className="form-input"
+                     style={{
+                       width: '100%', padding: '14px 18px', borderRadius: 14, fontSize: 14,
+                       background: 'var(--bg-1)', border: '1px solid var(--line)', color: 'var(--text-0)',
+                     }} />
+            </div>
+          )}
+          <p style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Si la fecha de inicio es hoy o anterior, el cliente se marca inactivo
+            de inmediato y los recibos sin pagar del periodo se anulan. Al llegar
+            la fecha de fin se reactiva automáticamente.
+          </p>
+        </div>
+        <div style={{ padding: '20px 32px', borderTop: '1px solid var(--line)', display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" size="md" onClick={() => setPausaModal(false)}
+               disabled={!!actionLoading}>Cancelar</Btn>
+          {canArchivar && (
+            <Btn variant="primary" size="md" onClick={doCrearPausa}
+                 disabled={!pausaInicio || !pausaFin || !pausaMotivo
+                   || (pausaFin < pausaInicio) || !!actionLoading}>
+              {actionLoading === 'pausa'
+                ? <Loader2 size={14} className="animate-spin" />
+                : <PauseCircle size={14} aria-hidden="true" />}
+              {' Crear pausa'}
+            </Btn>
+          )}
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={confirmCancelarPausa && canArchivar}
+        title="Cancelar pausa"
+        message={pausaActiva
+          ? (pausaActiva.estado === 'en_curso'
+              ? `¿Terminar la pausa en curso? El cliente se reactivará de inmediato.`
+              : `¿Cancelar la pausa programada (${(() => { try { return new Date(pausaActiva.fecha_inicio).toLocaleDateString('es-ES') } catch { return '' } })()} → ${(() => { try { return new Date(pausaActiva.fecha_fin).toLocaleDateString('es-ES') } catch { return '' } })()})?`)
+          : ''}
+        confirmText="Cancelar pausa"
+        variant="primary"
+        onConfirm={doCancelarPausa}
+        onCancel={() => setConfirmCancelarPausa(false)}
       />
     </div>
   )
@@ -700,9 +1312,9 @@ function setEditAuth() {
 
 function TabPersonal({ cliente, onClienteUpdate }) {
   const toast = useToast()
+  const { user } = useAuth()
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState(null)
-  const [authOpen, setAuthOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   // hasOdoo se usa para ocultar cards que dependen de Odoo desplegado
   // (Cuotas, Descuentos, Modificaciones, Familiares). Tiene que estar
@@ -729,15 +1341,18 @@ function TabPersonal({ cliente, onClienteUpdate }) {
         try { await setCategoria(cliente.id, newCategoriaId) }
         catch (e) { console.warn('categoria save:', e.message) }
       }
-      // El resto de campos sí van a NoofitPro (sin categoriaId que lo descarta)
+      // El resto de campos sí van a NoofitPro (sin categoriaId que lo descarta).
+      // `postClientes` hace POST a /api/dispositivos/clientePlusv2 → actualiza
+      // los datos del cliente en NoofitPro (BD del SaaS).
       const { categoriaId: _cat, ...payload } = editForm
       await postClientes([payload])
       onClienteUpdate({ ...editForm })
       setEditing(false)
       setEditForm(null)
-      toast.success('Cambios guardados correctamente')
+      toast.success('Datos actualizados en NoofitPro')
 
-      // Sync automático NoofitPro → Odoo (sin bloquear si falla)
+      // Sync automático NoofitPro → Odoo (sin bloquear si falla — Odoo puede
+      // no estar desplegado, el SaaS de Odoo puede estar caído, etc.).
       try {
         const { syncClienteOdoo, getRoundIdentity } = await import('../../utils/configApi')
         const identity = getRoundIdentity(user)
@@ -756,21 +1371,23 @@ function TabPersonal({ cliente, onClienteUpdate }) {
     setEditForm(null)
   }
 
+  // Editor sin barrera de contraseña: el botón "Editar" entra directamente
+  // en modo edición. "Guardar" persiste en NoofitPro (postClientes →
+  // /api/dispositivos/clientePlusv2) y luego sincroniza a Odoo si está
+  // desplegado. Antes había un prompt de contraseña ERP_PASSWORD que se
+  // quitó en mayo 2026 — la auditoría queda en `accion_log` igualmente.
   const editAction = editing ? (
     <div style={{ display: 'flex', gap: 8 }}>
       <Btn variant="primary" size="sm" onClick={handleSave} disabled={saving}>
         {saving ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={14} aria-hidden="true" />}
-        {' Guardar'}
+        {' Guardar cambios'}
       </Btn>
       <Btn variant="secondary" size="sm" onClick={handleCancel} disabled={saving}>
         <XCircle size={14} aria-hidden="true" /> Cancelar
       </Btn>
     </div>
   ) : (
-    <Btn variant="secondary" size="sm" onClick={() => {
-      if (isEditAuthValid()) { startEdit() }
-      else { setAuthOpen(true) }
-    }}>
+    <Btn variant="secondary" size="sm" onClick={startEdit}>
       <Pencil size={14} aria-hidden="true" /> Editar
     </Btn>
   )
@@ -780,15 +1397,39 @@ function TabPersonal({ cliente, onClienteUpdate }) {
   return (
     <div role="tabpanel" aria-label="Datos personales">
 
+      {/* Orden de importancia (mayo 2026):
+            1. Cuota + Forma de pago      ← lo que se consulta primero
+            2. Descuentos
+            3. Modificaciones
+            4. Categoría + fechas        \
+            5. Familiares                / juntos (lado a lado)
+            6. Datos personales (contacto)
+          Es el orden visual al entrar en la ficha. */}
       <div style={{ display: 'grid',
                      gridTemplateColumns: 'repeat(auto-fit, minmax(min(360px, 100%), 1fr))',
                      gap: 20 }}>
 
-        {/* Contact card — editable with auth */}
+        {/* 1. CUOTA Y FORMA DE PAGO — siempre primero. Requiere Odoo. */}
+        {hasOdoo && <CuotasClienteCard cliente={cliente} />}
+
+        {/* 2. DESCUENTOS + 3. MODIFICACIONES — apilados en una columna. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {hasOdoo && <DescuentosClienteCard cliente={cliente} />}
+          {hasOdoo && <ModificacionesClienteCard cliente={cliente} />}
+        </div>
+
+        {/* 4. CATEGORÍA + FECHAS — celda propia del grid. */}
+        <CategoriaYFechasCard cliente={cliente} />
+
+        {/* 5. FAMILIARES — celda propia del grid, fluye al lado de Categoría
+            por el auto-fit minmax(360px). */}
+        {hasOdoo && <FamiliaresClienteCard cliente={cliente} />}
+
+        {/* 5. DATOS PERSONALES — contacto, DNI, dirección. Editable con auth. */}
         <Card style={{ padding: 24 }}>
           <SectionTitle action={editAction}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <User size={16} aria-hidden="true" /> Datos de contacto
+              <User size={16} aria-hidden="true" /> Datos personales
             </span>
           </SectionTitle>
 
@@ -821,24 +1462,6 @@ function TabPersonal({ cliente, onClienteUpdate }) {
           </dl>
         </Card>
 
-        {/* Columna 2 del grid padre: Categoría + Descuentos + Modificaciones
-            apiladas verticalmente. Forma una "celda" del grid auto-fit, así
-            cabe junto a "Datos contacto" y "Cuota y fechas".
-            Las cards de Descuentos / Modificaciones / Familiares dependen
-            de Odoo (replican catálogos a `round.subscription`); solo se
-            muestran si el manager tiene Odoo desplegado. La de Categoría
-            es BD local y siempre visible. */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <CategoriaYFechasCard cliente={cliente} />
-          {hasOdoo && <DescuentosClienteCard cliente={cliente} />}
-          {hasOdoo && <ModificacionesClienteCard cliente={cliente} />}
-          {hasOdoo && <FamiliaresClienteCard cliente={cliente} />}
-        </div>
-
-        {/* Columna 3: Cuota y fechas (la card grande con sus subs).
-            Toda esta card requiere Odoo desplegado. */}
-        {hasOdoo && <CuotasClienteCard cliente={cliente} />}
-
         {/* Estado */}
         <Card style={{ padding: 24 }}>
           <SectionTitle>
@@ -860,13 +1483,6 @@ function TabPersonal({ cliente, onClienteUpdate }) {
         </Card>
 
       </div>
-
-      <AuthModal
-        open={authOpen}
-        onClose={() => setAuthOpen(false)}
-        onAuthorized={() => { setEditAuth(); setAuthOpen(false); startEdit() }}
-        clienteName={`${cliente.name} ${cliente.surname}`}
-      />
     </div>
   )
 }
@@ -907,9 +1523,11 @@ function TabNotificaciones({ cliente }) {
               <Bell size={16} aria-hidden="true" /> Notificaciones recibidas
             </span>
           </SectionTitle>
-          <Btn variant="primary" size="sm" onClick={() => setModalNuevo(true)}>
-            <Send size={13} /> Notificar
-          </Btn>
+          {canNotificar && (
+            <Btn variant="primary" size="sm" onClick={() => setModalNuevo(true)}>
+              <Send size={13} /> Notificar
+            </Btn>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
@@ -1968,22 +2586,12 @@ function TabCuotas({ cliente }) {
   const toast = useToast()
   const [recibos, setRecibos] = useState([])
   const [loading, setLoading] = useState(true)
-  const identity = (() => {
-    // Misma lógica que getRoundIdentity, inline para no añadir dep cyclic
-    if (!user) return { managerId: '', trainerId: null }
-    const isFalsy = v => v == null || v === false || v === '' || v === 'false' || v === '0' || v === 0
-    if (user.originalSession) {
-      const o = user.originalSession
-      return {
-        managerId: String(!isFalsy(o.manager) ? o.manager : (o.id || '')),
-        trainerId: String(!isFalsy(user.manager) ? user.manager : (user.id || '')),
-      }
-    }
-    return {
-      managerId: String(!isFalsy(user.manager) ? user.manager : (user.id || '')),
-      trainerId: null,
-    }
-  })()
+  // Usa el helper centralizado (maneja correctamente usuario_web, manager
+  // clásico e impersonación trainer). Antes había una versión inline aquí
+  // que no contemplaba usuario_web → cuando un usuario_web entraba a un
+  // centro la pestaña no enviaba bien el id_manager y la consulta volvía
+  // sin recibos.
+  const identity = useMemo(() => getRoundIdentity(user), [user])
 
   async function reload() {
     setLoading(true)
@@ -2018,19 +2626,24 @@ function TabCuotas({ cliente }) {
             Sin recibos. Genera una preemisión desde el menú "Cuotas clientes".
           </p>
         ) : (
-          <RecibosTable recibos={recibos} />
+          <RecibosTable recibos={recibos} onReload={reload} />
         )}
       </Card>
     </div>
   )
 }
 
-// Tabla común de recibos (también usable desde Cuotas Clientes / Listado)
-function RecibosTable({ recibos, mostrarCliente = false }) {
+// Tabla común de recibos (también usable desde Cuotas Clientes / Listado).
+// onReload: callback opcional para refrescar la lista tras marcar pagado u otra
+// acción mutativa. Si no se pasa, el botón Pagar pide reload manual.
+function RecibosTable({ recibos, mostrarCliente = false, onReload = null }) {
   return (
-    <div style={{ width: '100%' }}>
+    // Scroll horizontal por si la tabla no entra en el card — evita que la
+    // columna de acciones se desborde o se apile a múltiples líneas en
+    // pantallas estrechas.
+    <div style={{ width: '100%', overflowX: 'auto' }}>
       <table style={{
-        width: '100%', borderCollapse: 'collapse', fontSize: 12,
+        width: '100%', minWidth: 1100, borderCollapse: 'collapse', fontSize: 12,
         fontFamily: 'inherit',
       }}>
         <thead>
@@ -2047,11 +2660,14 @@ function RecibosTable({ recibos, mostrarCliente = false }) {
             <Th>Día devolución</Th>
             <Th>Estado</Th>
             <Th>Notas</Th>
-            <Th></Th>
+            <Th>Acciones</Th>
           </tr>
         </thead>
         <tbody>
-          {recibos.map(r => <ReciboRow key={r.id} r={r} mostrarCliente={mostrarCliente} />)}
+          {recibos.map(r => (
+            <ReciboRow key={r.id} r={r} mostrarCliente={mostrarCliente}
+                       onReload={onReload} />
+          ))}
         </tbody>
       </table>
     </div>
@@ -2063,6 +2679,54 @@ function Th({ children }) {
     padding: '8px 8px', fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
     textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap',
   }}>{children}</th>
+}
+
+
+/**
+ * Celda compacta para la columna "Notas" de la tabla de recibos.
+ *
+ * Por defecto cada recibo queda en UN renglón: la nota se trunca con
+ * ellipsis y el tooltip nativo (`title`) muestra el texto completo al pasar
+ * el ratón.  Al hacer click la celda se expande inline para esa fila sola
+ * (las demás siguen en una línea).  Volver a hacer click la colapsa.
+ *
+ * Limpia HTML simple (Odoo guarda `narration` con `<p>…</p>`).
+ */
+function NotaCell({ texto }) {
+  const [expanded, setExpanded] = useState(false)
+  const raw = (texto || '').trim()
+  if (!raw) {
+    return <Td color="var(--text-3)" style={{ fontSize: 11 }}>—</Td>
+  }
+  const clean = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const btnStyle = {
+    background: 'none', border: 'none', padding: 0, margin: 0,
+    cursor: 'pointer', textAlign: 'left', color: 'inherit',
+    font: 'inherit', width: '100%',
+    display: 'inline-flex', gap: 6, alignItems: 'flex-start',
+  }
+  if (expanded) {
+    return (
+      <Td wrap color="var(--text-3)" style={{ fontSize: 11, maxWidth: 320 }}>
+        <button type="button" onClick={() => setExpanded(false)}
+                title="Click para contraer" style={btnStyle}>
+          <StickyNote size={11} style={{ flexShrink: 0, color: 'var(--blue)', marginTop: 2 }} aria-hidden="true" />
+          <span style={{ wordBreak: 'break-word' }}>{clean}</span>
+        </button>
+      </Td>
+    )
+  }
+  return (
+    <Td color="var(--text-3)" title={clean}
+        style={{ fontSize: 11, maxWidth: 220 }}>
+      <button type="button" onClick={() => setExpanded(true)}
+              title={clean} style={btnStyle}>
+        <StickyNote size={11} style={{ flexShrink: 0, color: 'var(--blue)' }} aria-hidden="true" />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis',
+                       whiteSpace: 'nowrap', flex: 1 }}>{clean}</span>
+      </button>
+    </Td>
+  )
 }
 
 function Td({ children, mono, color, style, wrap, title }) {
@@ -2080,7 +2744,7 @@ function Td({ children, mono, color, style, wrap, title }) {
   }}>{children}</td>
 }
 
-function ReciboRow({ r, mostrarCliente }) {
+function ReciboRow({ r, mostrarCliente, onReload }) {
   const formaPago = r.forma_pago || '—'
   const formaPagoLabels = {
     sepa: 'SEPA', tarjeta_token: 'Tarjeta', enlace_pago: 'Enlace/Caja', tokenizacion: 'Tarjeta',
@@ -2099,6 +2763,9 @@ function ReciboRow({ r, mostrarCliente }) {
   }
   const isPosted = r.state === 'posted'
   const isImpagado = isPosted && (r.payment_state === 'not_paid' || r.payment_state === 'reversed')
+  // Marca "BD" — recibo aún no facturado a Odoo (preemisión, migración GP,
+  // emisión manual). Lo enviamos desde el backend en _source='bd'.
+  const isBd = r._source === 'bd'
 
   // Día cobro: si es SEPA y está posted = invoice_date_due; si paid = invoice_date_due tb (asumimos cobro al vencimiento)
   // Día devolución: solo si payment_state == 'reversed' (no tenemos campo R-transaction aún)
@@ -2110,7 +2777,18 @@ function ReciboRow({ r, mostrarCliente }) {
     <tr>
       {mostrarCliente && <Td title={r.partner_id?.name || `#${r.partner_id?.id}`}>{r.partner_id?.name || `#${r.partner_id?.id}`}</Td>}
       <Td mono>{r.mes_ref || '—'}</Td>
-      <Td>{r.cuota_codigo || '—'}</Td>
+      <Td>
+        {r.cuota_codigo || '—'}
+        {isBd && (
+          <span title="Recibo aún no facturado a Odoo (se facturará en el cierre trimestral)"
+                style={{ marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 4,
+                         background: 'rgba(91,156,246,0.12)', color: 'var(--blue)',
+                         fontWeight: 700, letterSpacing: '0.04em',
+                         verticalAlign: 'middle' }}>
+            BD
+          </span>
+        )}
+      </Td>
       <Td>{({ mensual:'Mensual', bimensual:'Bimensual', trimestral:'Trimestral', semestral:'Semestral', anual:'Anual' })[r.periodicidad] || r.periodicidad || '—'}</Td>
       <Td>
         <span style={{
@@ -2139,21 +2817,120 @@ function ReciboRow({ r, mostrarCliente }) {
           </Badge>
         )}
       </Td>
-      <Td wrap color="var(--text-3)" title={r.narration || ''} style={{ fontSize: 11 }}>
-        {r.narration || '—'}
-      </Td>
-      <Td>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      <NotaCell texto={r.narration} />
+      <Td style={{ whiteSpace: 'nowrap' }}>
+        <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           {isImpagado && (
-            <Btn variant="secondary" size="sm"
-                 onClick={() => alert('Enlace de pago: pendiente de TPV virtual real')}>
-              Pagar
-            </Btn>
+            <PagarBtn r={r} onReload={onReload} />
+          )}
+          {isPosted && r.payment_state === 'paid' && isBd && (
+            <DevolverReciboBtn r={r} onReload={onReload} />
           )}
           {isPosted && <EnviarFacturaBtn invoiceId={r.id} />}
         </div>
       </Td>
     </tr>
+  )
+}
+
+
+/** Botón "Pagar" — marca un recibo BD impagado como pagado.
+ *
+ *  Para recibos de BD (`_source='bd'`, id_bd numérico) llama a
+ *  POST /api/recibos/<id>/marcar-pagado con método de pago opcional.
+ *
+ *  Para recibos Odoo (account.move): no implementado todavía; el cobro de
+ *  facturas Odoo va por el wizard trimestral, no por esta ficha. Mostramos
+ *  mensaje informativo.
+ */
+function PagarBtn({ r, onReload }) {
+  const { user } = useAuth()
+  const toast = useToast()
+  const [open, setOpen] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [metodo, setMetodo] = useState(r.forma_pago || 'caja_efectivo')
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10))
+
+  const isBd = r._source === 'bd'
+
+  const handleClick = () => {
+    if (!isBd) {
+      toast.error('Este recibo está en Odoo. Cóbralo desde Facturación trimestral.')
+      return
+    }
+    setOpen(true)
+  }
+
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    try {
+      const { reciboMarcarPagado, getRoundIdentity } = await import('../../utils/configApi')
+      await reciboMarcarPagado(getRoundIdentity(user), r.id_bd,
+                               { metodo, fecha })
+      toast.success('Recibo marcado como pagado')
+      setOpen(false)
+      onReload && onReload()
+    } catch (e) {
+      toast.error(`Error: ${e.message}`)
+    }
+    setSubmitting(false)
+  }
+
+  return (
+    <>
+      <Btn variant="secondary" size="sm" onClick={handleClick}>
+        Pagar
+      </Btn>
+      {open && (
+        <div role="dialog" aria-modal="true"
+             style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+             onClick={() => !submitting && setOpen(false)}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: 'var(--bg-1)', borderRadius: 12, padding: 20,
+                        maxWidth: 380, width: '90%', border: '1px solid var(--line)' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Marcar como pagado</h3>
+            <div style={{ padding: 10, background: 'var(--bg-2)', borderRadius: 8,
+                          fontSize: 12, marginBottom: 14 }}>
+              <div><strong>{r.partner_id?.name || '—'}</strong></div>
+              <div style={{ color: 'var(--text-3)' }}>
+                {r.cuota_codigo || ''} · {r.mes_ref || ''} · {Number(r.amount_total || 0).toFixed(2)} €
+              </div>
+            </div>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>
+              Método de pago
+            </label>
+            <select value={metodo} onChange={e => setMetodo(e.target.value)}
+                    style={{ width: '100%', padding: 8, borderRadius: 8, marginBottom: 12,
+                             background: 'var(--bg-2)', border: '1px solid var(--line)',
+                             color: 'var(--text-0)', fontSize: 13 }}>
+              <option value="sepa">SEPA</option>
+              <option value="tarjeta_tok">Tarjeta tokenizada</option>
+              <option value="caja_efectivo">Efectivo / caja</option>
+              <option value="caja_tpv_fisico">TPV físico (caja)</option>
+              <option value="caja_tpv_virtual">TPV virtual</option>
+              <option value="enlace_pago">Enlace de pago</option>
+            </select>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>
+              Fecha de cobro
+            </label>
+            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)}
+                   style={{ width: '100%', padding: 8, borderRadius: 8, marginBottom: 16,
+                            background: 'var(--bg-2)', border: '1px solid var(--line)',
+                            color: 'var(--text-0)', fontSize: 13 }} />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Btn variant="secondary" onClick={() => setOpen(false)} disabled={submitting}>
+                Cancelar
+              </Btn>
+              <Btn variant="primary" onClick={handleSubmit} disabled={submitting}>
+                {submitting ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                {' '}Confirmar pago
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -2865,5 +3642,117 @@ function ErrorCard({ msg }) {
     <Card style={{ padding: 48, textAlign: 'center' }}>
       <p role="alert" style={{ fontSize: 14, color: 'var(--red)' }}>{msg}</p>
     </Card>
+  )
+}
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Badge GRANDE de estado del cliente con fecha de alta/baja incrustada.
+// Es lo primero que debe ver el operador al entrar en la ficha.
+// ──────────────────────────────────────────────────────────────────────────
+function BigStatusBadge({ cliente, bajaPendiente, fechas }) {
+  const fmt = (s) => {
+    if (!s) return null
+    try { return new Date(s).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }) }
+    catch { return null }
+  }
+  // 3 estados:
+  //  1) Inactivo en NF → rojo "Baja DD/MM/YYYY"
+  //  2) Baja programada pendiente → ámbar "Baja prog. DD/MM/YYYY"
+  //  3) Activo → verde "Activo desde DD/MM/YYYY"
+  let bg, borderC, fg, icon, label, fechaTxt
+  if (cliente.enabled === false) {
+    bg = 'rgba(248,113,133,0.10)'
+    borderC = 'rgba(248,113,133,0.4)'
+    fg = 'var(--red, #f87185)'
+    icon = <Archive size={16} aria-hidden="true" />
+    label = 'INACTIVO'
+    fechaTxt = fechas?.fecha_inactivo
+      ? `desde ${fmt(fechas.fecha_inactivo)}`
+      : (cliente.motivoArchivado ? `(${cliente.motivoArchivado})` : '')
+  } else if (bajaPendiente) {
+    bg = 'rgba(251,191,36,0.10)'
+    borderC = 'rgba(251,191,36,0.45)'
+    fg = 'var(--amber, #d97706)'
+    icon = <Clock size={16} aria-hidden="true" />
+    label = 'BAJA PROGRAMADA'
+    fechaTxt = `el ${new Date(bajaPendiente.fecha_baja).toLocaleDateString('es-ES')}`
+  } else {
+    bg = 'rgba(45,212,168,0.10)'
+    borderC = 'rgba(45,212,168,0.4)'
+    fg = 'var(--green, #2DD4A8)'
+    icon = <CheckCircle2 size={16} aria-hidden="true" />
+    label = 'ACTIVO'
+    fechaTxt = fechas?.fecha_alta_actual
+      ? `desde ${fmt(fechas.fecha_alta_actual)}`
+      : fechas?.fecha_primera_alta
+        ? `desde ${fmt(fechas.fecha_primera_alta)}`
+        : ''
+  }
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 10,
+      padding: '8px 16px', borderRadius: 14,
+      background: bg, border: `1.5px solid ${borderC}`,
+      color: fg, fontWeight: 700, fontSize: 14, fontFamily: 'Outfit',
+    }}>
+      {icon}
+      <span>{label}</span>
+      {fechaTxt && (
+        <span style={{ fontSize: 12, fontWeight: 500, opacity: 0.85,
+                       borderLeft: `1px solid ${borderC}`, paddingLeft: 10 }}>
+          {fechaTxt}
+        </span>
+      )}
+    </div>
+  )
+}
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Banner rojo de recibos impagados — aparece justo después del hero card
+// para que el operador NO se le pase. Solo si hay 1+ recibos en estado
+// impagado o devuelto. Click → tab Recibos.
+// ──────────────────────────────────────────────────────────────────────────
+function ImpagadoBanner({ recibos, onClick }) {
+  if (!recibos || recibos.length === 0) return null
+  const total = recibos.reduce((s, r) => s + Number(r.importe_total || 0), 0)
+  const n = recibos.length
+  return (
+    <button onClick={onClick}
+            aria-label={`${n} recibo${n !== 1 ? 's' : ''} impagado${n !== 1 ? 's' : ''} — ver detalle`}
+            style={{
+              width: '100%', marginBottom: 24, padding: '16px 20px',
+              borderRadius: 14, background: 'rgba(248,113,133,0.12)',
+              border: '1.5px solid rgba(248,113,133,0.5)',
+              display: 'flex', alignItems: 'center', gap: 14,
+              cursor: 'pointer', textAlign: 'left',
+              fontFamily: 'inherit',
+            }}>
+      <span style={{
+        width: 40, height: 40, borderRadius: '50%',
+        background: 'rgba(248,113,133,0.25)',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        color: 'var(--red, #f87185)', flexShrink: 0,
+      }}>
+        <AlertCircle size={20} aria-hidden="true" />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 700,
+                      color: 'var(--red, #f87185)' }}>
+          {n === 1 ? '1 recibo impagado' : `${n} recibos impagados`}
+          {' · '}{total.toFixed(2)} €
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
+          {recibos.slice(0, 3).map(r =>
+            `${r.cuota_codigo || 'Recibo'} ${r.periodo || ''} (${r.estado})`
+          ).join(' · ')}
+          {recibos.length > 3 && ` · y ${recibos.length - 3} más…`}
+        </div>
+      </div>
+      <span style={{ fontSize: 12, color: 'var(--red, #f87185)', fontWeight: 600 }}>
+        Ver Recibos →
+      </span>
+    </button>
   )
 }

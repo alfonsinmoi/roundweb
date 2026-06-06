@@ -14,7 +14,7 @@
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission, require_seccion
 from ..db import get_conn
 from .. import notif_catalog as cat
 from ..notif_sender import enviar_notificacion, marcar_leida
@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 # ── Catálogo (público con auth) ────────────────────────────────────────────
 @bp.route('/catalog', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def catalog():
     return jsonify({
         'ok': True,
@@ -37,6 +38,7 @@ def catalog():
 # ── Listar envíos ──────────────────────────────────────────────────────────
 @bp.route('/envios', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def list_envios():
     """Lista envíos del manager (filtra por trainer si está impersonando).
 
@@ -100,6 +102,7 @@ def list_envios():
 # ── Crear envío manual ─────────────────────────────────────────────────────
 @bp.route('/envios', methods=['POST'])
 @auth_required
+@require_permission('crm.clientes_actuales.notificar_masivo')
 def create_envio():
     """Crear envío manual.
     Body:
@@ -140,6 +143,7 @@ def create_envio():
 # ── Detalle envío + destinatarios ──────────────────────────────────────────
 @bp.route('/envios/<int:envio_id>', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def get_envio(envio_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -169,6 +173,7 @@ def get_envio(envio_id):
 # ── Cancelar envío programado ──────────────────────────────────────────────
 @bp.route('/envios/<int:envio_id>', methods=['DELETE'])
 @auth_required
+@require_permission('crm.clientes_actuales.notificar_masivo')
 def cancel_envio(envio_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -192,6 +197,7 @@ def cancel_envio(envio_id):
 # ── Notificaciones de un cliente (vista perfil + app) ──────────────────────
 @bp.route('/cliente/<id_noofit>', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def list_por_cliente(id_noofit):
     """Devuelve los envíos que recibió ese cliente, joineado con metadata."""
     try:
@@ -234,6 +240,7 @@ def list_por_cliente(id_noofit):
 # ── Configuración por (manager,trainer) ────────────────────────────────────
 @bp.route('/config', methods=['GET'])
 @auth_required
+@require_seccion('crm.clientes_actuales')
 def get_config():
     """Devuelve la config del trainer actual (o manager-wide si no impersona).
     Si no existe, devuelve defaults sin crear fila aún."""
@@ -273,6 +280,7 @@ def get_config():
 
 @bp.route('/config', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.notificaciones.editar')
 def put_config():
     try:
         d = request.get_json() or {}
@@ -285,6 +293,21 @@ def put_config():
         plantillas = d.get('plantillas') or {}
         if not isinstance(plantillas, dict):
             return jsonify({'ok': False, 'error': 'plantillas_invalido'}), 400
+
+        # POLÍTICA (mayo 2026): por DEFECTO la config se guarda manager-wide
+        # (`id_trainer = NULL`) para que aplique a todos los centros del
+        # manager. Solo se crea override per-trainer si el body explicita
+        # `scope='trainer'` (+ opcional `id_trainer`). El cron de notif y el
+        # sender ya tienen fallback trainer → manager → defaults, así que el
+        # override per-trainer sigue funcionando si se pide explícitamente.
+        body_scope = (d.get('scope') or '').strip().lower()
+        if body_scope == 'trainer':
+            target_trainer = (d.get('id_trainer') or '').strip() or g.id_trainer
+            if not target_trainer:
+                return jsonify({'ok': False,
+                                'error': 'scope=trainer requiere id_trainer'}), 400
+        else:
+            target_trainer = None  # manager-wide
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO notif_config (
@@ -308,7 +331,7 @@ def put_config():
                     plantillas = EXCLUDED.plantillas
                 RETURNING *
             """, (
-                g.id_manager, g.id_trainer or None,
+                g.id_manager, target_trainer,
                 dia,
                 bool(d.get('auto_impago_efectivo', True)),
                 bool(d.get('auto_devolucion', True)),

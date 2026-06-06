@@ -227,6 +227,16 @@ def crear_lead_con_reserva():
     if d.get('website') or d.get('url'):
         return jsonify({'ok': True, 'skipped': True}), 200
 
+    # El form builder usa /api/crm/form/<id> con su propio manager; este
+    # endpoint legacy (form WP roundtrainingcenter) sigue mono-manager.
+    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17677')
+    return crear_reserva_core(id_manager, d)
+
+
+def crear_reserva_core(id_manager, d):
+    """Núcleo de creación de lead + reserva de slot de prueba, multi-tenant.
+    Reutilizado por el form WP legacy y por el form builder embebible. Recibe
+    el manager destino explícito y el dict plano `d` (ya sin honeypot)."""
     nombre = (d.get('nombre') or d.get('name') or '').strip()
     apellidos = (d.get('apellidos') or d.get('surname') or '').strip()
     email = (d.get('email') or '').strip().lower()
@@ -248,7 +258,6 @@ def crear_lead_con_reserva():
     if not tipo_doc:
         return jsonify({'ok': False, 'error': f'documento_{doc_norm}'}), 400
 
-    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17677')
     centro = buscar_centro(id_manager, slug=centro_slug)
     if not centro:
         return jsonify({'ok': False, 'error': 'centro_no_encontrado'}), 404

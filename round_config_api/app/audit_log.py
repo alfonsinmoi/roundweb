@@ -41,11 +41,27 @@ def actor_from_request() -> dict:
     if auth_header.startswith('Bearer '):
         claims = decode_jwt(auth_header[7:].strip())
         if claims and claims.get('kind') == 'usuario_web':
+            uid = int(claims.get('sub', 0)) or None
+            email = None
+            label = None
+            # Resolver persona física desde BD para que el log diga QUIÉN
+            # (y no un usuario_web anónimo) aunque el endpoint no use
+            # @usuario_web_required (p.ej. los gated por X-Round-Token).
+            if uid:
+                try:
+                    with get_conn() as conn, conn.cursor() as cur:
+                        cur.execute("SELECT email, nombre, apellidos FROM usuario_web WHERE id=%s", (uid,))
+                        r = cur.fetchone()
+                    if r:
+                        email = r.get('email')
+                        label = f"{r.get('nombre','') or ''} {r.get('apellidos','') or ''}".strip() or email
+                except Exception:
+                    pass
             return {
                 'kind': 'usuario_web',
-                'id': int(claims.get('sub', 0)) or None,
-                'email': None,
-                'label': None,
+                'id': uid,
+                'email': email,
+                'label': label,
                 'id_manager': claims.get('mgr'),
                 'id_trainer': claims.get('trn'),
             }

@@ -42,7 +42,15 @@ Para cubrir esos casos → **Fase 2**: Backblaze B2 EU. Ver `BACKBLAZE_SETUP.md`
 | `/etc/nginx/sites-enabled` | Configuración nginx vhosts | Reconstruible pero tedioso |
 | `/etc/systemd/system` | Services + timers Round | Reconstruible pero tedioso |
 | `/etc/letsencrypt` | Certificados SSL emitidos | Re-emitible con certbot |
-| `/var/www/round` | Frontend bundle compilado | Reconstruible con `npm run build` |
+| `/var/www/round/index.html`, `/var/www/round/assets/` | Frontend bundle compilado | Reconstruible con `npm run build` |
+| `/var/www/round/uploads/` | **PDFs facturas proveedor TPV + imágenes producto** | **NO (datos únicos)** — Sprint 6 audit 2026-06 |
+
+> **Aviso importante** (audit Sprint 6, junio 2026): `/var/www/round/uploads/`
+> está dentro del backup `/var/www/round` pero el doc decía "reconstruible
+> con npm run build" — solo aplica a `index.html` y `assets/`. Los uploads
+> POS (PDFs adjuntos a `pos_factura_proveedor` y imágenes/vídeos de
+> `pos_producto.imagen_url|video_url`) NO se reconstruyen. Si excluyes
+> `/var/www/round` del backup se pierden TPV adjuntos.
 
 Lo que **no se copia** (excluido en el script):
 - `node_modules`, `.git`, `venv`, `__pycache__`, `*/cache/*`, `*/tmp/*`, `/var/log/*` — todo reconstruible o efímero.

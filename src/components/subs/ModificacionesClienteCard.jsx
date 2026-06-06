@@ -12,11 +12,29 @@ import {
   cuotasList,
 } from '../../utils/configApi'
 
-const TIPOS_MOD = [
-  { id: 'descuento',           label: 'Descuento puntual',  signo: '−' },
-  { id: 'cargo_extra',         label: 'Cargo extra',        signo: '+' },
-  { id: 'precio_alternativo',  label: 'Precio alternativo', signo: '=' },
+// Tipos para el SELECTOR (formulario nuevo). Internamente sigue habiendo
+// 3 valores válidos en BD (descuento/cargo_extra/precio_alternativo) por
+// compat, pero la math se rige por el SIGNO de `valor`:
+//   - positivo → suma al recibo
+//   - negativo → resta del recibo
+// `descuento` queda como histórico (ya no se ofrece nuevo).
+const TIPOS_MOD_FORM = [
+  { id: 'cargo_extra',         label: 'Ajuste (suma/resta)' },
+  { id: 'precio_alternativo',  label: 'Precio alternativo (sustituye precio)' },
 ]
+
+// Para mostrar el signo de una modificación existente:
+//   precio_alternativo → '='
+//   resto → '+' si valor >= 0, '−' si valor < 0
+function signoMod(m) {
+  if (m.tipo === 'precio_alternativo') return '='
+  return Number(m.valor) >= 0 ? '+' : '−'
+}
+function labelTipo(m) {
+  if (m.tipo === 'precio_alternativo') return 'Precio alternativo'
+  if (m.tipo === 'descuento') return 'Descuento (histórico)'
+  return Number(m.valor) >= 0 ? 'Cargo extra' : 'Descuento'
+}
 const ESTADOS = [
   { id: 'activa',    label: 'Pendiente', color: 'amber' },
   { id: 'aplicada',  label: 'Aplicada',  color: 'green' },
@@ -65,7 +83,7 @@ export default function ModificacionesClienteCard({ cliente }) {
 
   function startNew() {
     setEditing({
-      tipo: 'descuento',
+      tipo: 'cargo_extra',  // por defecto: ajuste (signo de `valor` manda)
       valor: '',
       cuota_id: '',
       fecha_desde: todayISO(),
@@ -157,10 +175,12 @@ export default function ModificacionesClienteCard({ cliente }) {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {items.map(m => {
-                const tipo = TIPOS_MOD.find(t => t.id === m.tipo) || TIPOS_MOD[0]
                 const est  = ESTADOS.find(e => e.id === m.estado) || ESTADOS[0]
                 const cuota = cuotas.find(c => c.id === m.cuota_id)
                 const editable = m.estado === 'activa'
+                const sig = signoMod(m)
+                const absVal = Math.abs(Number(m.valor) || 0).toFixed(2)
+                const tipoLabel = labelTipo(m)
                 return (
                   <div key={m.id} style={{
                     display: 'flex', alignItems: 'center', gap: 8,
@@ -172,13 +192,13 @@ export default function ModificacionesClienteCard({ cliente }) {
                     <span style={{
                       fontSize: 18, fontWeight: 700, lineHeight: 1,
                       width: 18, textAlign: 'center',
-                      color: m.tipo === 'descuento' ? 'var(--green)'
-                           : m.tipo === 'cargo_extra' ? 'var(--red)'
+                      color: sig === '+' ? 'var(--red)'
+                           : sig === '−' ? 'var(--green)'
                            : 'var(--blue)',
-                    }}>{tipo.signo}</span>
+                    }}>{sig}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)', margin: 0 }}>
-                        {tipo.label}: {m.valor}€
+                        {tipoLabel}: {sig === '−' ? '−' : sig === '+' ? '+' : ''}{absVal}€
                         {cuota && <span style={{ color: 'var(--text-3)', fontWeight: 400, marginLeft: 6 }}>· {cuota.codigo}</span>}
                       </p>
                       {m.razon && (
@@ -230,14 +250,20 @@ function ModForm({ value, onChange, cuotas, onCancel, onSave }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
         <label style={lbl}>Tipo
           <select value={value.tipo} onChange={e => set('tipo', e.target.value)} style={inputStyle}>
-            {TIPOS_MOD.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            {TIPOS_MOD_FORM.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
         </label>
         <label style={lbl}>Valor (€)
           <input type="number" step="0.01" value={value.valor}
-                 onChange={e => set('valor', e.target.value)} style={inputStyle} />
+                 onChange={e => set('valor', e.target.value)} style={inputStyle}
+                 placeholder={value.tipo === 'precio_alternativo' ? '20.00' : '+10.00 o −5.00'} />
         </label>
       </div>
+      <p style={{ fontSize: 11, color: 'var(--text-3)', margin: 0, lineHeight: 1.4 }}>
+        {value.tipo === 'precio_alternativo'
+          ? <>El recibo de la cuota afectada saldrá por exactamente este importe (sustituye el precio base).</>
+          : <>Pon el valor con <strong>signo</strong>: <strong style={{ color: 'var(--red)' }}>positivo (+10)</strong> suma al recibo, <strong style={{ color: 'var(--green)' }}>negativo (−10)</strong> resta.</>}
+      </p>
       <label style={lbl}>Cuota afectada (opcional)
         <select value={value.cuota_id || ''} onChange={e => set('cuota_id', e.target.value)} style={inputStyle}>
           <option value="">— Cualquiera —</option>

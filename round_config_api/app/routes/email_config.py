@@ -3,9 +3,10 @@ Solo el manager puede gestionar (no impersonando trainer).
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..email_sender import test_proveedor
+from ..audit_log import log_action, actor_from_request
 
 bp = Blueprint('email_config', __name__)
 log = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def get():
 @bp.route('', methods=['PUT'])
 @bp.route('/', methods=['PUT'])
 @auth_required
+@require_permission('configuracion.email.editar')
 def upsert():
     err = _manager_only()
     if err: return err
@@ -150,6 +152,18 @@ def upsert():
                       smtp_pass, smtp_tls, d.get('from_name'), from_email,
                       d.get('reply_to'), bool(d.get('active', True)), d.get('notas')))
             row = cur.fetchone()
+        # Audit: QUIÉN y QUÉ campos, nunca los secretos (api_key / smtp_pass).
+        campos = [k for k in ('proveedor', 'api_key', 'smtp_host', 'smtp_port',
+                              'smtp_user', 'smtp_pass', 'smtp_tls', 'from_name',
+                              'from_email', 'reply_to', 'active', 'notas')
+                  if d.get(k) is not None]
+        log_action(actor_from_request(), 'email_proveedor',
+                   'update' if existing else 'create',
+                   entidad_id=(row.get('id') if row else None),
+                   resumen=f'Proveedor email {proveedor} configurado',
+                   cambios={'campos_modificados': campos,
+                            'api_key_actualizada': bool((d.get('api_key') or '').strip()),
+                            'smtp_pass_actualizada': bool((d.get('smtp_pass') or '').strip())})
         return jsonify({'ok': True, 'row': _safe_row(row)})
     except Exception as e:
         log.exception('email_config upsert')
@@ -159,6 +173,7 @@ def upsert():
 @bp.route('', methods=['DELETE'])
 @bp.route('/', methods=['DELETE'])
 @auth_required
+@require_permission('configuracion.email.editar')
 def delete_trainer_config():
     """Borra la config específica de un trainer (vuelve a usar fallback del manager)."""
     err = _manager_only()
@@ -171,6 +186,9 @@ def delete_trainer_config():
             cur.execute("""DELETE FROM email_proveedor
                             WHERE id_manager=%s AND id_trainer=%s""",
                         (g.id_manager, id_trainer))
+        log_action(actor_from_request(), 'email_proveedor', 'delete',
+                   entidad_id=id_trainer,
+                   resumen='Config email de trainer eliminada')
         return jsonify({'ok': True})
     except Exception as e:
         log.exception('email_config delete')
@@ -179,6 +197,7 @@ def delete_trainer_config():
 
 @bp.route('/test', methods=['POST'])
 @auth_required
+@require_permission('configuracion.email.editar')
 def test():
     err = _manager_only()
     if err: return err

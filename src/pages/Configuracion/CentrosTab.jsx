@@ -36,7 +36,7 @@ export default function CentrosTab({ identity: identityProp }) {
   }
   useEffect(() => { load() }, [identity.managerId])
 
-  if (isImpersonating) {
+  if (isImpersonating || user?.kind === 'usuario_web') {
     return (
       <Card style={{ padding: 32, textAlign: 'center' }}>
         <AlertCircle size={32} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }} />
@@ -124,6 +124,9 @@ export default function CentrosTab({ identity: identityProp }) {
                          direccion: c?.direccion || '',
                          cif: c?.cif || '',
                          razon_social: c?.razon_social || '',
+                         iban_cobro: c?.iban_cobro || '',
+                         bic: c?.bic || '',
+                         sepa_creditor_id: c?.sepa_creditor_id || '',
                          activo: c?.activo ?? true,
                          recibe_round_robin: c?.recibe_round_robin ?? true,
                          notas: c?.notas || '',
@@ -265,6 +268,57 @@ function CentroForm({ value, onChange, identity, trainerId, onSave, onDelete }) 
         <input value={value.notas} onChange={e => set({ notas: e.target.value })}
                style={inputStyle} />
       </Field>
+
+      {/* ── Datos SEPA empresa: necesarios para generar el fichero pain.008
+            que se sube al banco (cobros domiciliados). Se rellenan UNA vez
+            por centro y se reutilizan cada mes en la remesa SEPA. ── */}
+      <div style={{
+        gridColumn: '1 / -1',
+        marginTop: 8, padding: 14, borderRadius: 12,
+        background: 'rgba(91,156,246,0.05)',
+        border: '1px solid rgba(91,156,246,0.18)',
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--blue)',
+                       marginBottom: 4 }}>
+          🏦 Datos SEPA (cobros domiciliados)
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 12 }}>
+          Datos del centro como <strong>acreedor SEPA</strong>. Necesarios
+          para generar el fichero pain.008 mensual. Se piden una vez y se
+          reutilizan cada remesa.
+        </div>
+        <div style={{ display: 'grid',
+                       gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                       gap: 12 }}>
+          <Field label="IBAN de cobro (cuenta del centro)">
+            <input value={value.iban_cobro || ''}
+                   onChange={e => set({ iban_cobro: e.target.value.toUpperCase().replace(/\s/g, '') })}
+                   placeholder="ES00 0000 0000 0000 0000 0000"
+                   style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+          </Field>
+          <Field label="BIC (opcional)">
+            <input value={value.bic || ''}
+                   onChange={e => set({ bic: e.target.value.toUpperCase().replace(/\s/g, '') })}
+                   placeholder="CAIXESBBXXX"
+                   style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+          </Field>
+          <Field label="Creditor SEPA ID (AEAT)">
+            <input value={value.sepa_creditor_id || ''}
+                   onChange={e => set({ sepa_creditor_id: e.target.value.toUpperCase().replace(/\s/g, '') })}
+                   placeholder="ES50ZZZB12345678"
+                   style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} />
+          </Field>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 8,
+                       lineHeight: 1.6 }}>
+          El <strong>Creditor SEPA ID</strong> es el código único que la AEAT
+          asignó a este CIF para hacer adeudos directos. Formato típico
+          español: <code>ES</code> + 2 dígitos de control + <code>ZZZ</code> +
+          el CIF (ej. <code>ES50ZZZB12345678</code>). Si no lo tienes, pídelo
+          a tu banco o a la AEAT.
+        </div>
+      </div>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', gridColumn: '1 / -1' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-2)' }}>
           <input type="checkbox" checked={!!value.activo}

@@ -13,6 +13,9 @@ import {
   listFormasPagoCliente, createFormaPago, cancelFormaPago,
 } from '../../utils/subscriptionsApi'
 import Modal from '../Modal'
+import IBANInput from '../IBANInput'
+import { validarIBAN } from '../../utils/validators'
+import { useCan } from '../../hooks/useCan'
 
 const PERIODICIDADES = [
   { id: 'mensual', label: 'Mensual' },
@@ -43,6 +46,10 @@ export default function CuotasClienteCard({ cliente }) {
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const toast = useToast()
+  // Gates UI suscripciones del cliente.
+  const canAsignar = useCan('cuotas_clientes.asignar')
+  const canCancelar = useCan('cuotas_clientes.cancelar')
+  const canCambiarFormaPago = useCan('cuotas_clientes.cambiar_forma_pago')
   const [subs, setSubs] = useState([])
   const [cuotas, setCuotas] = useState([])
   const [descuentos, setDescuentos] = useState([])
@@ -54,9 +61,12 @@ export default function CuotasClienteCard({ cliente }) {
   async function reload() {
     setLoading(true)
     try {
+      // Las cuotas son per-trainer: pasamos el idTrainer del cliente para
+      // que el dropdown muestre solo las tarifas de su centro (Round Málaga
+      // Centro vs Round Añoreta, etc.).
       const [s, c, d, fp] = await Promise.all([
         listSubsByCliente(identity, cliente.id),
-        cuotasCatalogo(identity).catch(() => []),
+        cuotasCatalogo(identity, cliente.idTrainer ?? cliente.id_trainer ?? null).catch(() => []),
         descuentosCatalogo(identity).catch(() => []),
         listFormasPagoCliente(identity, cliente.id).catch(() => []),
       ])
@@ -92,9 +102,11 @@ export default function CuotasClienteCard({ cliente }) {
           <strong style={{ fontSize: 12, color: 'var(--text-2)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Cuotas
           </strong>
-          <Btn size="sm" variant="primary" onClick={() => setEditing({ mode: 'create' })}>
-            <Plus size={11} /> Asignar nueva cuota
-          </Btn>
+          {canAsignar && (
+            <Btn size="sm" variant="primary" onClick={() => setEditing({ mode: 'create' })}>
+              <Plus size={11} /> Asignar nueva cuota
+            </Btn>
+          )}
         </div>
 
         {loading ? (
@@ -113,6 +125,7 @@ export default function CuotasClienteCard({ cliente }) {
               const precio = precioCuota(cuota, s.periodicidad)
               return (
                 <SubRow key={s.id} sub={s} cuota={cuota} precio={precio}
+                        canCancelar={canCancelar}
                         onEdit={() => setEditing({ mode: 'replace', sid: s.id, sub: s })}
                         onCancel={async () => {
                           const motivo = window.prompt('Motivo de cancelación (opcional):') || ''
@@ -142,9 +155,11 @@ export default function CuotasClienteCard({ cliente }) {
                             display: 'flex', alignItems: 'center', gap: 6 }}>
             <CreditCard size={12} aria-hidden="true" /> Forma de pago
           </strong>
-          <Btn size="sm" variant="primary" onClick={() => setEditingFP(true)}>
-            <Edit2 size={11} /> Cambiar
-          </Btn>
+          {canCambiarFormaPago && (
+            <Btn size="sm" variant="primary" onClick={() => setEditingFP(true)}>
+              <Edit2 size={11} /> Cambiar
+            </Btn>
+          )}
         </div>
         {(() => {
           const activa = formasPago.find(f => f.estado === 'activa')
@@ -266,7 +281,7 @@ export default function CuotasClienteCard({ cliente }) {
 }
 
 
-function SubRow({ sub, cuota, precio, onEdit, onCancel }) {
+function SubRow({ sub, cuota, precio, onEdit, onCancel, canCancelar = true }) {
   return (
     <div style={{
       padding: '12px 14px', borderRadius: 10,
@@ -297,9 +312,11 @@ function SubRow({ sub, cuota, precio, onEdit, onCancel }) {
       <Btn size="sm" variant="secondary" onClick={onEdit}>
         <Edit2 size={11} /> Editar
       </Btn>
-      <Btn size="sm" variant="secondary" onClick={onCancel}>
-        <XIcon size={11} /> Cancelar
-      </Btn>
+      {canCancelar && (
+        <Btn size="sm" variant="secondary" onClick={onCancel}>
+          <XIcon size={11} /> Cancelar
+        </Btn>
+      )}
     </div>
   )
 }
@@ -311,29 +328,48 @@ function SubEditModal({ identity, cliente, mode, sub, cuotasCatalogo, descuentos
   const [periodicidad, setPeriodicidad] = useState(sub?.periodicidad || 'mensual')
   const [formaPago, setFormaPago] = useState(sub?.forma_pago || 'sepa')
   const [fechaInicio, setFechaInicio] = useState(sub?.fecha_inicio || new Date().toISOString().slice(0, 10))
-  const [descuentoIds, setDescuentoIds] = useState(sub?.descuentos_activos_ids || [])
   const [motivo, setMotivo] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // Datos de la forma de pago (se guardan junto con la cuota)
+  const [iban, setIban] = useState('')
+  const [ibanTitular, setIbanTitular] = useState('')
+  const [bic, setBic] = useState('')
+  const [cardToken, setCardToken] = useState('')
+  const [cardBrand, setCardBrand] = useState('')
+  const [cardLast4, setCardLast4] = useState('')
 
   const cuotaSel = cuotasCatalogo.find(c => c.id === Number(cuotaId))
   const precio = cuotaSel ? Number(cuotaSel[`precio_${periodicidad}`] || 0) : 0
 
   const isEdit = mode === 'replace'
+  const necesitaIban = formaPago === 'sepa'
+  const necesitaToken = formaPago === 'tarjeta_token'
 
   const handleConfirm = async () => {
     if (!cuotaId) { toast.error('Selecciona una cuota'); return }
     setSubmitting(true)
     try {
+      // 1) Registrar/actualizar la forma de pago (IBAN para SEPA, token para
+      //    tarjeta) ANTES de la cuota, para que el cobro tenga los datos.
+      if (necesitaIban || necesitaToken) {
+        await createFormaPago(identity, {
+          cliente_idnoofit: cliente.id,
+          forma_pago: formaPago,
+          ...(necesitaIban ? { iban, iban_titular: ibanTitular || null, bic: bic || null } : {}),
+          ...(necesitaToken ? { card_token: cardToken, card_brand: cardBrand || null, card_last4: cardLast4 || null } : {}),
+          motivo_cambio: 'Alta forma de pago al asignar cuota',
+        })
+      }
+      // 2) Crear / reemplazar la suscripción
       const payload = {
         cliente_idnoofit: cliente.id,
         cuota_id: Number(cuotaId),
         periodicidad, forma_pago: formaPago,
         fecha_inicio: fechaInicio,
-        descuento_ids: descuentoIds.map(Number),
       }
       if (isEdit) {
-        payload.motivo = motivo || 'Cambio de cuota / periodicidad / descuento'
+        payload.motivo = motivo || 'Cambio de cuota / periodicidad'
         await replaceSub(identity, sub.id, payload)
         toast.success('Cuota reemplazada (la antigua queda cancelada en histórico)')
       } else {
@@ -374,20 +410,47 @@ function SubEditModal({ identity, cliente, mode, sub, cuotasCatalogo, descuentos
             <Field2 label="Fecha inicio">
               <input type="date" value={fechaInicio} onChange={e => setFechaInicio(e.target.value)} style={inputStyle} />
             </Field2>
-            {descuentosCatalogo.length > 0 && (
-              <Field2 label="Descuento">
-                <select value={descuentoIds[0] || ''}
-                        onChange={e => setDescuentoIds(e.target.value ? [Number(e.target.value)] : [])}
-                        style={inputStyle}>
-                  <option value="">(ninguno)</option>
-                  {descuentosCatalogo.map(d => (
-                    <option key={d.id} value={d.id}>
-                      {d.codigo} — {d.descripcion} ({d.tipo === 'porcentaje' ? d.valor + '%' : d.valor + ' €'})
-                    </option>
-                  ))}
-                </select>
-              </Field2>
+
+            {/* SEPA → IBAN del cliente */}
+            {necesitaIban && (
+              <>
+                <Field2 label="IBAN *">
+                  <IBANInput value={iban} onChange={setIban} required />
+                </Field2>
+                <Field2 label="Titular (si distinto del cliente)">
+                  <input value={ibanTitular} onChange={e => setIbanTitular(e.target.value)} style={inputStyle} />
+                </Field2>
+                <Field2 label="BIC (opcional)">
+                  <input value={bic} onChange={e => setBic(e.target.value.toUpperCase())} style={inputStyle} />
+                </Field2>
+              </>
             )}
+
+            {/* Tarjeta tokenizada → datos de tokenización */}
+            {necesitaToken && (
+              <>
+                <div style={{ padding: '10px 12px', marginBottom: 14, borderRadius: 10,
+                              background: 'var(--blue-bg)', border: '1px solid var(--blue-border)',
+                              fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+                  Introduce el <strong>token</strong> que devuelve la pasarela tras tokenizar
+                  la tarjeta del cliente. El token sustituye al número de tarjeta para los
+                  cobros recurrentes (no se guarda la tarjeta completa).
+                </div>
+                <Field2 label="Token de tarjeta *">
+                  <input value={cardToken} onChange={e => setCardToken(e.target.value)} style={inputStyle}
+                         placeholder="Token devuelto por la pasarela" />
+                </Field2>
+                <Field2 label="Marca (Visa / MasterCard)">
+                  <input value={cardBrand} onChange={e => setCardBrand(e.target.value)} style={inputStyle} />
+                </Field2>
+                <Field2 label="Últimos 4 dígitos">
+                  <input value={cardLast4} maxLength={4}
+                         onChange={e => setCardLast4(e.target.value.replace(/\D/g, ''))}
+                         style={inputStyle} />
+                </Field2>
+              </>
+            )}
+
             {isEdit && (
               <Field2 label="Motivo del cambio (opcional)">
                 <input value={motivo} onChange={e => setMotivo(e.target.value)} style={inputStyle}
@@ -416,12 +479,12 @@ function SubEditModal({ identity, cliente, mode, sub, cuotasCatalogo, descuentos
                 <ul>
                   <li>Cuota: <strong>{cuotaSel?.codigo} — {cuotaSel?.descripcion}</strong></li>
                   <li>Periodicidad: <strong>{periodicidad}</strong></li>
-                  <li>Forma de pago: <strong>{formaPago}</strong></li>
+                  <li>Forma de pago: <strong>{labelFormaPago(formaPago)}</strong>
+                    {necesitaIban && iban && <> (IBAN: <code>{iban}</code>)</>}
+                    {necesitaToken && cardLast4 && <> (•••• {cardLast4})</>}
+                  </li>
                   <li>Inicio: <strong>{fechaInicio}</strong></li>
                   <li>Importe: <strong>{precio.toFixed(2)} €</strong> por {periodicidad}</li>
-                  {descuentoIds.length > 0 && (
-                    <li>Descuento: <strong>{descuentosCatalogo.find(d => d.id === descuentoIds[0])?.codigo}</strong></li>
-                  )}
                 </ul>
               </li>
               {isEdit && motivo && <li>Motivo: <em>{motivo}</em></li>}
@@ -447,6 +510,13 @@ function SubEditModal({ identity, cliente, mode, sub, cuotasCatalogo, descuentos
             <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
             <Btn variant="primary" onClick={() => {
               if (!cuotaId) { toast.error('Selecciona una cuota'); return }
+              if (necesitaIban) {
+                if (!iban.trim()) { toast.error('IBAN requerido para SEPA'); return }
+                if (!validarIBAN(iban)) { toast.error('IBAN no válido — revísalo'); return }
+              }
+              if (necesitaToken && !cardToken.trim()) {
+                toast.error('Token de tarjeta requerido para tarjeta tokenizada'); return
+              }
               setConfirming(true)
             }}>
               Aceptar modificación
@@ -543,8 +613,7 @@ function FormaPagoModal({ identity, cliente, actual, onClose, onSaved }) {
             {forma === 'sepa' && (
               <>
                 <Field2 label="IBAN *">
-                  <input value={iban} onChange={e => setIban(e.target.value.toUpperCase())}
-                         placeholder="ES00 0000 0000 0000 0000 0000" style={inputStyle} />
+                  <IBANInput value={iban} onChange={setIban} required />
                 </Field2>
                 <Field2 label="Titular (si distinto del cliente)">
                   <input value={ibanTitular} onChange={e => setIbanTitular(e.target.value)} style={inputStyle} />
@@ -611,6 +680,9 @@ function FormaPagoModal({ identity, cliente, actual, onClose, onSaved }) {
             <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
             <Btn variant="primary" onClick={() => {
               if (forma === 'sepa' && !iban.trim()) { toast.error('IBAN requerido para SEPA'); return }
+              if (forma === 'sepa' && !validarIBAN(iban)) {
+                toast.error('IBAN no válido — revisa el número antes de continuar'); return
+              }
               if (forma === 'tarjeta_token' && !cardToken.trim()) { toast.error('Token tarjeta requerido'); return }
               setConfirming(true)
             }}>

@@ -21,10 +21,11 @@ import {
  *   dismiss valga entre navegadores y dispositivos. Mantenemos también el
  *   set local como fallback síncrono (UI optimista) hasta que sincronice.
  *
- * Polling cada 30s.
+ * Polling cada 3s para que el banner se actualice casi en tiempo real cuando
+ * un cliente nuevo aparece en NoofitPro (sin necesidad de F5 manual).
  */
 const STORAGE_KEY = 'round.clientes_seen'
-const POLL_MS = 30_000   // 30 s
+const POLL_MS = 3_000   // 3 s
 
 function loadSeen() {
   try {

@@ -32,7 +32,10 @@ JWT_REFRESH_WHEN_LESS_THAN_HOURS = 24
 
 PASSWORD_TTL_DAYS = 30
 VERIF_TTL_HOURS = 24
-RESET_TTL_MINUTES = 60
+# Junio 2026 — antes 60 min: el reset lo inicia el manager (o el flujo
+# must_change_password) y el usuario suele abrir el email más tarde → caducaba
+# y daba "enlace expirado". 24h es ventana segura (token de un solo uso).
+RESET_TTL_MINUTES = 60 * 24
 LOCK_AFTER_FAILS = 5
 LOCK_DURATION_MINUTES = 15
 
@@ -140,8 +143,22 @@ def usuario_web_required(fn):
         # para que el usuario pueda al menos acceder al cambio de password.
 
         g.usuario_web = row
+        # g.perfil: para que @require_permission funcione también en endpoints
+        # con @usuario_web_required / @either_auth (antes solo se cargaba en
+        # @auth_required, así que un require_permission ahí se saltaba con
+        # g.perfil=None → control total). Mismo shape que auth._load_usuario_web_from_jwt.
+        g.perfil = {
+            'id': row.get('perfil_id'),
+            'nombre': row.get('perfil_nombre'),
+            'is_admin': bool(row.get('perfil_is_admin')),
+            'permisos': row.get('permisos') or {},
+        }
         g.id_manager = row['id_manager']
-        g.id_trainer = row['id_trainer']
+        # Trainer activo en esta sesión: el que el usuario eligió al login
+        # (claim `trn` del JWT) — no el default de la fila DB. Cuando el
+        # usuario tiene acceso a varios centros, cada login emite JWT con
+        # `trn` distinto y g.id_trainer debe reflejar esa elección.
+        g.id_trainer = claims.get('trn') or row['id_trainer']
 
         # Refresco silencioso: si al JWT le quedan menos de
         # JWT_REFRESH_WHEN_LESS_THAN_HOURS, emitimos uno nuevo para esta
@@ -152,8 +169,11 @@ def usuario_web_required(fn):
             if exp_ts:
                 remaining_h = (exp_ts - dt.datetime.utcnow().timestamp()) / 3600.0
                 if remaining_h < JWT_REFRESH_WHEN_LESS_THAN_HOURS:
+                    # Conservar el trainer elegido al refrescar (no resetear
+                    # al default de la fila) — si no, el usuario perdería la
+                    # selección de centro a las pocas horas.
                     g._refresh_jwt = issue_jwt(
-                        row['id'], row['id_manager'], row['id_trainer'],
+                        row['id'], row['id_manager'], g.id_trainer,
                         row['perfil_id'], kind='usuario_web')
         except Exception:
             pass
