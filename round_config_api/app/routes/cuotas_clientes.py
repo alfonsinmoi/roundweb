@@ -721,6 +721,17 @@ def devoluciones():
                 base['ya_devuelto'] = True
                 result['procesadas'].append(base); continue
 
+            # B12 — idempotencia por REFERENCIA de banco: si esta devolución ya
+            # se procesó (mismo ref), no re-casar otro recibo del cliente/mes.
+            mref = (ref or f"{cliente}|{periodo}|{base['importe']:.2f}")[:120]
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM movimiento_financiero WHERE id_manager=%s "
+                            "AND tipo='devolucion' AND referencia=%s LIMIT 1",
+                            (str(g.id_manager), mref))
+                if cur.fetchone():
+                    base['ya_procesada'] = True
+                    result['procesadas'].append(base); continue
+
             # Marcar devuelto en BD
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute("""
@@ -736,6 +747,20 @@ def devoluciones():
                 except Exception as e:
                     log.warning(f'devolucion: anular pago move {rec["account_move_id"]}: {e}')
             base['pagos_anulados'] = pagos_anulados
+            # B12.2 — trazabilidad de la actuación (idempotente por ref)
+            try:
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO movimiento_financiero
+                            (id_manager, id_trainer, recibo_id, tipo, referencia, importe, fecha, odoo_ref)
+                        VALUES (%s,%s,%s,'devolucion',%s,%s,NOW()::date,%s)
+                        ON CONFLICT (id_manager, tipo, recibo_id, referencia) DO NOTHING
+                    """, (str(g.id_manager), str(rec.get('id_trainer') or ''), rec['id'],
+                          mref, base['importe'],
+                          f"move:{rec['account_move_id']}" if rec.get('account_move_id') else None))
+                    conn.commit()
+            except Exception as e:
+                log.warning(f'devolucion: movimiento_financiero recibo {rec["id"]}: {e}')
             result['procesadas'].append(base)
             log_action(actor_from_request(), 'devolucion', 'devolucion', entidad_id=str(rec['id']),
                        resumen=f"Devolución SEPA · recibo {rec['id']} · {rec['cliente_nombre']} · {periodo}",

@@ -118,16 +118,23 @@ def _datos_acreedor(id_manager, id_trainer=None):
                   '`?id_trainer=X` para generar el SEPA de un centro concreto.')
 
 
-def _recibos_sepa_mes(id_manager, mes, id_trainer=None):
+def _recibos_sepa_mes(id_manager, mes, id_trainer=None, remesa_id=None):
     """Recibos del mes pagados con SEPA — los candidatos a meter en el
     pain.008.
 
     POLÍTICA (mayo 2026): por defecto MANAGER-WIDE (todos los trainers del
     manager). Solo se filtra por trainer si el llamador pasa `id_trainer`
-    explícito (caso multi-acreedor)."""
+    explícito (caso multi-acreedor).
+
+    B12c — anti re-remesa: si `remesa_id` se pasa, devuelve los recibos de ESA
+    remesa (re-descarga idempotente); si no, solo los AÚN no remesados."""
     where = ["r.id_manager=%s", "r.periodo=%s",
              "r.metodo_pago='sepa'", "r.estado='pagado'"]
     vals = [str(id_manager), mes]
+    if remesa_id:
+        where.append('r.sepa_remesa_id=%s'); vals.append(remesa_id)
+    else:
+        where.append('r.sepa_remesa_id IS NULL')
     if id_trainer:
         where.append('r.id_trainer=%s')
         vals.append(str(id_trainer))
@@ -345,10 +352,22 @@ def generar_sepa(mes):
                                         'SEPA ID en Configuración → Centros, '
                                         'o llama con `?id_trainer=X` si hay '
                                         'varios acreedores distintos.')}), 400
-        recibos = _recibos_sepa_mes(g.id_manager, mes, target_trainer)
+        # B12c — idempotencia de remesa: si este mes/acreedor YA se generó,
+        # se RE-DESCARGA la misma (mismos adeudos) en vez de crear adeudos
+        # nuevos. Evita el doble cobro bancario por generar 2 ficheros distintos.
+        acreedor_scope = str(target_trainer or g.id_manager)
+        with get_conn() as _c, _c.cursor() as _cur:
+            _cur.execute("SELECT id FROM sepa_remesa WHERE id_manager=%s AND periodo=%s "
+                         "AND id_trainer=%s ORDER BY id DESC LIMIT 1",
+                         (str(g.id_manager), mes, acreedor_scope))
+            _ex = _cur.fetchone()
+        remesa_existente = _ex['id'] if _ex else None
+        recibos = _recibos_sepa_mes(g.id_manager, mes, target_trainer,
+                                    remesa_id=remesa_existente)
         if not recibos:
             return jsonify({'ok': False, 'error': 'sin_recibos_sepa',
-                            'detalle': f'No hay recibos SEPA pagados en {mes}.'}), 404
+                            'detalle': f'No hay recibos SEPA pagados en {mes} '
+                                       f'pendientes de remesar.'}), 404
 
         idnoofits = [r['cliente_idnoofit'] for r in recibos]
         dni_by_idn = _dni_por_cliente(idnoofits)
@@ -365,6 +384,26 @@ def generar_sepa(mes):
                                 'iban_cobro': acreedor['iban_cobro'],
                                 'sepa_creditor_id': acreedor['sepa_creditor_id'],
                             }})
+
+        # B12c — sellar la remesa solo la PRIMERA vez (no en re-descargas):
+        # crea sepa_remesa y marca los recibos incluidos (IBAN válido) para
+        # que no puedan entrar en una remesa NUEVA y distinta → anti doble cobro.
+        if not remesa_existente:
+            saltados_idn = {str(s.get('idnoofit')) for s in stats.get('saltados', [])}
+            incluidos_ids = [r['id'] for r in recibos
+                             if str(r['cliente_idnoofit']) not in saltados_idn]
+            if incluidos_ids:
+                filename_sello = f'remesa_{mes}_{acreedor["cif"]}.xml'
+                with get_conn() as _c, _c.cursor() as _cur:
+                    _cur.execute(
+                        "INSERT INTO sepa_remesa (id_manager, id_trainer, periodo, "
+                        "fichero, estado) VALUES (%s,%s,%s,%s,'generada') RETURNING id",
+                        (str(g.id_manager), acreedor_scope, mes, filename_sello))
+                    _rid = _cur.fetchone()['id']
+                    _cur.execute("UPDATE recibo SET sepa_remesa_id=%s "
+                                 "WHERE id = ANY(%s) AND sepa_remesa_id IS NULL",
+                                 (_rid, incluidos_ids))
+                    _c.commit()
 
         log_action(actor_from_request(), entidad='sepa_fichero',
                    entidad_id=mes, accion='generar',
