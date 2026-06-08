@@ -71,4 +71,17 @@ CREATE INDEX IF NOT EXISTS idx_fact_trainer_mgr ON facturacion_trainer(id_manage
 CREATE INDEX IF NOT EXISTS idx_fact_tipoiva_mgr ON facturacion_tipo_iva(id_manager, id_trainer);
 CREATE INDEX IF NOT EXISTS idx_fcf_mgr_periodo  ON factura_cliente_final(id_manager, periodo, reducido);
 
+-- La app conecta como 'odoo' (CONFIG_DB_USER). Si esta migración se aplica
+-- como 'postgres', las tablas quedarían sin acceso para 'odoo'. Aseguramos
+-- ownership = odoo (idempotente; no-op si ya lo es).
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['facturacion_config','facturacion_serie','facturacion_trainer',
+                           'facturacion_tipo_iva','factura_cliente_final'] LOOP
+    EXECUTE format('ALTER TABLE %I OWNER TO odoo', t);
+    EXECUTE format('ALTER SEQUENCE IF EXISTS %I OWNER TO odoo', t||'_id_seq');
+  END LOOP;
+END$$;
+
 COMMIT;
