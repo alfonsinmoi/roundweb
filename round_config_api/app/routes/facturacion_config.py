@@ -4,7 +4,7 @@ Reemplaza al antiguo `modo_facturacion` de 3 modos por el modelo de 2 sistemas
 × 2 destinos + config per-trainer (430XXX, serie, tipos de IVA).
 
 Premisas (CLAUDE.md):
-- SOLO el manager modifica (gating por `@require_permission('configuracion.facturacion.editar')`;
+- SOLO el manager modifica (gating por `@require_permission('configuracion.modo_facturacion.editar')`;
   el manager NoofitPro -perfil None- pasa siempre; un trainer/usuario_web sin
   la clave → 403).
 - `sistema`/`destino` son por EMPRESA (entidad jurídica) → iguales para todos
@@ -15,7 +15,7 @@ Premisas (CLAUDE.md):
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_manager
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request, diff_dict
 
@@ -35,15 +35,56 @@ def _company_id_manager(cur):
     return (r.get('odoo_company_id') if r else None)
 
 
+def _validar_completitud(cur, m, fecha_corte):
+    """Devuelve lista de problemas que IMPIDEN activar. Vacía = listo.
+
+    Garantiza que activar no deje el sistema a medias:
+      - fecha de corte (no facturar lo anterior al arranque)
+      - empresa Odoo del manager provisionada
+      - al menos una serie con ir.sequence (journal) materializada
+      - cada trainer que TIENE cuotas: 430XXX asignado + serie con sequence
+    """
+    faltantes = []
+    if not fecha_corte:
+        faltantes.append('fecha_corte_requerida')
+    # Empresa Odoo del manager
+    if not _company_id_manager(cur):
+        faltantes.append('manager_sin_empresa_odoo (provisionar contabilidad/cuotas)')
+    # Series con sequence materializada
+    cur.execute("""SELECT count(*) n FROM facturacion_serie
+                    WHERE id_manager=%s AND ir_sequence_id IS NOT NULL""", (m,))
+    if (cur.fetchone() or {}).get('n', 0) == 0:
+        faltantes.append('sin_serie_provisionada (pulsa Provisionar)')
+    # Trainers con cuotas que aún no tienen 430XXX + serie provisionada
+    cur.execute("""
+        SELECT DISTINCT c.id_trainer
+          FROM cuota c
+         WHERE c.id_manager=%s AND c.id_trainer IS NOT NULL
+    """, (m,))
+    trainers_con_cuotas = [str(r['id_trainer']) for r in cur.fetchall()]
+    for t in trainers_con_cuotas:
+        cur.execute("""SELECT ft.cuenta_430_sufijo, fs.ir_sequence_id
+                         FROM facturacion_trainer ft
+                         LEFT JOIN facturacion_serie fs ON fs.id = ft.serie_id
+                        WHERE ft.id_manager=%s AND ft.id_trainer=%s""", (m, t))
+        ft = cur.fetchone()
+        if not ft or ft.get('cuenta_430_sufijo') is None:
+            faltantes.append(f'trainer_{t}_sin_cuenta_430')
+        elif ft.get('ir_sequence_id') is None:
+            faltantes.append(f'trainer_{t}_sin_serie_provisionada')
+    return faltantes
+
+
 # ─────────────────────────── LECTURA (snapshot) ──────────────────────────
 @bp.route('', methods=['GET'])
 @bp.route('/', methods=['GET'])
 @auth_required
-@require_permission('configuracion.facturacion.ver')
+@require_manager
+@require_permission('configuracion.modo_facturacion.ver')
 def get_config():
     m = str(g.id_manager)
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT sistema, destino, activo, company_id, updated_at
+        cur.execute("""SELECT sistema, destino, activo, company_id, fecha_corte, updated_at
                          FROM facturacion_config WHERE id_manager=%s
                         ORDER BY id LIMIT 1""", (m,))
         cfg = cur.fetchone()
@@ -69,34 +110,65 @@ def get_config():
     })
 
 
+# ─────────────────────────── VALIDACIÓN (readiness) ──────────────────────
+@bp.route('/validacion', methods=['GET'])
+@auth_required
+@require_manager
+@require_permission('configuracion.modo_facturacion.ver')
+def validacion():
+    """¿Está el manager listo para ACTIVAR? Devuelve {listo, faltantes}.
+    La UI lo usa para habilitar/deshabilitar el botón de activar."""
+    m = str(g.id_manager)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT fecha_corte FROM facturacion_config
+                        WHERE id_manager=%s ORDER BY id LIMIT 1""", (m,))
+        row = cur.fetchone()
+        fc = (row.get('fecha_corte') if row else None)
+        faltantes = _validar_completitud(cur, m, fc)
+    return jsonify({'ok': True, 'listo': len(faltantes) == 0, 'faltantes': faltantes})
+
+
 # ─────────────────────── CONFIG empresa (sistema/destino) ─────────────────
 @bp.route('', methods=['PUT'])
 @bp.route('/', methods=['PUT'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def set_config():
     d = request.get_json() or {}
     sistema = (d.get('sistema') or '').strip()
     destino = (d.get('destino') or '').strip()
     activo = bool(d.get('activo'))
+    fecha_corte = (d.get('fecha_corte') or '').strip() or None  # YYYY-MM-DD
     if sistema not in SISTEMAS:
         return jsonify({'ok': False, 'error': f'sistema_invalido (valores: {sorted(SISTEMAS)})'}), 400
     if destino not in DESTINOS:
         return jsonify({'ok': False, 'error': f'destino_invalido (valores: {sorted(DESTINOS)})'}), 400
+    # Seguridad: no se puede ACTIVAR sin fecha de corte (evita facturar lo viejo)
+    if activo and not fecha_corte:
+        return jsonify({'ok': False, 'error': 'fecha_corte_requerida_para_activar'}), 400
     m = str(g.id_manager)
     with get_conn() as conn, conn.cursor() as cur:
+        # Validador de completitud: NO permitir activar si falta algo crítico
+        # (evita arrancar el sistema a medias).
+        if activo:
+            faltantes = _validar_completitud(cur, m, fecha_corte)
+            if faltantes:
+                return jsonify({'ok': False, 'error': 'config_incompleta',
+                                'faltantes': faltantes}), 400
         company_id = _company_id_manager(cur)
-        cur.execute("""SELECT sistema, destino, activo FROM facturacion_config
+        cur.execute("""SELECT sistema, destino, activo, fecha_corte FROM facturacion_config
                         WHERE id_manager=%s ORDER BY id LIMIT 1""", (m,))
         antes = cur.fetchone()
         cur.execute("""
-            INSERT INTO facturacion_config (id_manager, company_id, sistema, destino, activo, updated_by)
-            VALUES (%s,%s,%s,%s,%s,%s)
+            INSERT INTO facturacion_config (id_manager, company_id, sistema, destino, activo, fecha_corte, updated_by)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id_manager, company_id) DO UPDATE
               SET sistema=EXCLUDED.sistema, destino=EXCLUDED.destino,
-                  activo=EXCLUDED.activo, updated_by=EXCLUDED.updated_by, updated_at=now()
-            RETURNING sistema, destino, activo
-        """, (m, company_id, sistema, destino, activo,
+                  activo=EXCLUDED.activo, fecha_corte=EXCLUDED.fecha_corte,
+                  updated_by=EXCLUDED.updated_by, updated_at=now()
+            RETURNING sistema, destino, activo, fecha_corte
+        """, (m, company_id, sistema, destino, activo, fecha_corte,
               (actor_from_request() or {}).get('label')))
         despues = cur.fetchone()
         conn.commit()
@@ -109,7 +181,8 @@ def set_config():
 # ─────────── Provisión Odoo (materializar 430XXX + journals) ──────────────
 @bp.route('/provisionar', methods=['POST'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def provisionar():
     """Materializa en Odoo la estructura (430XXX por trainer + journal por
     serie) desde la config. Idempotente. NO toca partners."""
@@ -129,7 +202,8 @@ def provisionar():
 # ─────────────────────────────── SERIES ──────────────────────────────────
 @bp.route('/series', methods=['POST'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def crear_serie():
     d = request.get_json() or {}
     clave = (d.get('clave') or '').strip()
@@ -155,7 +229,8 @@ def crear_serie():
 
 @bp.route('/series/<int:sid>', methods=['PATCH'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def editar_serie(sid):
     d = request.get_json() or {}
     m = str(g.id_manager)
@@ -182,7 +257,8 @@ def editar_serie(sid):
 
 @bp.route('/series/<int:sid>', methods=['DELETE'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def borrar_serie(sid):
     m = str(g.id_manager)
     with get_conn() as conn, conn.cursor() as cur:
@@ -205,7 +281,8 @@ def borrar_serie(sid):
 # ──────────────── CONFIG por trainer (430XXX + serie) ─────────────────────
 @bp.route('/trainer/<id_trainer>', methods=['PUT'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def set_trainer(id_trainer):
     d = request.get_json() or {}
     m = str(g.id_manager)
@@ -256,7 +333,8 @@ def set_trainer(id_trainer):
 # ───────────────────────── TIPOS DE IVA (por trainer) ─────────────────────
 @bp.route('/tipos-iva', methods=['POST'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def crear_tipo_iva():
     d = request.get_json() or {}
     id_trainer = (str(d.get('id_trainer') or '').strip())
@@ -283,7 +361,8 @@ def crear_tipo_iva():
 
 @bp.route('/tipos-iva/<int:tid>', methods=['PATCH'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def editar_tipo_iva(tid):
     d = request.get_json() or {}
     m = str(g.id_manager)
@@ -318,7 +397,8 @@ def editar_tipo_iva(tid):
 
 @bp.route('/tipos-iva/<int:tid>', methods=['DELETE'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def borrar_tipo_iva(tid):
     m = str(g.id_manager)
     with get_conn() as conn, conn.cursor() as cur:
@@ -337,10 +417,90 @@ def borrar_tipo_iva(tid):
     return jsonify({'ok': True})
 
 
-# ─────────────────── Asignar cuota → tipo de IVA ──────────────────────────
+# ─────── Cuotas de un trainer con su IVA efectivo (UI simplificada) ───────
+@bp.route('/trainer/<id_trainer>/cuotas', methods=['GET'])
+@auth_required
+@require_manager
+@require_permission('configuracion.modo_facturacion.ver')
+def cuotas_de_trainer(id_trainer):
+    """Lista las cuotas del trainer con su IVA efectivo. Las que no tienen
+    tipo de IVA asignado se facturan al 21% por defecto."""
+    m = str(g.id_manager)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT c.id, c.codigo, c.descripcion, c.tipo_cuota,
+                   COALESCE(ti.pct, 21)::float AS iva_pct,
+                   (c.tipo_iva_id IS NOT NULL) AS iva_personalizado
+              FROM cuota c
+              LEFT JOIN facturacion_tipo_iva ti ON ti.id = c.tipo_iva_id
+             WHERE c.id_manager=%s AND c.id_trainer=%s AND c.active=true
+             ORDER BY c.codigo
+        """, (m, str(id_trainer)))
+        cuotas = cur.fetchall()
+    return jsonify({'ok': True, 'cuotas': cuotas})
+
+
+@bp.route('/cuota/<int:cuota_id>/iva', methods=['PUT'])
+@auth_required
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
+def set_cuota_iva(cuota_id):
+    """Fija el % de IVA de una cuota. pct=21 (o nulo) → vuelve al 21% por
+    defecto (desasigna). Internamente reutiliza `facturacion_tipo_iva`
+    (dedupe por manager+trainer+pct) para no tocar el motor de facturación."""
+    d = request.get_json() or {}
+    pct_raw = d.get('pct')
+    m = str(g.id_manager)
+    # Normalizar pct
+    if pct_raw is None or pct_raw == '':
+        pct = None
+    else:
+        try:
+            pct = float(pct_raw)
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'pct_invalido'}), 400
+        if not (0 <= pct <= 100):
+            return jsonify({'ok': False, 'error': 'pct_fuera_de_rango'}), 400
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id_trainer, tipo_iva_id FROM cuota WHERE id_manager=%s AND id=%s",
+                    (m, cuota_id))
+        cu = cur.fetchone()
+        if not cu:
+            return jsonify({'ok': False, 'error': 'cuota_no_del_manager'}), 404
+        id_trainer = cu['id_trainer']
+        # 21% o nulo → desasignar (queda en el default del motor)
+        if pct is None or abs(pct - 21.0) < 1e-9:
+            cur.execute("UPDATE cuota SET tipo_iva_id=NULL WHERE id_manager=%s AND id=%s",
+                        (m, cuota_id))
+            conn.commit()
+            log_action(actor_from_request(), entidad='cuota', entidad_id=str(cuota_id),
+                       accion='update', resumen='IVA cuota → 21% (por defecto)')
+            return jsonify({'ok': True, 'iva_pct': 21.0, 'iva_personalizado': False})
+        # pct ≠ 21 → asegurar tipo de IVA (dedupe por manager+trainer+pct) y asignar
+        cur.execute("""SELECT id FROM facturacion_tipo_iva
+                        WHERE id_manager=%s AND id_trainer=%s AND pct=%s LIMIT 1""",
+                    (m, str(id_trainer), pct))
+        ti = cur.fetchone()
+        if ti:
+            tipo_id = ti['id']
+        else:
+            cur.execute("""INSERT INTO facturacion_tipo_iva (id_manager, id_trainer, nombre, pct)
+                            VALUES (%s,%s,%s,%s) RETURNING id""",
+                        (m, str(id_trainer), f'IVA {pct:g}%', pct))
+            tipo_id = cur.fetchone()['id']
+        cur.execute("UPDATE cuota SET tipo_iva_id=%s WHERE id_manager=%s AND id=%s",
+                    (tipo_id, m, cuota_id))
+        conn.commit()
+    log_action(actor_from_request(), entidad='cuota', entidad_id=str(cuota_id),
+               accion='update', resumen=f'IVA cuota → {pct:g}%')
+    return jsonify({'ok': True, 'iva_pct': pct, 'iva_personalizado': True})
+
+
+# ─────────────────── Asignar cuota → tipo de IVA (legacy) ─────────────────
 @bp.route('/cuota/<int:cuota_id>/tipo-iva', methods=['PUT'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def asignar_cuota_iva(cuota_id):
     d = request.get_json() or {}
     tipo_iva_id = d.get('tipo_iva_id')  # puede ser None para desasignar

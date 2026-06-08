@@ -253,6 +253,27 @@ def require_permission(path: str):
     return deco
 
 
+def require_manager(fn):
+    """Gating "solo el manager del grupo" para una sesión NoofitPro.
+
+    Cierra el agujero del login DIRECTO de trainer: un trainer NoofitPro tiene
+    `perfil=None` y, por sí solo, `require_permission` lo dejaría pasar
+    (perfil None = control total). Regla:
+      - NoofitPro MANAGER  → `perfil=None` y SIN `g.id_trainer`  → pasa.
+      - NoofitPro TRAINER  → `perfil=None` y CON `g.id_trainer`  → 403.
+      - usuario_web        → `perfil≠None` → NO lo bloquea aquí; lo decide su
+        perfil vía `require_permission` (delegación normal). Así un usuario_web
+        admin de nivel manager (cuyo JWT lleva `trn`=su centro) no queda fuera.
+    Debe ir DESPUÉS de `@auth_required`."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        perfil = getattr(g, 'perfil', None)
+        if perfil is None and getattr(g, 'id_trainer', None):
+            return jsonify({'ok': False, 'error': 'manager_only'}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+
 def _has_section_access(perfil: dict | None, section: str) -> bool:
     """Espejo backend de `canAccessSection()` del frontend (useCanAccess):
     acceso a una SECCIÓN/pantalla si el perfil tiene CUALQUIER hoja=True bajo

@@ -11,7 +11,7 @@ NO toca el flujo actual (preemision_v2/facturacion_trimestre).
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_manager
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from .. import facturacion_engine as ENG
@@ -20,11 +20,20 @@ bp = Blueprint('facturacion_emision', __name__)
 log = logging.getLogger(__name__)
 
 
+def _fecha_corte(cur, id_manager):
+    cur.execute("SELECT fecha_corte FROM facturacion_config WHERE id_manager=%s ORDER BY id LIMIT 1",
+                (str(id_manager),))
+    r = cur.fetchone()
+    return (r.get('fecha_corte') if r else None)
+
+
 def _relacion(id_manager, periodo):
-    """Construye la relación del mes (read-only) desde `recibo`."""
+    """Construye la relación del mes (read-only) desde `recibo`. Solo
+    considera actuaciones a partir de la fecha de corte (no toca lo viejo)."""
     m = str(id_manager)
     with get_conn() as conn, conn.cursor() as cur:
-        # 1) Cobros del mes: recibos pagados con fecha_pago en el periodo
+        corte = _fecha_corte(cur, m)
+        # 1) Cobros del mes: recibos pagados con fecha_pago en el periodo (>= corte)
         cur.execute("""
             SELECT id, cliente_idnoofit, cliente_nombre, id_trainer, cuota_codigo,
                    importe_base, importe_total, periodo, metodo_pago, estado,
@@ -33,9 +42,10 @@ def _relacion(id_manager, periodo):
               FROM recibo
              WHERE id_manager=%s AND estado='pagado' AND fecha_pago IS NOT NULL
                AND to_char(fecha_pago,'YYYY-MM')=%s
-        """, (m, periodo))
+               AND (%s::date IS NULL OR fecha_pago::date >= %s::date)
+        """, (m, periodo, corte, corte))
         cobros = cur.fetchall()
-        # 2) Devoluciones de meses ANTERIORES llegadas este mes
+        # 2) Devoluciones de meses ANTERIORES llegadas este mes (>= corte)
         cur.execute("""
             SELECT id, cliente_idnoofit, cliente_nombre, id_trainer, cuota_codigo,
                    importe_base, importe_total, periodo, metodo_pago, estado,
@@ -44,7 +54,8 @@ def _relacion(id_manager, periodo):
               FROM recibo
              WHERE id_manager=%s AND estado='devuelto' AND fecha_devolucion IS NOT NULL
                AND to_char(fecha_devolucion,'YYYY-MM')=%s AND periodo < %s
-        """, (m, periodo, periodo))
+               AND (%s::date IS NULL OR fecha_devolucion::date >= %s::date)
+        """, (m, periodo, periodo, corte, corte))
         devoluciones = cur.fetchall()
         # 3) Recobros del mes (movimiento_financiero tipo recobro)
         cur.execute("""
@@ -62,7 +73,8 @@ def _relacion(id_manager, periodo):
 
 @bp.route('/relacion/<periodo>', methods=['GET'])
 @auth_required
-@require_permission('configuracion.facturacion.ver')
+@require_manager
+@require_permission('configuracion.modo_facturacion.ver')
 def relacion(periodo):
     if not (len(periodo) == 7 and periodo[4] == '-'):
         return jsonify({'ok': False, 'error': 'periodo_invalido (YYYY-MM)'}), 400
@@ -83,7 +95,8 @@ def relacion(periodo):
 
 @bp.route('/eficacia-recobro', methods=['GET'])
 @auth_required
-@require_permission('configuracion.facturacion.ver')
+@require_manager
+@require_permission('configuracion.modo_facturacion.ver')
 def eficacia_recobro():
     """Σ recobrado / Σ devuelto por mes (rango ?desde=YYYY-MM&hasta=YYYY-MM,
     por defecto el año en curso de los datos). Desde movimiento_financiero."""
@@ -116,7 +129,8 @@ def eficacia_recobro():
 
 @bp.route('/emitir-mes/<periodo>', methods=['POST'])
 @auth_required
-@require_permission('configuracion.facturacion.editar')
+@require_manager
+@require_permission('configuracion.modo_facturacion.editar')
 def emitir_mes(periodo):
     """Body: {recibo_ids:[...], postear:bool=false}. Factura por cliente los
     recibos seleccionados (sistema fin_de_mes). Draft-first por defecto."""
@@ -127,32 +141,42 @@ def emitir_mes(periodo):
         return jsonify({'ok': False, 'error': 'recibo_ids_required'}), 400
     m = str(g.id_manager)
 
-    # Cargar recibos seleccionados (scope manager) + IVA por cuota
+    # Cargar recibos seleccionados (scope manager) + IVA por cuota.
+    # Blindaje corte: solo recibos pagados a partir de la fecha de corte
+    # (nunca re-facturar lo anterior al arranque del sistema mensual).
     with get_conn() as conn, conn.cursor() as cur:
+        corte = _fecha_corte(cur, m)
         cur.execute("""
             SELECT id, cliente_idnoofit, id_trainer, cuota_codigo,
-                   importe_base, periodo
+                   importe_base, periodo, account_payment_id
               FROM recibo
              WHERE id_manager=%s AND id = ANY(%s)
-        """, (m, recibo_ids))
+               AND (%s::date IS NULL OR (fecha_pago IS NOT NULL AND fecha_pago::date >= %s::date))
+        """, (m, recibo_ids, corte, corte))
         recibos = cur.fetchall()
     if not recibos:
-        return jsonify({'ok': False, 'error': 'recibos_no_encontrados'}), 404
+        return jsonify({'ok': False, 'error': 'recibos_no_encontrados_o_anteriores_al_corte'}), 404
 
     # Agrupar por (cliente, trainer) → items para el motor
     items = {}
     for r in recibos:
         key = (r['cliente_idnoofit'], r['id_trainer'])
         iva = ENG._iva_pct_de_cuota(m, r['cuota_codigo'], r['id_trainer'])
-        items.setdefault(key, {
+        it = items.setdefault(key, {
             'cliente_idnoofit': r['cliente_idnoofit'],
             'id_trainer': r['id_trainer'],
             'lineas': [],
-        })['lineas'].append({
+            'payment_ids': [],
+            'recibo_ids': [],
+        })
+        it['lineas'].append({
             'concepto': f'{r["cuota_codigo"] or "Cuota"} · {r["periodo"]}',
             'base': float(r['importe_base'] or 0),
             'iva_pct': iva,
         })
+        if r.get('account_payment_id'):
+            it['payment_ids'].append(r['account_payment_id'])
+        it['recibo_ids'].append(r['id'])
 
     res = ENG.facturar_mes(m, periodo, list(items.values()), postear=postear)
     log_action(actor_from_request(), entidad='facturacion_emision', entidad_id=periodo,

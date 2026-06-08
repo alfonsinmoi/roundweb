@@ -155,10 +155,37 @@ def facturar_devolucion_inmediata(id_manager, cliente_idnoofit, id_trainer, line
                                   lineas, ref, postear=postear, move_type='out_refund')
 
 
+def _reconciliar_pagos_mes(oc, company_id, move_id, payment_ids):
+    """Tras postear la factura mensual, concilia los account.payment (cobros
+    ya registrados 'a cuenta' durante el mes) contra ella. Devuelve
+    (reconciliados, residual). Fail-soft: un payment que falla no aborta el
+    resto; el residual final refleja el estado real."""
+    from .odoo_pos_sync import _reconcile
+    reconciliados = 0
+    for pid in payment_ids:
+        if not pid:
+            continue
+        try:
+            _reconcile(oc, move_id, pid, company_id)
+            reconciliados += 1
+        except Exception as e:
+            log.warning(f'_reconciliar_pagos_mes: payment {pid} vs move {move_id}: {e}')
+    # Validar residual real tras conciliar (no asumir 0)
+    try:
+        inv = oc._call('account.move', 'read', [move_id], ['amount_residual', 'payment_state'])
+        residual = float(inv[0].get('amount_residual', 0)) if inv else None
+    except Exception:
+        residual = None
+    return reconciliados, residual
+
+
 def facturar_mes(id_manager, periodo, items, postear=False):
     """Sistema FIN DE MES: genera una factura por cliente con las líneas
-    seleccionadas. `items` = [{cliente_idnoofit, id_trainer, lineas:[...]}].
-    Gated: requiere sistema='fin_de_mes' activo. Draft-first por defecto."""
+    seleccionadas. `items` = [{cliente_idnoofit, id_trainer, lineas:[...],
+    payment_ids?:[...], recibo_ids?:[...]}].
+    Gated: requiere sistema='fin_de_mes' activo. Draft-first por defecto.
+    Si postear=True y la factura queda posteada, concilia los pagos ya
+    cobrados durante el mes (que quedaron 'a cuenta') contra ella."""
     cfg = config_activa(id_manager)
     if not (cfg and cfg.get('activo') and cfg.get('sistema') == 'fin_de_mes'):
         return {'ok': False, 'skipped': 'no_activo_o_no_fin_de_mes'}
@@ -169,6 +196,48 @@ def facturar_mes(id_manager, periodo, items, postear=False):
         r = _crear_factura_cliente(oc, id_manager, it['cliente_idnoofit'],
                                    it['id_trainer'], it['lineas'], ref,
                                    fecha=f'{periodo}-01', postear=postear)
+        # Conciliación de pagos ya cobrados (solo si quedó posteada)
+        if r.get('ok') and r.get('state') == 'posted' and r.get('move_id'):
+            pay_ids = [p for p in (it.get('payment_ids') or []) if p]
+            if pay_ids:
+                try:
+                    company_id = oc.resolve_company(id_manager, it['id_trainer'])
+                    rec_n, residual = _reconciliar_pagos_mes(oc, company_id, r['move_id'], pay_ids)
+                    r['reconciliados'] = rec_n
+                    r['residual'] = residual
+                except Exception as e:
+                    log.warning(f'facturar_mes: conciliación cliente {it["cliente_idnoofit"]}: {e}')
         (creadas if r.get('ok') else errores).append({**r, 'cliente': it['cliente_idnoofit']})
+    # Enlazar recibos → factura mensual (trazabilidad), fuera del bucle Odoo
+    try:
+        _vincular_recibos_factura(id_manager, creadas, items)
+    except Exception as e:
+        log.warning(f'facturar_mes: vincular recibos→factura: {e}')
     return {'ok': True, 'creadas': len(creadas), 'errores': len(errores),
             'detalle_errores': errores}
+
+
+def _vincular_recibos_factura(id_manager, creadas, items):
+    """Persiste recibo.account_move_id = factura mensual para los recibos que
+    entraron en cada factura (trazabilidad/idempotencia). Solo recibos sin
+    factura previa (account_move_id IS NULL)."""
+    by_cliente = {}
+    for c in creadas:
+        if c.get('move_id') and c.get('cliente') is not None:
+            by_cliente[str(c['cliente'])] = c['move_id']
+    pares = []
+    for it in items:
+        mv = by_cliente.get(str(it.get('cliente_idnoofit')))
+        if not mv:
+            continue
+        for rid in (it.get('recibo_ids') or []):
+            if rid:
+                pares.append((mv, rid))
+    if not pares:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        for mv, rid in pares:
+            cur.execute("""UPDATE recibo SET account_move_id=%s
+                            WHERE id=%s AND id_manager=%s AND account_move_id IS NULL""",
+                        (mv, rid, str(id_manager)))
+        conn.commit()
