@@ -118,7 +118,78 @@ export default function FormaFacturarTab() {
       <SeriesSection snap={snap} headers={headers} reload={reload} toast={toast} />
       <TrainersSection snap={snap} headers={headers} reload={reload} toast={toast} />
       <TiposIvaSection snap={snap} headers={headers} reload={reload} toast={toast} />
+      <RelacionEmitirSection headers={headers} toast={toast} activo={activo} sistema={snap?.config?.sistema} />
     </div>
+  )
+}
+
+function RelacionEmitirSection({ headers, toast, activo, sistema }) {
+  const hoy = new Date().toISOString().slice(0, 7)
+  const [mes, setMes] = useState(hoy)
+  const [rel, setRel] = useState(null)
+  const [sel, setSel] = useState(() => new Set())
+  const [loading, setLoading] = useState(false)
+  const [emitiendo, setEmitiendo] = useState(false)
+
+  const cargar = async () => {
+    setLoading(true); setRel(null); setSel(new Set())
+    try {
+      const r = await fetch(`/api/config/facturacion/relacion/${mes}`, { headers: headers() })
+      const d = await r.json()
+      if (!d.ok) throw new Error(d.error || 'Error')
+      setRel(d); setSel(new Set((d.cobros || []).map(c => c.id)))
+    } catch (e) { toast.error(e.message) } finally { setLoading(false) }
+  }
+  const toggle = (id) => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+
+  const emitir = async () => {
+    const ids = [...sel]
+    if (!ids.length) return toast.error('Selecciona al menos un cobro')
+    if (!window.confirm(`¿Emitir factura (BORRADOR) para ${ids.length} recibos de ${mes}?`)) return
+    setEmitiendo(true)
+    try {
+      const r = await fetch(`/api/config/facturacion/emitir-mes/${mes}`, { method: 'POST', headers: headers(true),
+        body: JSON.stringify({ recibo_ids: ids, postear: false }) })
+      const d = await r.json()
+      if (!d.ok) throw new Error(d.error || 'Error')
+      if (d.skipped) toast.error(`No emitido: ${d.skipped} (activa el sistema fin_de_mes primero)`)
+      else toast.success(`Emitido: ${d.creadas} facturas, ${d.errores} errores`)
+    } catch (e) { toast.error(e.message) } finally { setEmitiendo(false) }
+  }
+
+  return (
+    <Card style={{ padding: 20 }}>
+      <SectionTitle><CalendarClock size={15} style={{ marginRight: 8 }} /> Relación del mes / Emitir</SectionTitle>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input type="month" value={mes} onChange={e => setMes(e.target.value)} style={inp} />
+        <Btn variant="ghost" onClick={cargar} disabled={loading}>
+          {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Cargar relación
+        </Btn>
+        {rel && (
+          <Btn variant="primary" onClick={emitir} disabled={emitiendo || !sel.size}>
+            {emitiendo ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Emitir {sel.size} (borrador)
+          </Btn>
+        )}
+        {!activo && <Badge color="amber">no activo · emitir queda inerte hasta activar</Badge>}
+      </div>
+      {rel && (
+        <div style={{ marginTop: 14 }}>
+          <p style={muted}>Cobros: <b>{rel.totales?.cobros}</b> · Devoluciones: <b>{rel.totales?.devoluciones}</b> · Recobros: <b>{rel.totales?.recobros}</b></p>
+          <div style={{ marginTop: 8, maxHeight: 360, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {(rel.cobros || []).map(c => (
+              <label key={c.id} style={{ ...row, cursor: 'pointer' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input type="checkbox" checked={sel.has(c.id)} onChange={() => toggle(c.id)} />
+                  <b>{c.cliente_nombre}</b> · {c.cuota_codigo} · {Number(c.importe_total).toFixed(2)}€
+                </span>
+                <span style={muted}>{c.metodo_pago} · {String(c.fecha).slice(0, 16)}</span>
+              </label>
+            ))}
+            {!(rel.cobros || []).length && <span style={muted}>Sin cobros este mes.</span>}
+          </div>
+        </div>
+      )}
+    </Card>
   )
 }
 
