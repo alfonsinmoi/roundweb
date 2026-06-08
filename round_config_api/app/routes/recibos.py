@@ -30,7 +30,7 @@ from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from ..trainer_scope import (
     apply_trainer_filter_direct, apply_trainer_filter_via_cache,
-    cliente_pertenece_a_trainer, trainer_bloquea,
+    cliente_pertenece_a_trainer, trainer_bloquea, clientes_id_noofit_del_manager,
 )
 
 bp = Blueprint('recibos', __name__)
@@ -387,6 +387,95 @@ def delete_recibo(rid):
         cur.execute("DELETE FROM recibo WHERE id_manager=%s AND id=%s", (str(g.id_manager), rid))
     log_action(actor_from_request(), entidad='recibo', entidad_id=rid, accion='delete')
     return jsonify({'ok': True})
+
+
+# ─── Cobro de recibo PURAMENTE Odoo (account.move sin fila BD) ────────────────
+@bp.route('/odoo-move/<int:move_id>/cobrar', methods=['POST'])
+@auth_required
+@require_permission('economico.cuotas_mensuales.marcar_pagado_manual')
+def cobrar_move_odoo(move_id):
+    """Cobra un recibo que SOLO existe como `account.move` en Odoo (sin recibo
+    BD): crea el `account.payment` y lo reconcilia contra el move. Es el caso
+    de recibos facturados por el wizard trimestral / migrados, que antes solo
+    se podían cobrar desde el wizard. Respeta el aislamiento manager+trainer.
+
+    Body: {metodo?, fecha?, importe_cobrado?, observacion?}.
+    """
+    d = request.get_json() or {}
+    metodo = (d.get('metodo') or 'caja_efectivo')
+    fecha = d.get('fecha') or dt.date.today().isoformat()
+    importe_in = d.get('importe_cobrado')
+    observacion = (d.get('observacion') or '').strip() or None
+    actor = actor_from_request()
+    actor_label = actor.get('label') or actor.get('email')
+
+    from ..odoo_alta import OdooAlta
+    from ..odoo_payments import crear_account_payment_move
+    from .. import config as appcfg
+    company_id = getattr(appcfg, 'ODOO_COMPANY', 3) or 3
+
+    try:
+        o = OdooAlta(); o._connect()
+        mv = o._call('account.move', 'read', [move_id],
+                     ['state', 'amount_residual', 'amount_total', 'partner_id', 'company_id', 'move_type'])
+    except Exception as e:
+        log.exception('cobrar_move_odoo:read')
+        return jsonify({'ok': False, 'error': f'odoo_error: {e}'}), 502
+    if not mv:
+        return jsonify({'ok': False, 'error': 'move_no_encontrado'}), 404
+    mv = mv[0]
+    # Seguridad: el move debe ser de la company del manager.
+    if mv.get('company_id') and company_id and mv['company_id'][0] != company_id:
+        return jsonify({'ok': False, 'error': 'move_de_otra_company'}), 403
+    if mv.get('move_type') != 'out_invoice':
+        return jsonify({'ok': False, 'error': 'no_es_factura_cliente'}), 400
+    if mv.get('state') != 'posted':
+        return jsonify({'ok': False, 'error': 'move_no_posteado'}), 400
+
+    # Resolver el cliente (id_noofit) del partner del move.
+    pid = mv['partner_id'][0] if mv.get('partner_id') else None
+    idnoofit = None
+    if pid:
+        pr = o._call('res.partner', 'read', [pid], ['id_noofit'])
+        idnoofit = (pr[0].get('id_noofit') if pr else None)
+    if not idnoofit:
+        return jsonify({'ok': False, 'error': 'partner_sin_id_noofit'}), 400
+
+    # SEGURIDAD: el cliente debe ser del manager y, si hay trainer impersonado,
+    # de ese trainer (no cobrar recibos de otro centro).
+    mgr_clientes = clientes_id_noofit_del_manager()
+    if mgr_clientes is not None and str(idnoofit) not in mgr_clientes:
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    if not cliente_pertenece_a_trainer(idnoofit):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+
+    residual = float(mv.get('amount_residual') or 0)
+    total = float(mv.get('amount_total') or 0)
+    if residual <= 0:
+        return jsonify({'ok': False, 'error': 'ya_pagado'}), 400
+    try:
+        importe = float(importe_in) if importe_in not in (None, '') else residual
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'importe_invalido'}), 400
+    if importe <= 0:
+        return jsonify({'ok': False, 'error': 'importe_invalido'}), 400
+
+    res = crear_account_payment_move(o, company_id=company_id, move_id=move_id,
+                                     cliente_idnoofit=idnoofit, importe=importe,
+                                     metodo_pago=metodo, fecha=fecha)
+    if not res.get('ok'):
+        return jsonify({'ok': False, 'error': res.get('error') or 'cobro_falló'}), 502
+
+    log_action(actor, entidad='recibo_odoo', entidad_id=str(move_id),
+               accion='marcar_pagado',
+               resumen=(f'Cobro move Odoo {move_id}: {importe:.2f}€ vía {metodo}'
+                        + (f' (residual {res.get("residual")})' if res.get('residual') else '')
+                        + (f' · {observacion}' if observacion else '')),
+               cambios={'move_id': move_id, 'importe': importe, 'metodo': metodo,
+                        'payment_id': res.get('payment_id')})
+    return jsonify({'ok': True, 'payment_id': res.get('payment_id'),
+                    'residual': res.get('residual'), 'payment_state': res.get('payment_state'),
+                    'total': total})
 
 
 # ─── Cambios de estado ────────────────────────────────────────────────────────

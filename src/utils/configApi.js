@@ -329,6 +329,11 @@ export const reciboDelete = (identity, id) =>
 export const reciboMarcarPagado = (identity, id, payload = {}) =>
   _requestRoot('POST', `/api/recibos/${id}/marcar-pagado`, identity, payload)
 
+// POST /api/recibos/odoo-move/<moveId>/cobrar — cobra un recibo que SOLO existe
+// como account.move en Odoo (sin fila BD): crea el payment y reconcilia.
+export const reciboMoveCobrar = (identity, moveId, payload = {}) =>
+  _requestRoot('POST', `/api/recibos/odoo-move/${moveId}/cobrar`, identity, payload)
+
 // POST /api/recibos/<id>/marcar-devuelto — marca un recibo BD como devuelto.
 // payload: {motivo?: str, reactivar_impagado?: bool}.
 // Si reactivar_impagado=true (default) el recibo vuelve a `impagado` (re-cobrable).

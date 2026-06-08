@@ -143,6 +143,80 @@ def crear_account_payment(o, *, company_id, recibo_id, cliente_idnoofit,
             'error': None if st == 'posted' else 'no_posted'}
 
 
+def crear_account_payment_move(o, *, company_id, move_id, cliente_idnoofit,
+                               importe, metodo_pago, fecha=None):
+    """Crea+postea un `account.payment` y lo RECONCILIA contra un
+    `account.move` Odoo que NO tiene recibo BD detrás (recibo puramente Odoo:
+    p.ej. facturado por el wizard trimestral, o migrado). Idempotente por
+    `ref=COBRO-MOVE-<move_id>`.
+
+    Devuelve {ok, payment_id, residual, payment_state, error}.
+    """
+    from .odoo_pos_sync import _reconcile
+    journal_type = METODO_A_JOURNAL_TYPE.get(metodo_pago, 'cash')
+    jid = _journal_id_for(o, company_id, journal_type)
+    if not jid:
+        return {'ok': False, 'payment_id': None,
+                'error': f'no_journal_{journal_type}_para_company_{company_id}'}
+    pid = _partner_id_for_idnoofit(o, company_id, cliente_idnoofit)
+    if not pid:
+        return {'ok': False, 'payment_id': None,
+                'error': f'partner_no_encontrado_idnoofit_{cliente_idnoofit}'}
+
+    ref = f'COBRO-MOVE-{move_id}'
+    fecha = fecha or dt.date.today().isoformat()
+    if hasattr(fecha, 'isoformat'):
+        fecha = fecha.isoformat()
+
+    def _ensure_posted(pay_id):
+        st = (o._call('account.payment', 'read', [pay_id], ['state']) or [{}])[0].get('state')
+        if st != 'posted':
+            try:
+                o._call('account.payment', 'action_post', [pay_id])
+            except Exception as e:
+                log.warning(f'action_post falló payment {pay_id}: {e}')
+            st = (o._call('account.payment', 'read', [pay_id], ['state']) or [{}])[0].get('state')
+        return st
+
+    existing = o._call('account.payment', 'search',
+        [('ref', '=', ref), ('company_id', '=', company_id), ('state', '!=', 'cancel')], limit=1)
+    if existing:
+        pay_id = existing[0]
+        st = _ensure_posted(pay_id)
+    else:
+        try:
+            pay_id = o._call('account.payment', 'create', {
+                'partner_id':   pid,
+                'partner_type': 'customer',
+                'payment_type': 'inbound',
+                'amount':       float(importe),
+                'date':         str(fecha)[:10],
+                'journal_id':   jid,
+                'company_id':   company_id,
+                'ref':          ref,
+            })
+        except Exception as e:
+            log.exception(f'crear_account_payment_move move={move_id}')
+            return {'ok': False, 'payment_id': None, 'error': f'create_failed: {e}'}
+        st = _ensure_posted(pay_id)
+
+    if st != 'posted':
+        return {'ok': False, 'payment_id': pay_id, 'error': 'payment_no_posted'}
+
+    # Reconciliar contra el move (la línea receivable). Si el reconcile no
+    # empareja, el residual lo reflejará y devolvemos error para no mentir.
+    try:
+        _reconcile(o, move_id, pay_id, company_id)
+    except Exception as e:
+        log.exception(f'reconcile move={move_id} payment={pay_id}')
+        return {'ok': False, 'payment_id': pay_id, 'error': f'reconcile_failed: {e}'}
+
+    inv = o._call('account.move', 'read', [move_id], ['amount_residual', 'payment_state'])
+    residual = float(inv[0].get('amount_residual', 0)) if inv else None
+    pstate = inv[0].get('payment_state') if inv else None
+    return {'ok': True, 'payment_id': pay_id, 'residual': residual, 'payment_state': pstate}
+
+
 def vincular_payment_a_recibo(recibo_id, payment_id, fecha_pago=None,
                               actor_label='odoo_payments'):
     """Persiste `recibo.account_payment_id = payment_id` y opcionalmente

@@ -17,7 +17,7 @@ import { Btn } from '../UI'
 import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
-import { getRoundIdentity, reciboMarcarPagado } from '../../utils/configApi'
+import { getRoundIdentity, reciboMarcarPagado, reciboMoveCobrar } from '../../utils/configApi'
 
 const METODOS = [
   { id: 'sepa',             label: 'SEPA' },
@@ -66,11 +66,8 @@ export default function PagarReciboBtn({ r, onReload, size = 'sm' }) {
   const observacionReq = hayDiferencia && !observacion.trim()
 
   const handleClick = () => {
-    if (!isBd) {
-      toast.error('Este recibo está en Odoo. Cóbralo desde Facturación trimestral.')
-      return
-    }
-    // Reset por si se abre el modal varias veces
+    // Tanto recibos BD como recibos puramente Odoo (account.move) se cobran
+    // desde aquí. Reset por si se abre el modal varias veces.
     setImporteCobrado(importeEsperado.toFixed(2))
     setObservacion('')
     setMetodo(r.forma_pago || 'caja_efectivo')
@@ -88,11 +85,16 @@ export default function PagarReciboBtn({ r, onReload, size = 'sm' }) {
     try {
       // Sprint 7 audit — solo enviar observación si hay diferencia; si no,
       // sería ruido en `recibo.notas` (texto sobre un cobro íntegro).
-      const resp = await reciboMarcarPagado(getRoundIdentity(user), r.id_bd, {
+      const payload = {
         metodo, fecha,
         importe_cobrado: importeNum,
         observacion: hayDiferencia ? (observacion.trim() || undefined) : undefined,
-      })
+      }
+      // Recibo BD → marcar-pagado (id_bd). Recibo puramente Odoo (sin id_bd) →
+      // cobrar el account.move directamente (r.id es el id del move).
+      const resp = isBd
+        ? await reciboMarcarPagado(getRoundIdentity(user), r.id_bd, payload)
+        : await reciboMoveCobrar(getRoundIdentity(user), r.id, payload)
       if (!resp || resp.ok === false) {
         toast.error(`Error: ${resp?.error || 'cobro falló'}`)
         setSubmitting(false)
@@ -105,7 +107,7 @@ export default function PagarReciboBtn({ r, onReload, size = 'sm' }) {
       } else if (hayDiferencia) {
         toast.success(`Cobrado ${importeNum.toFixed(2)}€ (${diff > 0 ? '+' : ''}${diff.toFixed(2)}€). Incidencia abierta para admin.`)
       } else {
-        toast.success(`Recibo pagado · payment Odoo=${resp.account_payment_id || '—'}`)
+        toast.success(`Recibo pagado · payment Odoo=${resp.account_payment_id || resp.payment_id || '—'}`)
       }
       setOpen(false)
       onReload && onReload(resp)
