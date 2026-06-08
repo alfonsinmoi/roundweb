@@ -155,15 +155,23 @@ def _bd_recibo_to_unified(r):
     }
 
 
-def _bd_recibos_cliente(id_noofit):
-    """Lee recibos BD de un cliente del manager actual. Excluye:
-      - los facturados a Odoo (`account_move_id IS NOT NULL`) — esos
-        llegan vía la consulta Odoo, evitamos duplicar.
-      - los borradores de remesa (`estado='borrador_remesa'`) — solo
-        deben verse en el tab "Recibos manuales" hasta que se emitan.
+def _bd_recibos_cliente(id_noofit, incluir_facturados=True):
+    """Lee recibos BD de un cliente del manager actual.
+
+    Excluye siempre los borradores de remesa (`estado='borrador_remesa'`),
+    que solo se ven en el tab "Recibos manuales".
+
+    `incluir_facturados=True` (default, jun 2026): incluye también los recibos
+    YA facturados a Odoo (`account_move_id IS NOT NULL`). Es la fila BD la que
+    lleva `id_bd` y por tanto es PAGABLE desde la ficha (marcar_pagado crea el
+    account.payment y reconcilia contra el move existente). El llamador
+    deduplica quitando el `account.move` Odoo equivalente. Antes se excluían
+    (`account_move_id IS NULL`), y eso dejaba al recibo facturado-pero-impagado
+    solo como move Odoo → el botón Pagar lo bloqueaba ("facturación trimestral").
     """
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
+        extra = '' if incluir_facturados else 'AND account_move_id IS NULL'
+        cur.execute(f"""
             SELECT id, cliente_idnoofit, cliente_nombre,
                    cuota_codigo, cuota_descripcion,
                    periodo, fecha_emision, fecha_pago, fecha_hasta, fecha_desde,
@@ -171,21 +179,25 @@ def _bd_recibos_cliente(id_noofit):
                    origen, notas, created_at, account_move_id
               FROM recibo
              WHERE id_manager = %s AND cliente_idnoofit = %s
-               AND account_move_id IS NULL
+               {extra}
                AND estado <> 'borrador_remesa'
              ORDER BY fecha_emision DESC, id DESC
         """, (str(g.id_manager), str(id_noofit)))
         return cur.fetchall()
 
 
-def _bd_recibos_filtrado(mes_str=None, estado=None, cliente_idnoofit=None):
+def _bd_recibos_filtrado(mes_str=None, estado=None, cliente_idnoofit=None,
+                         incluir_facturados=True):
     """Lee recibos BD del manager actual, opcionalmente filtrados por mes/
-    estado/cliente. Excluye `account_move_id IS NOT NULL` por la misma razón
-    que arriba — el move Odoo ya los representa."""
-    where = ['id_manager = %s', 'account_move_id IS NULL',
+    estado/cliente. `incluir_facturados=True` (default jun 2026) incluye los
+    facturados a Odoo para que sean PAGABLES desde el listado; el llamador
+    deduplica quitando el move Odoo equivalente."""
+    where = ['id_manager = %s',
              # Excluir borradores de remesa: solo el tab "Recibos manuales"
              # los muestra.
              "estado <> 'borrador_remesa'"]
+    if not incluir_facturados:
+        where.append('account_move_id IS NULL')
     vals = [str(g.id_manager)]
     if g.id_trainer:
         # Estricto: recibo.id_trainer DEBE coincidir. Hay un backfill (mayo
@@ -211,7 +223,7 @@ def _bd_recibos_filtrado(mes_str=None, estado=None, cliente_idnoofit=None):
                    cuota_codigo, cuota_descripcion,
                    periodo, fecha_emision, fecha_pago, fecha_hasta, fecha_desde,
                    periodicidad, importe_total, metodo_pago, estado,
-                   origen, notas, created_at
+                   origen, notas, created_at, account_move_id
               FROM recibo
              WHERE {' AND '.join(where)}
              ORDER BY fecha_emision DESC, id DESC
@@ -248,6 +260,12 @@ def cuotas_cliente(id_noofit):
     except Exception:
         log.exception('cuotas_cliente:bd')
         bd_rows = []
+
+    # Dedup: la fila BD (con id_bd → PAGABLE) representa su move Odoo. Quitamos
+    # de la lista Odoo los account.move que ya tiene un recibo BD, para no
+    # duplicar y para que se vea la versión pagable.
+    bd_move_ids = {str(r.get('account_move_id')) for r in bd_rows if r.get('account_move_id')}
+    odoo_rows = [r for r in odoo_rows if str(r.get('id')) not in bd_move_ids]
 
     unified = ([_serialize(r) for r in odoo_rows]
                + [_bd_recibo_to_unified(r) for r in bd_rows])
@@ -305,6 +323,10 @@ def list_cuotas():
     except Exception:
         log.exception('list_cuotas:bd')
         bd_rows = []
+
+    # Dedup: la fila BD (con id_bd → pagable) representa su move Odoo.
+    bd_move_ids = {str(r.get('account_move_id')) for r in bd_rows if r.get('account_move_id')}
+    odoo_rows = [r for r in odoo_rows if str(r.get('id')) not in bd_move_ids]
 
     unified = ([_serialize(r) for r in odoo_rows]
                + [_bd_recibo_to_unified(r) for r in bd_rows])
