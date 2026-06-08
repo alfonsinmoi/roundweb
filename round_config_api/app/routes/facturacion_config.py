@@ -106,6 +106,26 @@ def set_config():
     return jsonify({'ok': True, **despues})
 
 
+# ─────────── Provisión Odoo (materializar 430XXX + journals) ──────────────
+@bp.route('/provisionar', methods=['POST'])
+@auth_required
+@require_permission('configuracion.facturacion.editar')
+def provisionar():
+    """Materializa en Odoo la estructura (430XXX por trainer + journal por
+    serie) desde la config. Idempotente. NO toca partners."""
+    from ..odoo_facturacion import provision_estructura
+    try:
+        rep = provision_estructura(g.id_manager)
+    except Exception as e:
+        log.exception('provisionar facturacion')
+        return jsonify({'ok': False, 'error': str(e)}), 502
+    log_action(actor_from_request(), entidad='facturacion_config', entidad_id=str(g.id_manager),
+               accion='provisionar',
+               resumen=f'Provisión Odoo: {len(rep.get("cuentas",[]))} cuentas, '
+                       f'{len(rep.get("journals",[]))} journals, {len(rep.get("errores",[]))} errores')
+    return jsonify({'ok': True, **rep})
+
+
 # ─────────────────────────────── SERIES ──────────────────────────────────
 @bp.route('/series', methods=['POST'])
 @auth_required

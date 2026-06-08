@@ -93,6 +93,31 @@ def ensure_iva_tax(oc, company_id, pct):
     return tid
 
 
+def ensure_serie_journal(oc, company_id, id_manager, clave, prefijo=None):
+    """Crea (o reutiliza) un journal de VENTA por serie. En Odoo 17 el nº de
+    factura lo da el journal → una serie = un journal (compartible entre
+    trainers; la analítica los distingue). Idempotente por code.
+
+    El `code` del journal es corto (máx 5 en Odoo); usamos un derivado estable
+    de la clave. El prefijo de numeración se aplica al postear la 1ª factura
+    (engine), aquí solo garantizamos el journal."""
+    code = (clave or 'FACT')[:5].upper()
+    ids = oc._call('account.journal', 'search',
+                   [('company_id', '=', company_id), ('type', '=', 'sale'),
+                    ('code', '=', code)], limit=1)
+    if ids:
+        return ids[0]
+    vals = {
+        'name': f'Ventas serie {clave}',
+        'code': code,
+        'type': 'sale',
+        'company_id': company_id,
+    }
+    jid = oc._call('account.journal', 'create', vals)
+    log.info(f'ensure_serie_journal: creado journal {code} id={jid} company={company_id}')
+    return jid
+
+
 def set_partner_receivable(oc, partner_id, account_id):
     """Asigna la cuenta a cobrar (430XXX del trainer) al partner del cliente.
     Solo se llama al provisionar/configurar (cambia la contabilidad futura del
@@ -105,3 +130,42 @@ def set_partner_receivable(oc, partner_id, account_id):
     oc._call('res.partner', 'write', [partner_id],
              {'property_account_receivable_id': account_id})
     return True
+
+
+def provision_estructura(id_manager):
+    """Materializa en Odoo la estructura de facturación desde la config del
+    manager: 430XXX por trainer + journal por serie. IDEMPOTENTE. NO toca
+    partners (la asignación de receivable es un paso aparte/explícito).
+    Devuelve un report con lo creado/reusado."""
+    from .db import get_conn
+    from .odoo_alta import OdooAlta
+    oc = OdooAlta(id_manager=str(id_manager)); oc._connect()
+    report = {'cuentas': [], 'journals': [], 'errores': []}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT ft.id_trainer, ft.cuenta_430_sufijo,
+                   fs.clave AS serie_clave, fs.prefijo AS serie_prefijo
+              FROM facturacion_trainer ft
+              LEFT JOIN facturacion_serie fs ON fs.id = ft.serie_id
+             WHERE ft.id_manager=%s
+        """, (str(id_manager),))
+        rows = cur.fetchall()
+    for r in rows:
+        comp = oc.resolve_company(id_manager, r['id_trainer'])
+        if not comp:
+            report['errores'].append({'trainer': r['id_trainer'], 'error': 'sin_company'})
+            continue
+        try:
+            if r.get('cuenta_430_sufijo'):
+                aid = ensure_cuenta_430(oc, comp, r['cuenta_430_sufijo'],
+                                        f'Clientes trainer {r["id_trainer"]}')
+                report['cuentas'].append({'trainer': r['id_trainer'],
+                                          'cuenta': cuenta_430_code(r['cuenta_430_sufijo']),
+                                          'id': aid})
+            if r.get('serie_clave'):
+                jid = ensure_serie_journal(oc, comp, id_manager,
+                                           r['serie_clave'], r.get('serie_prefijo'))
+                report['journals'].append({'serie': r['serie_clave'], 'journal_id': jid})
+        except Exception as e:
+            report['errores'].append({'trainer': r['id_trainer'], 'error': str(e)[:150]})
+    return report
