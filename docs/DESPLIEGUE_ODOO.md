@@ -42,6 +42,30 @@ una `res.company` dentro de la base de datos `round_facturacion`.**
   manager nuevo debe **crear la BD** (no solo la company) y registrar
   `odoo_url`/`odoo_db` en `manager_config`.
 
+### Orden de provisión y empresa por CIF (regla)
+
+Cuando un manager NUEVO activa contabilidad/cuotas/crm, el provisioner sigue
+**exactamente** este orden:
+
+1. **Crear la BD del manager + su `res.company`** con la estructura de
+   facturación Round: plan PYMES, **cuentas `430XXX` por trainer** (`430` + nº
+   de centro a **3 dígitos**, padding fijo, hasta 999), `ir.sequence` **por
+   serie** (no por company), tipos de IVA, journals y analítica. El cliente es
+   **tercero (`res.partner`) con `id_noofit` único**, nunca una cuenta.
+2. **Al dar de alta los trainers, la empresa se decide por el CIF:**
+   - **Mismo CIF** que una empresa ya existente del manager → **comparte esa
+     `res.company`** (separación por analítica + su `430XXX` + su serie).
+   - **CIF distinto** → se le **crea una `res.company` propia** dentro de la
+     MISMA BD del manager, con esta misma estructura.
+
+   Frontera de **BD = manager**; frontera de **company = CIF (entidad
+   jurídica)**. CIF en `trainer_empresa.cif`; company resultante en
+   `trainer_empresa.odoo_company_id`; `resolve_company(manager, trainer)` la
+   resuelve.
+3. La **config de facturación** (sistema inmediata/fin_de_mes, destino
+   cliente/`430XXX`, tipos de IVA, series) es **igual para todos los trainers
+   que comparten company** y **solo la modifica el manager**.
+
 ---
 
 ## Fase 6 — Activación granular por módulo (mayo 2026)

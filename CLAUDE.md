@@ -485,6 +485,35 @@ cuotas o CRM) se crea una BASE DE DATOS Odoo NUEVA y dedicada para ese manager
 - La company `1` ("BEST TRAINING legacy USA - NO USAR") es legacy/prohibida
   (lista negra `ODOO_LEGACY_COMPANY_IDS`, guard B1).
 
+### ⛔ REGLA DE PROVISIÓN — orden de alta y empresa por CIF
+
+**Cuando un manager NUEVO active contabilidad / cuotas / crm, el provisioner
+debe seguir EXACTAMENTE este orden, sin equivocaciones:**
+
+1. **Crear la BD Odoo del manager + su empresa (`res.company`)** siguiendo la
+   estructura de facturación Round (plan PYMES, cuentas **430XXX por trainer**
+   —`430`+nº centro a 3 dígitos, padding fijo, hasta 999—, `ir.sequence` por
+   serie, tipos de IVA, journals, analítica). El cliente es **tercero
+   (`res.partner`) con `id_noofit` único**, NUNCA una cuenta.
+2. **Al crear/incorporar los trainers, la empresa se decide por el CIF:**
+   - Trainer con el **MISMO CIF** que una empresa ya existente del manager →
+     **comparte esa `res.company`** (se separa por **analítica + su 430XXX +
+     su serie** dentro de ella).
+   - Trainer con **CIF DISTINTO** → se le **crea una `res.company` propia**
+     (dentro de la MISMA BD del manager) siguiendo esta misma estructura.
+
+   Es decir: **frontera de BD = manager; frontera de company = CIF (entidad
+   jurídica)**. El CIF vive en `trainer_empresa.cif`; la company resultante en
+   `trainer_empresa.odoo_company_id`. `resolve_company(manager, trainer)`
+   devuelve esa company (la propia del trainer-entidad o, si comparte CIF, la
+   del manager).
+3. La **config de facturación** (sistema inmediata/fin_de_mes, destino
+   cliente/430XXX, tipos de IVA, series) es **igual para todos los trainers
+   que comparten company** y **solo la modifica el manager**.
+
+(Detalle del modelo de facturación: `docs/DESPLIEGUE_ODOO.md` y el brief de
+implantación. Las modificaciones del lado Odoo se hacen en su propio chat.)
+
 - **3 columnas booleanas en manager_config**:
   `odoo_crm_enabled`, `odoo_cuotas_enabled`, `odoo_contabilidad_enabled`
   + `sistemas_cobro` JSONB (lista, valores válidos: `sepa`,
