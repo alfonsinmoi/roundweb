@@ -169,6 +169,15 @@ BEGIN
                       AND column_name='lead_webhook_token') THEN
       ALTER TABLE manager_config ADD COLUMN lead_webhook_token TEXT;
     END IF;
+
+    -- ─── Menú de Configuración para trainers ──────────────────────────
+    -- Array JSONB de ids de pestaña que los trainers pueden ver en su
+    -- Configuración. NULL = no configurado (el frontend aplica su default).
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name='manager_config'
+                      AND column_name='trainer_tabs') THEN
+      ALTER TABLE manager_config ADD COLUMN trainer_tabs JSONB;
+    END IF;
   END IF;
 
   -- email_proveedor: añadir id_trainer y eliminar unique antiguo (sólo manager)
@@ -1619,6 +1628,13 @@ ALTER TABLE cliente_nota
   ADD COLUMN IF NOT EXISTS leida_at_cliente TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS visible_cliente   BOOLEAN NOT NULL DEFAULT TRUE;
 
+-- Acuse de lectura INTERNO (destinatario usuario_web/trainer): cuándo y quién
+-- abrió la nota que tenía asignada. Sirve para notificar la lectura al emisor.
+ALTER TABLE cliente_nota
+  ADD COLUMN IF NOT EXISTS leida_at        TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS leida_por_id    INTEGER,
+  ADD COLUMN IF NOT EXISTS leida_por_label VARCHAR(160);
+
 
 -- ─── CREDENCIALES NOOFIT POR TRAINER ────────────────────────────────────────
 -- Cada trainer/centro en NoofitPro tiene su propia cuenta. Para que un
@@ -2607,10 +2623,18 @@ CREATE TABLE IF NOT EXISTS facturacion_config (
   sistema     varchar(16) NOT NULL DEFAULT 'fin_de_mes'  CHECK (sistema IN ('inmediata','fin_de_mes')),
   destino     varchar(16) NOT NULL DEFAULT 'por_cliente' CHECK (destino IN ('por_cliente','agregada_430')),
   activo      boolean NOT NULL DEFAULT false,
+  fecha_corte date,
   updated_by  varchar(80),
   updated_at  timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id_manager, company_id)
 );
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='facturacion_config')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='facturacion_config' AND column_name='fecha_corte') THEN
+    ALTER TABLE facturacion_config ADD COLUMN fecha_corte date;
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS facturacion_serie (
   id               serial PRIMARY KEY,
   id_manager       varchar(64) NOT NULL,
