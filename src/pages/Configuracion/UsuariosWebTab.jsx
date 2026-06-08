@@ -5,7 +5,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { Card, Btn, Badge } from '../../components/UI'
 import Modal from '../../components/Modal'
 import { useToast } from '../../components/Toast'
-import { getRoundIdentity } from '../../utils/configApi'
+import { getRoundIdentity, centrosList } from '../../utils/configApi'
 import {
   usuariosWebList, usuarioWebCreate, usuarioWebUpdate,
   usuarioWebResetPassword, usuarioWebResendVerification, usuarioWebDelete,
@@ -44,14 +44,30 @@ export default function UsuariosWebTab() {
   const reload = async () => {
     setLoading(true)
     try {
-      const [u, p, c] = await Promise.all([
+      const [u, p, cBackend] = await Promise.all([
         usuariosWebList(identity, trainerSel || undefined),
         perfilesList(identity),
-        getEntrenadores().catch(() => []),
+        // Fuente FIABLE: centros del backend (centro_contacto). Siempre
+        // disponible para el manager (token Round), no depende de NoofitPro.
+        centrosList(identity).catch(() => []),
       ])
       setUsuarios(u.usuarios || [])
       setPerfiles(p.perfiles || [])
-      setCentros(c || [])
+      // Normalizar a {id_trainer, label}. Si el backend no tiene centros
+      // configurados, caemos a la lista NoofitPro (entrenadores) como respaldo.
+      let list = (cBackend || [])
+        .filter(c => c.id_trainer)
+        .map(c => ({ id_trainer: String(c.id_trainer),
+                     label: c.nombre_centro || c.slug || `Centro ${c.id_trainer}` }))
+      if (!list.length) {
+        const ent = await getEntrenadores().catch(() => [])
+        list = (ent || [])
+          .filter(e => e.id)
+          .map(e => ({ id_trainer: String(e.id),
+                       label: (e.name && e.name.trim()) ? `${e.name} ${e.surname || ''}`.trim()
+                              : (e.email || `Centro ${e.id}`) }))
+      }
+      setCentros(list)
     } catch (e) { toast.error('Error: ' + e.message) }
     finally { setLoading(false) }
   }
@@ -116,8 +132,8 @@ export default function UsuariosWebTab() {
           // Sesión de trainer → centro fijo, selector anulado.
           <span style={{ fontSize: 13, color: 'var(--text-1)', fontWeight: 600 }}>
             {(() => {
-              const c = centros.find(x => String(x.id) === lockedTrainer)
-              return c ? ((c.name && c.name.trim()) ? `${c.name} ${c.surname || ''}`.trim() : (c.email || `Centro ${lockedTrainer}`)) : `Centro ${lockedTrainer}`
+              const c = centros.find(x => x.id_trainer === lockedTrainer)
+              return c ? c.label : `Centro ${lockedTrainer}`
             })()}
             <span style={{ fontSize: 11, color: 'var(--text-3)', marginLeft: 6 }}>(tu centro)</span>
           </span>
@@ -129,9 +145,7 @@ export default function UsuariosWebTab() {
                            color: 'var(--text-0)', fontSize: 13 }}>
             <option value="">Todos los centros</option>
             {centros.map(c => (
-              <option key={c.id} value={String(c.id)}>
-                {(c.name && c.name.trim()) ? `${c.name} ${c.surname || ''}`.trim() : (c.email || `Centro ${c.id}`)}
-              </option>
+              <option key={c.id_trainer} value={c.id_trainer}>{c.label}</option>
             ))}
           </select>
         )}
@@ -222,6 +236,7 @@ export default function UsuariosWebTab() {
           usuario={editing}
           perfiles={perfiles}
           centros={centros}
+          defaultTrainer={trainerSel}
           onClose={() => { setCreating(false); setEditing(null) }}
           onSaved={() => { setCreating(false); setEditing(null); reload() }}
         />
@@ -231,7 +246,7 @@ export default function UsuariosWebTab() {
 }
 
 
-function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onSaved }) {
+function UsuarioEditor({ identity, usuario, perfiles, centros = [], defaultTrainer = null, onClose, onSaved }) {
   const toast = useToast()
   const isEdit = !!usuario
   const [email, setEmail] = useState(usuario?.email || '')
@@ -246,7 +261,11 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
   // centro asignado (puede ver datos cross-trainer si su perfil lo permite).
   const initialTrainers = Array.isArray(usuario?.id_trainers) && usuario.id_trainers.length > 0
     ? usuario.id_trainers.map(String)
-    : (usuario?.id_trainer ? [String(usuario.id_trainer)] : [])
+    : (usuario?.id_trainer ? [String(usuario.id_trainer)]
+       // Usuario NUEVO: si hay un centro de contexto (centro elegido en el
+       // filtro o sesión scopeada a un trainer), lo preseleccionamos para que
+       // no se cree sin centro por olvido.
+       : (!usuario && defaultTrainer ? [String(defaultTrainer)] : []))
   const [idTrainers, setIdTrainers] = useState(initialTrainers)
   const [activo, setActivo] = useState(usuario?.activo ?? true)
   const [saving, setSaving] = useState(false)
@@ -262,6 +281,15 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
     if (!nombre.trim()) { toast.error('Nombre requerido'); return }
     if (!telefono.trim()) { toast.error('Teléfono requerido'); return }
     if (!perfilId) { toast.error('Selecciona un perfil'); return }
+    // Aviso explícito: crear SIN centro = usuario "corporativo" que NO aparece
+    // en el listado de ningún centro (causa habitual de "no le asigna el trainer").
+    if (!isEdit && idTrainers.length === 0) {
+      const ok = window.confirm(
+        'Este usuario NO tendrá ningún centro asignado, así que no aparecerá en ' +
+        'el listado de ningún centro (solo en la vista global del manager).\n\n' +
+        '¿Seguro que quieres crearlo sin centro?')
+      if (!ok) return
+    }
     setSaving(true)
     try {
       const payload = {
@@ -333,21 +361,19 @@ function UsuarioEditor({ identity, usuario, perfiles, centros = [], onClose, onS
               </p>
             ) : (
               centros.map(c => {
-                const id = String(c.id)
+                const id = String(c.id_trainer)
                 const checked = idTrainers.includes(id)
-                const nombre = `${c.nombre ?? c.name ?? ''} ${c.apellidos ?? c.surname ?? ''}`.trim()
-                            || c.email || `Centro ${c.id}`
                 return (
-                  <label key={c.id}
+                  <label key={id}
                          style={{
                            display: 'flex', alignItems: 'center', gap: 10,
                            padding: '8px 12px', cursor: 'pointer', fontSize: 13,
                            borderBottom: '1px solid var(--line)',
                          }}>
                     <input type="checkbox" checked={checked}
-                           onChange={() => toggleTrainer(c.id)} />
-                    <span style={{ flex: 1 }}>{nombre}</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>id {c.id}</span>
+                           onChange={() => toggleTrainer(id)} />
+                    <span style={{ flex: 1 }}>{c.label}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>id {id}</span>
                   </label>
                 )
               })
