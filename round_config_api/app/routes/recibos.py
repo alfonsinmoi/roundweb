@@ -499,6 +499,23 @@ def marcar_pagado(rid):
         return jsonify({'ok': False, 'error': 'estado_cambio',
                         'detalle': 'El recibo cambió de estado durante la operación.'}), 409
 
+    # ── B12/recobro — si el recibo estaba DEVUELTO y se vuelve a cobrar, es un
+    # RECOBRO: lo registramos en movimiento_financiero (trazabilidad + eficacia
+    # de recobro). Aditivo y fail-silent: NUNCA rompe el cobro.
+    if rec['estado'] == 'devuelto':
+        try:
+            mref = f'RECOBRO-{rid}-{fecha[:10]}'
+            with get_conn() as _c, _c.cursor() as _cur:
+                _cur.execute("""
+                    INSERT INTO movimiento_financiero
+                        (id_manager, id_trainer, recibo_id, tipo, referencia, importe, fecha)
+                    VALUES (%s,%s,%s,'recobro',%s,%s,NOW()::date)
+                    ON CONFLICT (id_manager, tipo, recibo_id, referencia) DO NOTHING
+                """, (str(g.id_manager), str(rec.get('id_trainer') or ''), rid, mref, cobrado))
+                _c.commit()
+        except Exception as e:
+            log.warning(f'marcar_pagado recibo={rid}: registro recobro: {e}')
+
     # ── Reflejar en Odoo: crear account.payment si no existía aún ─────────
     # IMPORTE: el payment se crea por el IMPORTE COBRADO (no por importe_total
     # del recibo). Si hay factura y el cobrado es parcial, tras reconciliar

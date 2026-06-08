@@ -81,6 +81,39 @@ def relacion(periodo):
     })
 
 
+@bp.route('/eficacia-recobro', methods=['GET'])
+@auth_required
+@require_permission('configuracion.facturacion.ver')
+def eficacia_recobro():
+    """Σ recobrado / Σ devuelto por mes (rango ?desde=YYYY-MM&hasta=YYYY-MM,
+    por defecto el año en curso de los datos). Desde movimiento_financiero."""
+    desde = (request.args.get('desde') or '').strip() or None
+    hasta = (request.args.get('hasta') or '').strip() or None
+    m = str(g.id_manager)
+    where = ["id_manager=%s", "tipo IN ('devolucion','recobro')", "fecha IS NOT NULL"]
+    vals = [m]
+    if desde:
+        where.append("to_char(fecha,'YYYY-MM') >= %s"); vals.append(desde)
+    if hasta:
+        where.append("to_char(fecha,'YYYY-MM') <= %s"); vals.append(hasta)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT to_char(fecha,'YYYY-MM') AS mes,
+                   SUM(importe) FILTER (WHERE tipo='devolucion') AS devuelto,
+                   SUM(importe) FILTER (WHERE tipo='recobro')    AS recobrado
+              FROM movimiento_financiero
+             WHERE {' AND '.join(where)}
+             GROUP BY 1 ORDER BY 1
+        """, vals)
+        filas = cur.fetchall()
+    out = []
+    for f in filas:
+        dev = float(f['devuelto'] or 0); rec = float(f['recobrado'] or 0)
+        out.append({'mes': f['mes'], 'devuelto': round(dev, 2), 'recobrado': round(rec, 2),
+                    'eficacia_pct': round(100 * rec / dev, 1) if dev > 0 else None})
+    return jsonify({'ok': True, 'meses': out})
+
+
 @bp.route('/emitir-mes/<periodo>', methods=['POST'])
 @auth_required
 @require_permission('configuracion.facturacion.editar')
