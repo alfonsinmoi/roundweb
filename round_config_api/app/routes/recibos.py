@@ -516,6 +516,30 @@ def marcar_pagado(rid):
         except Exception as e:
             log.warning(f'marcar_pagado recibo={rid}: registro recobro: {e}')
 
+    # ── Sistema INMEDIATO (GATED): cada cobro/recobro → factura al cliente.
+    # Inerte si el manager no tiene sistema='inmediata' activo. Fail-silent:
+    # NUNCA rompe el cobro. La alineación factura↔payment↔reconcile completa
+    # se cierra en la activación/migración (punto 5).
+    try:
+        from .. import facturacion_engine as _ENG
+        _cfg = _ENG.config_activa(g.id_manager)
+        if _cfg and _cfg.get('activo') and _cfg.get('sistema') == 'inmediata':
+            with get_conn() as _c, _c.cursor() as _cur:
+                _cur.execute("""SELECT cuota_codigo, importe_base, id_trainer,
+                                       cliente_idnoofit, periodo
+                                  FROM recibo WHERE id_manager=%s AND id=%s""",
+                             (str(g.id_manager), rid))
+                _rr = _cur.fetchone()
+            if _rr:
+                _iva = _ENG._iva_pct_de_cuota(str(g.id_manager), _rr['cuota_codigo'], _rr['id_trainer'])
+                _ENG.facturar_inmediata(
+                    str(g.id_manager), _rr['cliente_idnoofit'], _rr['id_trainer'],
+                    [{'concepto': f"{_rr['cuota_codigo'] or 'Cuota'} · {_rr['periodo']}",
+                      'base': float(_rr['importe_base'] or 0), 'iva_pct': _iva}],
+                    mov_ref=f'COBRO-{rid}', postear=True)
+    except Exception as e:
+        log.warning(f'marcar_pagado recibo={rid}: hook facturación inmediata: {e}')
+
     # ── Reflejar en Odoo: crear account.payment si no existía aún ─────────
     # IMPORTE: el payment se crea por el IMPORTE COBRADO (no por importe_total
     # del recibo). Si hay factura y el cobrado es parcial, tras reconciliar

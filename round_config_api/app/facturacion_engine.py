@@ -60,9 +60,11 @@ def _iva_pct_de_cuota(id_manager, cuota_codigo, id_trainer):
 
 
 def _crear_factura_cliente(oc, id_manager, cliente_idnoofit, id_trainer,
-                           lineas, ref, fecha=None, postear=False):
-    """Crea (o reutiliza por `ref`) una out_invoice DRAFT para el cliente.
+                           lineas, ref, fecha=None, postear=False,
+                           move_type='out_invoice'):
+    """Crea (o reutiliza por `ref`) un `account.move` DRAFT para el cliente.
 
+    move_type = 'out_invoice' (factura) | 'out_refund' (rectificativa/devolución).
     lineas = [{concepto, base, iva_pct}]. Devuelve dict {ok, move_id, ...}.
     Draft-first: por defecto NO postea (postear=False) — se valida antes.
     """
@@ -103,7 +105,7 @@ def _crear_factura_cliente(oc, id_manager, cliente_idnoofit, id_trainer,
 
     vals = {
         'partner_id': pid,
-        'move_type': 'out_invoice',
+        'move_type': move_type,
         'invoice_date': str(fecha)[:10],
         'company_id': company_id,
         'journal_id': sale_ids[0],
@@ -139,6 +141,18 @@ def facturar_inmediata(id_manager, cliente_idnoofit, id_trainer, lineas, mov_ref
     ref = f'FACT-INM-{mov_ref}-{cliente_idnoofit}'
     return _crear_factura_cliente(oc, id_manager, cliente_idnoofit, id_trainer,
                                   lineas, ref, postear=postear)
+
+
+def facturar_devolucion_inmediata(id_manager, cliente_idnoofit, id_trainer, lineas, mov_ref, postear=True):
+    """Sistema INMEDIATO: una rectificativa (out_refund) por cada devolución.
+    Gated: requiere sistema='inmediata' activo."""
+    cfg = config_activa(id_manager)
+    if not (cfg and cfg.get('activo') and cfg.get('sistema') == 'inmediata'):
+        return {'ok': False, 'skipped': 'no_activo_o_no_inmediata'}
+    oc = OdooAlta(id_manager=str(id_manager)); oc._connect()
+    ref = f'RECT-INM-{mov_ref}-{cliente_idnoofit}'
+    return _crear_factura_cliente(oc, id_manager, cliente_idnoofit, id_trainer,
+                                  lineas, ref, postear=postear, move_type='out_refund')
 
 
 def facturar_mes(id_manager, periodo, items, postear=False):

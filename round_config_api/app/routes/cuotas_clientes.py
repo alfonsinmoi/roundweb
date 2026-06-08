@@ -761,6 +761,26 @@ def devoluciones():
                     conn.commit()
             except Exception as e:
                 log.warning(f'devolucion: movimiento_financiero recibo {rec["id"]}: {e}')
+            # Sistema INMEDIATO (GATED): cada devolución → rectificativa al cliente.
+            # Inerte si no hay sistema='inmediata' activo. Fail-silent.
+            try:
+                from .. import facturacion_engine as _ENG
+                _cfg = _ENG.config_activa(g.id_manager)
+                if _cfg and _cfg.get('activo') and _cfg.get('sistema') == 'inmediata':
+                    with get_conn() as _c, _c.cursor() as _cur:
+                        _cur.execute("""SELECT cuota_codigo, importe_base, periodo
+                                          FROM recibo WHERE id_manager=%s AND id=%s""",
+                                     (str(g.id_manager), rec['id']))
+                        _rr = _cur.fetchone()
+                    if _rr:
+                        _iva = _ENG._iva_pct_de_cuota(str(g.id_manager), _rr['cuota_codigo'], rec.get('id_trainer'))
+                        _ENG.facturar_devolucion_inmediata(
+                            str(g.id_manager), cliente, rec.get('id_trainer'),
+                            [{'concepto': f"Devolución {_rr['cuota_codigo'] or 'Cuota'} · {_rr['periodo']}",
+                              'base': float(_rr['importe_base'] or 0), 'iva_pct': _iva}],
+                            mov_ref=f'DEVOL-{rec["id"]}', postear=True)
+            except Exception as e:
+                log.warning(f'devolucion: hook facturación inmediata recibo {rec["id"]}: {e}')
             result['procesadas'].append(base)
             log_action(actor_from_request(), 'devolucion', 'devolucion', entidad_id=str(rec['id']),
                        resumen=f"Devolución SEPA · recibo {rec['id']} · {rec['cliente_nombre']} · {periodo}",
