@@ -41,6 +41,7 @@ from .routes.subscriptions     import bp as bp_subscriptions
 from .routes.forma_pago        import bp as bp_forma_pago
 from .routes.modo_facturacion  import bp as bp_modo_facturacion
 from .routes.facturacion_config import bp as bp_facturacion_config
+from .routes.facturacion_emision import bp as bp_facturacion_emision
 from .routes.manager_odoo      import bp as bp_manager_odoo
 from .routes.auth_bootstrap    import bp as bp_auth_bootstrap
 from .routes.preemision_validar import bp as bp_preemision_validar
@@ -218,9 +219,14 @@ def create_app():
     for prefix in ('/modo-facturacion', '/api/config/modo-facturacion'):
         app.register_blueprint(bp_modo_facturacion, name=f'mf{prefix}', url_prefix=prefix)
 
-    # ── Config de facturación (2 sistemas × a/b, 430XXX, series, IVA) — manager-only
+    # ── Config de facturación (2 sistemas, 430XXX, series, IVA) — manager-only
     for prefix in ('/facturacion', '/api/config/facturacion'):
         app.register_blueprint(bp_facturacion_config, name=f'fcfg{prefix}', url_prefix=prefix)
+
+    # ── Emisión de facturas (relación del mes + emitir) — manager-only, gated.
+    #    Bajo /api/config/facturacion (ya proxiado por nginx; /api/facturacion no lo está).
+    for prefix in ('/facturacion-emision', '/api/config/facturacion'):
+        app.register_blueprint(bp_facturacion_emision, name=f'femi{prefix}', url_prefix=prefix)
 
     # ── Estado del Odoo per-manager y gate de despliegue (Fase 1)
     for prefix in ('/manager', '/api/manager'):
