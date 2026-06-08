@@ -13,8 +13,7 @@ import { useToast } from '../Toast'
 import { getRoundIdentity } from '../../utils/configApi'
 import { trabajadoresList } from '../../utils/horarioApi'
 import { getClientes } from '../../utils/api'
-import { enviarNota } from '../../utils/notasApi'
-import { usuariosWebList } from '../../utils/authUsuarioApi'
+import { enviarNota, destinatariosNota } from '../../utils/notasApi'
 import { coincideTexto } from '../../utils/texto'
 
 const inputStyle = {
@@ -44,13 +43,17 @@ export default function EnviarNotaModal({ user, onClose, onSaved }) {
   // Búsqueda en lista de candidatos
   const [busqueda, setBusqueda] = useState('')
 
-  // Datos
-  const [usuariosWeb, setUsuariosWeb] = useState([])
+  // Datos. Usuarios web vienen AGRUPADOS por trainer y ya scopeados por el
+  // backend (manager → todos sus trainers; trainer → solo el suyo).
+  const [destData, setDestData] = useState({ trainers: [], corporativos: [], scopedTrainer: null })
+  const [selTrainers, setSelTrainers] = useState(() => new Set())  // grupos (id_trainer) activos
   const [trabajadores, setTrabajadores] = useState([])
   const [clientes, setClientes] = useState([])
   const [loadingU, setLoadingU] = useState(true)
   const [loadingT, setLoadingT] = useState(true)
   const [loadingC, setLoadingC] = useState(true)
+
+  const esManager = !destData.scopedTrainer  // manager = no scopeado a un trainer
 
   // Formulario
   const ahoraISO = new Date().toISOString().slice(0, 16) // YYYY-MM-DDTHH:MM
@@ -59,14 +62,17 @@ export default function EnviarNotaModal({ user, onClose, onSaved }) {
   const [fechaVencimiento, setFechaVencimiento] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Cargar usuarios_web + trabajadores activos + clientes
+  // Cargar destinatarios (usuarios web por trainer, scopeado) + trabajadores + clientes
   useEffect(() => {
-    usuariosWebList(identity)
+    destinatariosNota(user)
       .then(d => {
-        const arr = (d.usuarios || d || []).filter(u => u.activo !== false)
-        setUsuariosWeb(arr)
+        setDestData(d)
+        // Por defecto, todos los grupos visibles seleccionados.
+        const ids = (d.trainers || []).map(t => t.id_trainer)
+        if ((d.corporativos || []).length) ids.push('__corp__')
+        setSelTrainers(new Set(ids))
       })
-      .catch(() => setUsuariosWeb([]))
+      .catch(() => setDestData({ trainers: [], corporativos: [], scopedTrainer: null }))
       .finally(() => setLoadingU(false))
     trabajadoresList(identity, { estado: 'activo' })
       .then(arr => setTrabajadores(arr || []))
@@ -79,25 +85,39 @@ export default function EnviarNotaModal({ user, onClose, onSaved }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Grupos de usuarios web por trainer (+ pseudo-grupo "Sin centro").
+  const usuarioGroups = useMemo(() => {
+    const gs = (destData.trainers || []).map(t => ({ id: t.id_trainer, label: t.label, usuarios: t.usuarios || [] }))
+    if ((destData.corporativos || []).length) {
+      gs.push({ id: '__corp__', label: 'Sin centro (corporativos)', usuarios: destData.corporativos })
+    }
+    return gs
+  }, [destData])
+
   // Lista filtrada según tipo + búsqueda
   const candidatos = useMemo(() => {
     if (tipo === 'usuario_web') {
-      // Set de emails de trabajadores activos → para marcar badge "Trabajador"
       const emailsTrabajadores = new Set(
         trabajadores.map(t => (t.email || '').toLowerCase()).filter(Boolean)
       )
-      const lista = usuariosWeb.map(u => {
-        const email = (u.email || '').toLowerCase()
-        const nombreCompleto = `${u.nombre || ''} ${u.apellidos || ''}`.trim()
-          || u.email || `Usuario ${u.id}`
-        const esTrabajador = emailsTrabajadores.has(email)
-        return {
-          tipo: 'usuario_web', id: u.id,
-          nombre: nombreCompleto,
-          sub: (u.email || '') + (esTrabajador ? ' · Trabajador' : ''),
-          es_trabajador: esTrabajador,
+      // Unión DEDUPLICADA de los usuarios de los grupos (trainers) seleccionados.
+      const vistos = new Set()
+      const lista = []
+      for (const grp of usuarioGroups) {
+        if (!selTrainers.has(grp.id)) continue
+        for (const u of grp.usuarios) {
+          if (vistos.has(u.id)) continue
+          vistos.add(u.id)
+          const email = (u.email || '').toLowerCase()
+          const esTrabajador = emailsTrabajadores.has(email)
+          lista.push({
+            tipo: 'usuario_web', id: u.id,
+            nombre: u.nombre || u.email || `Usuario ${u.id}`,
+            sub: (u.email || '') + (esTrabajador ? ' · Trabajador' : ''),
+            es_trabajador: esTrabajador,
+          })
         }
-      })
+      }
       if (!busqueda.trim()) return lista
       return lista.filter(x => coincideTexto(`${x.nombre} ${x.sub}`, busqueda))
     }
@@ -117,7 +137,22 @@ export default function EnviarNotaModal({ user, onClose, onSaved }) {
     }))
     if (!busqueda.trim()) return lista.slice(0, 200) // capar para no congelar UI
     return lista.filter(x => coincideTexto(`${x.nombre} ${x.sub}`, busqueda)).slice(0, 100)
-  }, [tipo, usuariosWeb, trabajadores, clientes, busqueda])
+  }, [tipo, usuarioGroups, selTrainers, trabajadores, clientes, busqueda])
+
+  // Seleccionar / deseleccionar todos los candidatos visibles (del tipo activo).
+  const toggleTodos = () => {
+    const keys = new Set(candidatos.map(c => `${c.tipo}:${c.id}`))
+    const todosPuestos = candidatos.length > 0 && candidatos.every(c =>
+      seleccion.some(s => `${s.tipo}:${s.id}` === `${c.tipo}:${c.id}`))
+    if (todosPuestos) {
+      setSeleccion(prev => prev.filter(s => !keys.has(`${s.tipo}:${s.id}`)))
+    } else {
+      setSeleccion(prev => {
+        const have = new Set(prev.map(s => `${s.tipo}:${s.id}`))
+        return [...prev, ...candidatos.filter(c => !have.has(`${c.tipo}:${c.id}`))]
+      })
+    }
+  }
 
   const toggle = (cand) => {
     const key = `${cand.tipo}:${cand.id}`
@@ -172,6 +207,40 @@ export default function EnviarNotaModal({ user, onClose, onSaved }) {
               Clientes
             </Btn>
           </div>
+
+          {/* Selector de centro(s) — solo manager, solo en usuarios web.
+              El trainer no lo ve (su lista ya viene scopeada a su centro). */}
+          {tipo === 'usuario_web' && esManager && usuarioGroups.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', alignSelf: 'center' }}>Centros:</span>
+              {usuarioGroups.map(g => {
+                const on = selTrainers.has(g.id)
+                return (
+                  <button key={g.id} type="button"
+                    onClick={() => setSelTrainers(prev => {
+                      const n = new Set(prev); n.has(g.id) ? n.delete(g.id) : n.add(g.id); return n
+                    })}
+                    style={{
+                      all: 'unset', cursor: 'pointer', padding: '3px 10px', borderRadius: 12,
+                      fontSize: 11.5, border: `1px solid ${on ? 'var(--green)' : 'var(--line)'}`,
+                      background: on ? 'var(--green-bg)' : 'var(--bg-2)',
+                      color: on ? 'var(--green)' : 'var(--text-2)',
+                    }}>
+                    {g.label} ({g.usuarios.length})
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {candidatos.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <Btn size="sm" variant="ghost" onClick={toggleTodos}>
+                <Check size={13} /> Seleccionar todos ({candidatos.length})
+              </Btn>
+            </div>
+          )}
+
           <div style={{ position: 'relative', marginBottom: 8 }}>
             <Search size={14} style={{ position: 'absolute', left: 10, top: '50%',
                                         transform: 'translateY(-50%)', color: 'var(--text-3)' }} />

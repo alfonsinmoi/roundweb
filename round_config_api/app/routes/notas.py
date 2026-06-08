@@ -62,6 +62,31 @@ def _serialize(row):
     return row
 
 
+# ─── Scope de comunicación (mismo trainer) ───────────────────────────────────
+# Regla de seguridad: un emisor SCOPEADO a un trainer (g.id_trainer fijado:
+# usuario_web atado a un centro o login directo de trainer NoofitPro) SOLO puede
+# comunicar con usuarios de ESE trainer. El MANAGER (g.id_trainer None) puede
+# comunicar con usuarios de cualquiera de sus trainers.
+
+def _sender_trainer():
+    """Trainer al que está scopeado el emisor (None = manager → sin límite)."""
+    return getattr(g, 'id_trainer', None)
+
+
+def _usuario_en_trainer(cur, id_manager, usuario_id, id_trainer):
+    """True si el usuario_web pertenece a ese trainer (pivote usuario_web_trainer
+    o columna id_trainer), dentro del mismo manager y activo."""
+    cur.execute("""
+        SELECT 1
+          FROM usuario_web u
+          LEFT JOIN usuario_web_trainer t ON t.usuario_id = u.id
+         WHERE u.id = %s AND u.id_manager = %s AND u.activo = TRUE
+           AND (t.id_trainer = %s OR u.id_trainer = %s)
+         LIMIT 1
+    """, (usuario_id, str(id_manager), str(id_trainer), str(id_trainer)))
+    return cur.fetchone() is not None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 @bp.route('/cliente/<idnoofit>', methods=['GET'])
@@ -85,6 +110,7 @@ def list_notas_cliente(idnoofit):
                    created_by_kind, created_by_id, created_by_email, created_by_label,
                    asignada_a_usuario_id, asignada_a_email, asignada_a_label,
                    estado, recordatorio_hasta,
+                   leida_at, leida_por_label, leida_at_cliente,
                    created_at, updated_at, archived_at, archived_by_email
               FROM cliente_nota
              WHERE {' AND '.join(where)}
@@ -224,6 +250,11 @@ def enviar_nota_a_receptores():
                 if not uw:
                     errores.append({'dest': dest, 'error': 'usuario_web_no_encontrado_o_inactivo'})
                     continue
+                # SEGURIDAD: emisor scopeado solo puede a usuarios de su trainer.
+                _st = _sender_trainer()
+                if _st and not _usuario_en_trainer(cur, g.id_manager, uw['id'], _st):
+                    errores.append({'dest': dest, 'error': 'usuario_fuera_de_tu_centro'})
+                    continue
                 asignada_a_usuario_id = uw['id']
                 asignada_a_email = uw['email']
                 asignada_a_label = (
@@ -242,6 +273,10 @@ def enviar_nota_a_receptores():
                     errores.append({'dest': dest, 'error': 'trabajador_no_encontrado_o_no_activo'})
                     continue
                 cliente_idnoofit = tr['cliente_idnoofit']
+                # SEGURIDAD: emisor scopeado solo a trabajadores de su centro.
+                if not cliente_pertenece_a_trainer(cliente_idnoofit):
+                    errores.append({'dest': dest, 'error': 'trabajador_fuera_de_tu_centro'})
+                    continue
                 cliente_nombre = tr.get('nombre_completo') or 'Trabajador'
                 # ¿Tiene usuario_web?
                 if tr.get('email'):
@@ -260,6 +295,10 @@ def enviar_nota_a_receptores():
             elif tipo == 'cliente':
                 # cliente_idnoofit es el id mismo
                 cliente_idnoofit = str(dest_id)
+                # SEGURIDAD: emisor scopeado solo a clientes de su centro.
+                if not cliente_pertenece_a_trainer(cliente_idnoofit):
+                    errores.append({'dest': dest, 'error': 'cliente_fuera_de_tu_centro'})
+                    continue
                 # Resolver nombre desde cliente_cache para meterlo en el row
                 cur.execute("""SELECT name, surname FROM cliente_cache
                                 WHERE id_manager=%s AND id=%s""",
@@ -301,6 +340,55 @@ def enviar_nota_a_receptores():
                        f'({len(errores)} error(es))',
                cambios={'destinatarios': destinatarios, 'contenido_len': len(contenido)})
     return jsonify({'ok': True, 'creadas': creadas, 'errores': errores})
+
+
+@bp.route('/destinatarios', methods=['GET'])
+@either_auth
+@require_seccion('crm.notas')
+def destinatarios():
+    """Usuarios web candidatos a recibir notas, agrupados por trainer y
+    SCOPEADOS por seguridad:
+      - manager (g.id_trainer None) → todos sus trainers + sus usuarios
+        (+ 'corporativos' sin centro).
+      - trainer scopeado → SOLO los usuarios de su propio trainer.
+    El frontend lo usa para que el manager elija trainer(s) + usuario(s)
+    (uno/varios/todos) y para que un trainer solo vea a los de su centro."""
+    m = str(g.id_manager)
+    st = _sender_trainer()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id_trainer, nombre_centro FROM centro_contacto WHERE id_manager=%s", (m,))
+        labels = {str(r['id_trainer']): (r['nombre_centro'] or f"Centro {r['id_trainer']}")
+                  for r in cur.fetchall()}
+        cur.execute("""
+            SELECT u.id, u.email, u.nombre, u.apellidos, u.id_trainer AS col_trainer,
+                   COALESCE(array_agg(t.id_trainer) FILTER (WHERE t.id_trainer IS NOT NULL),
+                            '{}') AS pivote
+              FROM usuario_web u
+              LEFT JOIN usuario_web_trainer t ON t.usuario_id = u.id
+             WHERE u.id_manager=%s AND u.activo=TRUE
+             GROUP BY u.id
+             ORDER BY u.email
+        """, (m,))
+        usuarios = cur.fetchall()
+    by_trainer, corporativos = {}, []
+    for u in usuarios:
+        trs = set(str(x) for x in (u['pivote'] or []))
+        if u['col_trainer']:
+            trs.add(str(u['col_trainer']))
+        item = {'id': u['id'], 'email': u['email'],
+                'nombre': f"{u['nombre'] or ''} {u['apellidos'] or ''}".strip() or u['email']}
+        if not trs:
+            corporativos.append(item)
+        for tid in trs:
+            by_trainer.setdefault(tid, []).append(item)
+    if st:
+        # Trainer scopeado: solo su centro, sin corporativos.
+        by_trainer = {k: v for k, v in by_trainer.items() if k == str(st)}
+        corporativos = []
+    trainers = [{'id_trainer': tid, 'label': labels.get(tid, f'Centro {tid}'), 'usuarios': us}
+                for tid, us in sorted(by_trainer.items())]
+    return jsonify({'ok': True, 'trainers': trainers, 'corporativos': corporativos,
+                    'scoped_trainer': (str(st) if st else None)})
 
 
 @bp.route('/<int:nid>', methods=['PATCH'])
@@ -463,6 +551,42 @@ def responder_nota(nid):
     return jsonify({'ok': True, 'nota': nueva})
 
 
+@bp.route('/<int:nid>/leer', methods=['POST'])
+@either_auth
+@require_seccion('crm.notas')
+def marcar_leida(nid):
+    """Acuse de lectura interno: SOLO el destinatario (asignada_a_usuario_id)
+    marca su propia lectura. Idempotente (no pisa la primera lectura). El
+    manager mirando no marca lectura (noop). Respeta aislamiento por trainer."""
+    actor = actor_from_request()
+    uid = None
+    try:
+        uid = g.usuario_web['id']
+    except Exception:
+        pass
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id_trainer, asignada_a_usuario_id, leida_at
+                         FROM cliente_nota WHERE id_manager=%s AND id=%s""",
+                    (str(g.id_manager), nid))
+        n = cur.fetchone()
+        if not n or trainer_bloquea(n['id_trainer']):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        # Solo el destinatario marca lectura.
+        if uid is None or n['asignada_a_usuario_id'] != uid:
+            return jsonify({'ok': True, 'noop': True,
+                            'leida_at': n['leida_at'].isoformat() if n['leida_at'] else None})
+        if n['leida_at']:
+            return jsonify({'ok': True, 'leida_at': n['leida_at'].isoformat()})
+        cur.execute("""UPDATE cliente_nota
+                          SET leida_at=NOW(), leida_por_id=%s, leida_por_label=%s
+                        WHERE id_manager=%s AND id=%s
+                        RETURNING leida_at""",
+                    (uid, (actor.get('label') or actor.get('email') or 'Usuario')[:160],
+                     str(g.id_manager), nid))
+        r = cur.fetchone()
+    return jsonify({'ok': True, 'leida_at': r['leida_at'].isoformat() if r and r['leida_at'] else None})
+
+
 @bp.route('/<int:nid>', methods=['DELETE'])
 @either_auth
 @require_permission('crm.notas.borrar_nota')
@@ -498,27 +622,29 @@ def my_banner():
         pass
     with get_conn() as conn, conn.cursor() as cur:
         if uid is not None:
-            # usuario_web: solo las asignadas a él
+            # usuario_web: solo las asignadas a él. Incluye 'recordatorio' cuyo
+            # recordatorio_hasta ya venció (si no, las notas pospuestas/programadas
+            # nunca volverían a aparecer en el banner).
             cur.execute("""
                 SELECT id, cliente_idnoofit, cliente_nombre, contenido,
                        created_by_email, created_by_label,
-                       estado, recordatorio_hasta, parent_id, created_at
+                       estado, recordatorio_hasta, parent_id, created_at, leida_at
                   FROM cliente_nota
                  WHERE asignada_a_usuario_id = %s
-                   AND estado IN ('abierta')
+                   AND estado IN ('abierta', 'recordatorio')
                    AND (recordatorio_hasta IS NULL OR recordatorio_hasta <= %s)
                  ORDER BY created_at DESC
                  LIMIT 50
             """, (uid, now))
         else:
-            # manager: todas las abiertas del manager (vista superior)
+            # manager: todas las abiertas/recordatorio-vencido del manager.
             cur.execute("""
                 SELECT id, cliente_idnoofit, cliente_nombre, contenido,
                        created_by_email, created_by_label,
-                       estado, recordatorio_hasta, parent_id, created_at
+                       estado, recordatorio_hasta, parent_id, created_at, leida_at
                   FROM cliente_nota
                  WHERE id_manager = %s
-                   AND estado IN ('abierta')
+                   AND estado IN ('abierta', 'recordatorio')
                    AND (recordatorio_hasta IS NULL OR recordatorio_hasta <= %s)
                  ORDER BY created_at DESC
                  LIMIT 50
@@ -598,6 +724,7 @@ def my_notas():
                created_by_kind, created_by_id, created_by_email, created_by_label,
                asignada_a_usuario_id, asignada_a_email, asignada_a_label,
                estado, recordatorio_hasta,
+               leida_at, leida_por_label, leida_at_cliente,
                created_at, updated_at
           FROM cliente_nota
          WHERE id_manager = %s {where_clause}

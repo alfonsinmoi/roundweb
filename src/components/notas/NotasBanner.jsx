@@ -1,12 +1,12 @@
 // Banner que aparece arriba cuando el usuario_web tiene notas asignadas pendientes
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bell, X, Reply, Archive, BellOff, ChevronDown, ChevronUp } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { useToast } from '../Toast'
 import NotaCard from './NotaCard'
 import NotaModal from './NotaModal'
-import { misNotasBanner, archivarNota, recordatorioNota } from '../../utils/notasApi'
+import { misNotasBanner, archivarNota, recordatorioNota, marcarLeidaNota } from '../../utils/notasApi'
 
 const REFRESH_MS = 60 * 1000  // refresca cada minuto
 
@@ -18,6 +18,7 @@ export default function NotasBanner() {
   const [loaded, setLoaded] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [responding, setResponding] = useState(null)
+  const marcadasRef = useRef(new Set())  // ids ya marcados como leídos (anti-spam)
 
   const reload = useCallback(async () => {
     if (user?.kind !== 'usuario_web') { setNotas([]); setLoaded(true); return }
@@ -33,6 +34,18 @@ export default function NotasBanner() {
     const t = setInterval(reload, REFRESH_MS)
     return () => clearInterval(t)
   }, [reload])
+
+  // Acuse de lectura: al mostrar el banner (expandido), marca como leídas las
+  // notas que el destinatario ve y aún no estaban leídas. El backend es
+  // idempotente y solo registra si el actor es el destinatario (seguro).
+  useEffect(() => {
+    if (collapsed || user?.kind !== 'usuario_web') return
+    for (const n of notas) {
+      if (n.leida_at || marcadasRef.current.has(n.id)) continue
+      marcadasRef.current.add(n.id)
+      marcarLeidaNota(user, n.id).catch(() => marcadasRef.current.delete(n.id))
+    }
+  }, [notas, collapsed, user])
 
   const handleArchivar = async (n) => {
     try { await archivarNota(user, n.id); setNotas(ns => ns.filter(x => x.id !== n.id)); toast.success('Archivada') }

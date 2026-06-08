@@ -66,6 +66,25 @@ export default function NotaCard({
         {nota.contenido}
       </p>
 
+      {/* Acuse de lectura (visible para el emisor): destinatario y/o cliente */}
+      {(nota.leida_at || nota.leida_at_cliente) && (
+        <div style={{ marginTop: 8, display: 'flex', gap: 12, flexWrap: 'wrap',
+                      fontSize: 11, color: 'var(--green)' }}>
+          {nota.leida_at && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <CheckCircle2 size={12} aria-hidden="true" />
+              Leída{nota.leida_por_label ? ` por ${nota.leida_por_label}` : ''} · {fmtDate(nota.leida_at)}
+            </span>
+          )}
+          {nota.leida_at_cliente && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <CheckCircle2 size={12} aria-hidden="true" />
+              Leída por el cliente · {fmtDate(nota.leida_at_cliente)}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Acciones */}
       {(onArchivar || onRecordatorio || onResponder || onBorrar) && nota.estado !== 'archivada' && (
         <div style={{ marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap' }}>

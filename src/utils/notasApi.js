@@ -99,6 +99,20 @@ export async function enviarNota(user, payload) {
   })
 }
 
+// GET /api/notas/destinatarios — usuarios web candidatos AGRUPADOS por trainer
+// y ya SCOPEADOS por el backend (manager → todos sus trainers; trainer → solo
+// el suyo). Devuelve { trainers:[{id_trainer,label,usuarios:[...]}], corporativos:[...] }.
+export async function destinatariosNota(user) {
+  const r = await fetchJson('/api/notas/destinatarios', { headers: buildHeaders(user) })
+  return { trainers: r.trainers || [], corporativos: r.corporativos || [],
+           scopedTrainer: r.scoped_trainer || null }
+}
+
+// POST /api/notas/<id>/leer — acuse de lectura del destinatario (idempotente).
+export async function marcarLeidaNota(user, id) {
+  return fetchJson(`/api/notas/${id}/leer`, { method: 'POST', headers: buildHeaders(user) })
+}
+
 // ─── Endpoints "yo" (banner + página /notas) ─────────────────────────────────
 export async function misNotasBanner(user) {
   const r = await fetchJson(`/api/notas/me/banner`, { headers: buildHeaders(user) })
