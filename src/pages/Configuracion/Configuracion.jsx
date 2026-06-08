@@ -28,6 +28,11 @@ import ActividadesPage      from '../Actividades'
 import ChecklistTab        from './ChecklistTab'
 import AltaClienteTab      from './AltaClienteTab'
 import TerminalCajaTab     from './TerminalCajaTab'
+import MenuConfigTab       from './MenuConfigTab'
+
+const MENU_TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
+// Pestañas que un trainer ve por defecto si el manager aún no configuró el Menú.
+const DEFAULT_TRAINER_TABS = ['cuotas', 'descuentos', 'modificaciones', 'formas_pago', 'periodicidad']
 
 // `featureFlag`: si está y la feature está a `false` en useOdooStatus, la
 // pestaña se oculta. Convención:
@@ -73,6 +78,20 @@ const TAB_CHECK_CRM    = { id: 'check_crm',    label: 'Checklist CRM',          
 const TAB_CHECK_CUOTAS = { id: 'check_cuotas', label: 'Checklist Cuotas',       comp: (p) => <ChecklistTab {...p} modulo="cuotas" />,       managerOnly: true, featureFlag: 'cuotas',       perm: 'configuracion.checklist' }
 const TAB_CHECK_CONTAB = { id: 'check_contab', label: 'Checklist Contabilidad', comp: (p) => <ChecklistTab {...p} modulo="contabilidad" />, managerOnly: true, featureFlag: 'contabilidad', perm: 'configuracion.checklist' }
 
+// Catálogo ordenado de TODAS las pestañas de manager (sin la pestaña "Menú",
+// que es el panel de control y siempre es solo-manager). Es la lista única que:
+//  · ve el manager (junto a "Menú"),
+//  · puede activar/desactivar para trainers en "Menú",
+//  · filtra lo que ve un trainer.
+const MANAGER_TABS = [
+  TAB_SUSCRIP, TAB_CHECK_CRM, TAB_CHECK_CUOTAS, TAB_CHECK_CONTAB,
+  ...TABS_BASE,
+  TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_ALTA_CLI,
+  TAB_ACTIVIDADES, TAB_PASARELAS, TAB_POS, TAB_CANALES, TAB_FORMULARIOS,
+  TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS,
+]
+const MENU_CATALOG = MANAGER_TABS.map(t => ({ id: t.id, label: t.label }))
+
 // Lee la pestaña inicial desde ?tab=<id> o #<id> (deep-link).
 // Si llega vacío o no existe, devuelve null y el componente decide default.
 function _readTabFromLocation() {
@@ -95,18 +114,56 @@ export default function Configuracion() {
   const [activeTab, setActiveTab] = useState(_initial)
   const identity = getRoundIdentity(user)
   const { features } = useOdooStatus()
-  // Tabs solo visibles para el manager (no impersonando trainer).
-  // Suscripciones va PRIMERO (entry point principal — desde aquí se activa
-  // Odoo por primera vez), seguido de los catálogos (Cuotas/Descuentos/etc.).
-  const TABS_ALL = isImpersonating
-    ? TABS_BASE
-    : [TAB_SUSCRIP, TAB_CHECK_CRM, TAB_CHECK_CUOTAS, TAB_CHECK_CONTAB, ...TABS_BASE, TAB_CATEGORIAS, TAB_NOTIF, TAB_CONTAB, TAB_FORMA_FACT, TAB_CENTROS, TAB_ALTA_CLI, TAB_ACTIVIDADES, TAB_PASARELAS, TAB_POS, TAB_CANALES, TAB_FORMULARIOS, TAB_EMAIL, TAB_EMAIL_TPL, TAB_META, TAB_PERFILES, TAB_USUARIOS]
+  const isUsuarioWeb = user?.kind === 'usuario_web'
+  // VISTA DE TRAINER: impersonación, o login DIRECTO de un trainer NoofitPro
+  // (X-TRAINER_MANAGER=false). Ve SOLO las pestañas que el manager marcó en
+  // "Menú". El selector de centro del header NO convierte al manager en
+  // trainer (su esManager sigue true).
+  const isTrainerView = isImpersonating || (!isUsuarioWeb && user?.esManager === false)
+  // MANAGER NoofitPro real: ve todo + la pestaña "Menú" (panel de control).
+  const isRealManager = !isImpersonating && !isUsuarioWeb && user?.esManager !== false
+
+  // Qué pestañas puede ver un trainer lo decide el manager (pestaña "Menú").
+  // Lo leemos del backend cuando la sesión es de trainer.
+  const [trainerTabs, setTrainerTabs] = useState(null)
+  useEffect(() => {
+    if (!isTrainerView || !identity?.managerId) return
+    let alive = true
+    ;(async () => {
+      try {
+        const h = { 'X-Round-Token': MENU_TOKEN, 'X-Round-Manager-Id': String(identity.managerId) }
+        if (identity.trainerId) h['X-Round-Trainer-Id'] = String(identity.trainerId)
+        if (user?.jwt) h['Authorization'] = `Bearer ${user.jwt}`
+        const r = await fetch('/api/config/menu-trainer', { headers: h })
+        const d = await r.json()
+        if (alive) setTrainerTabs(Array.isArray(d.enabled) ? d.enabled : DEFAULT_TRAINER_TABS)
+      } catch { if (alive) setTrainerTabs(DEFAULT_TRAINER_TABS) }
+    })()
+    return () => { alive = false }
+  }, [isTrainerView, identity?.managerId, identity?.trainerId, user?.jwt])
+
+  // Pestaña "Menú" (solo manager): editor de visibilidad para trainers.
+  const TAB_MENU = {
+    id: 'menu', label: 'Menú',
+    comp: () => <MenuConfigTab identity={identity} catalog={MENU_CATALOG}
+                               defaults={DEFAULT_TRAINER_TABS} user={user} />,
+  }
+
+  let TABS_ALL
+  if (isTrainerView) {
+    const allow = new Set(trainerTabs || DEFAULT_TRAINER_TABS)
+    TABS_ALL = MANAGER_TABS.filter(t => allow.has(t.id))
+  } else if (isRealManager) {
+    TABS_ALL = [TAB_MENU, ...MANAGER_TABS]
+  } else {
+    // usuario_web: como antes (sin "Menú"); se filtra por permisos abajo.
+    TABS_ALL = MANAGER_TABS
+  }
   // Filtrar por features: pestañas con featureFlag se ocultan si la
   // feature está false (Odoo no desplegado).
   // Filtrar también por `perm`: si el usuario es usuario_web y su perfil no
   // tiene ningún permiso bajo el subárbol del tab, la pestaña se oculta.
   // Manager NoofitPro (user.kind != 'usuario_web') pasa todos los filtros.
-  const isUsuarioWeb = user?.kind === 'usuario_web'
   const TABS = TABS_ALL
     .filter(t => !t.featureFlag || features?.[t.featureFlag] !== false)
     .filter(t => !isUsuarioWeb || !t.perm || canAccessSection(user.perfil, t.perm))

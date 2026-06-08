@@ -41,6 +41,7 @@ from .routes.subscriptions     import bp as bp_subscriptions
 from .routes.forma_pago        import bp as bp_forma_pago
 from .routes.modo_facturacion  import bp as bp_modo_facturacion
 from .routes.facturacion_config import bp as bp_facturacion_config
+from .routes.config_menu import bp as bp_config_menu
 from .routes.facturacion_emision import bp as bp_facturacion_emision
 from .routes.manager_odoo      import bp as bp_manager_odoo
 from .routes.auth_bootstrap    import bp as bp_auth_bootstrap
@@ -218,6 +219,10 @@ def create_app():
     # ── Modo de facturación (config del manager)
     for prefix in ('/modo-facturacion', '/api/config/modo-facturacion'):
         app.register_blueprint(bp_modo_facturacion, name=f'mf{prefix}', url_prefix=prefix)
+
+    # ── Menú de Configuración: qué pestañas ven los trainers (manager-only PUT)
+    for prefix in ('/menu-trainer', '/api/config/menu-trainer'):
+        app.register_blueprint(bp_config_menu, name=f'cmenu{prefix}', url_prefix=prefix)
 
     # ── Config de facturación (2 sistemas, 430XXX, series, IVA) — manager-only
     for prefix in ('/facturacion', '/api/config/facturacion'):
