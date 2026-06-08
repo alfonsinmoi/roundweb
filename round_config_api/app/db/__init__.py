@@ -2598,6 +2598,69 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_recibo_import_origenref
 CREATE UNIQUE INDEX IF NOT EXISTS uq_recibo_emision_periodo
   ON recibo (id_manager, id_trainer, cliente_idnoofit, periodo, cuota_codigo)
   WHERE origen IN ('cron_emision','emision_v2') AND estado NOT IN ('cancelado','anulado');
+
+-- ═══ Config de facturación (2 sistemas × a/b, 430XXX por trainer) ══════════
+CREATE TABLE IF NOT EXISTS facturacion_config (
+  id          serial PRIMARY KEY,
+  id_manager  varchar(64) NOT NULL,
+  company_id  integer,
+  sistema     varchar(16) NOT NULL DEFAULT 'fin_de_mes'  CHECK (sistema IN ('inmediata','fin_de_mes')),
+  destino     varchar(16) NOT NULL DEFAULT 'por_cliente' CHECK (destino IN ('por_cliente','agregada_430')),
+  activo      boolean NOT NULL DEFAULT false,
+  updated_by  varchar(80),
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id_manager, company_id)
+);
+CREATE TABLE IF NOT EXISTS facturacion_serie (
+  id               serial PRIMARY KEY,
+  id_manager       varchar(64) NOT NULL,
+  clave            varchar(40) NOT NULL,
+  prefijo          varchar(20),
+  descripcion      varchar(120),
+  es_cliente_final boolean NOT NULL DEFAULT false,
+  ir_sequence_id   integer,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id_manager, clave)
+);
+CREATE TABLE IF NOT EXISTS facturacion_trainer (
+  id                serial PRIMARY KEY,
+  id_manager        varchar(64) NOT NULL,
+  id_trainer        varchar(64) NOT NULL,
+  cuenta_430_sufijo integer CHECK (cuenta_430_sufijo IS NULL OR (cuenta_430_sufijo BETWEEN 1 AND 999)),
+  serie_id          integer REFERENCES facturacion_serie(id) ON DELETE SET NULL,
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id_manager, id_trainer)
+);
+CREATE TABLE IF NOT EXISTS facturacion_tipo_iva (
+  id          serial PRIMARY KEY,
+  id_manager  varchar(64) NOT NULL,
+  id_trainer  varchar(64) NOT NULL,
+  nombre      varchar(60) NOT NULL,
+  pct         numeric(5,2) NOT NULL DEFAULT 21.00,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS factura_cliente_final (
+  id               serial PRIMARY KEY,
+  id_manager       varchar(64) NOT NULL,
+  id_trainer       varchar(64) NOT NULL,
+  cliente_idnoofit varchar(32) NOT NULL,
+  periodo          varchar(7) NOT NULL,
+  importe          numeric(12,2) NOT NULL,
+  factura_ref      varchar(120),
+  reducido         boolean NOT NULL DEFAULT false,
+  reducido_periodo varchar(7),
+  created_at       timestamptz NOT NULL DEFAULT now()
+);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='cuota')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='cuota' AND column_name='tipo_iva_id') THEN
+    ALTER TABLE cuota ADD COLUMN tipo_iva_id INTEGER REFERENCES facturacion_tipo_iva(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_fact_trainer_mgr ON facturacion_trainer(id_manager);
+CREATE INDEX IF NOT EXISTS idx_fact_tipoiva_mgr ON facturacion_tipo_iva(id_manager, id_trainer);
+CREATE INDEX IF NOT EXISTS idx_fcf_mgr_periodo  ON factura_cliente_final(id_manager, periodo, reducido);
 """
 
 
