@@ -5,6 +5,7 @@ Todas operan sobre Odoo (round_facturacion) via XML-RPC.
 import base64
 import logging
 import os
+import threading
 from flask import Blueprint, request, jsonify, g, Response
 from ..auth import auth_required, require_permission, require_seccion
 from ..odoo_guard import require_feature
@@ -808,17 +809,34 @@ def devoluciones():
                        resumen=f"Devolución SEPA · recibo {rec['id']} · {rec['cliente_nombre']} · {periodo}",
                        cambios={'motivo': motivo, 'importe': base['importe'], 'periodo': periodo})
 
-        # Notif automática al cliente afectado
-        notificadas = 0
-        for proc in result['procesadas']:
-            if proc.get('ya_devuelto'):
-                continue
-            try:
-                if _disparar_notif_devolucion(proc, g.id_manager):
-                    notificadas += 1
-            except Exception as e:
-                log.warning(f'notif devolucion: {e}')
-        result['notif_enviadas'] = notificadas
+        # Notif automática al cliente afectado — EN SEGUNDO PLANO.
+        # OneSignal por recibo es lento (y a menudo falla); lo sacamos del
+        # camino crítico: la devolución (Odoo) ya está hecha y comprometida en
+        # BD, así que respondemos ya y notificamos en un hilo aparte. Solo se
+        # notifica lo REALMENTE procesado este envío (ni ya_devuelto ni
+        # ya_procesada → evita re-notificar reenvíos del mismo fichero).
+        notif_targets = [p for p in result['procesadas']
+                         if not p.get('ya_devuelto') and not p.get('ya_procesada')]
+        # g no existe fuera del request: capturamos el manager ahora. El trainer
+        # se deriva por cliente dentro de _disparar_notif_devolucion (id_trainer=None),
+        # correcto porque el fichero del banco abarca todos los trainers.
+        _id_manager = str(g.id_manager)
+
+        def _notif_bg(targets, id_manager):
+            enviadas = 0
+            for proc in targets:
+                try:
+                    if _disparar_notif_devolucion(proc, id_manager):
+                        enviadas += 1
+                except Exception as e:
+                    log.warning(f'notif devolucion (bg): {e}')
+            log.info(f'devoluciones: notif en 2º plano enviadas={enviadas}/{len(targets)}')
+
+        if notif_targets:
+            threading.Thread(target=_notif_bg, args=(notif_targets, _id_manager),
+                             daemon=True, name='notif-devolucion').start()
+        result['notif_enviadas'] = 'en_segundo_plano'
+        result['notif_pendientes'] = len(notif_targets)
         return jsonify({'ok': True, **result})
     except Exception as e:
         log.exception('devoluciones')
