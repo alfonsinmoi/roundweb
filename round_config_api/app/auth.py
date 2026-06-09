@@ -24,12 +24,15 @@ Reglas combinadas:
   - `id_manager` se toma del JWT si presente (más fiable); si no, del
     header `X-Round-Manager-Id`.
 """
+import logging
 from functools import wraps
 from flask import request, jsonify, g
 
 from . import config
 from .auth_usuario import decode_jwt
 from .db import get_conn
+
+log = logging.getLogger(__name__)
 
 
 def _load_usuario_web_from_jwt():
@@ -175,8 +178,8 @@ def auth_required(fn):
         g.id_trainer = (request.headers.get('X-Round-Trainer-Id', '')
                         or request.args.get('trainer', '')).strip() or None
 
-        # Intenta resolver usuario_web si vino JWT (no obligatorio).
-        _load_usuario_web_from_jwt()
+        # Intenta resolver usuario_web/manager si vino JWT (no obligatorio).
+        jwt_loaded = _load_usuario_web_from_jwt()
 
         if not g.id_manager:
             return jsonify({'ok': False, 'error': 'missing_manager_id'}), 400
@@ -192,6 +195,18 @@ def auth_required(fn):
 
         # Reconducir login directo de trainer a su manager real (ver helper).
         _remap_trainer_as_manager()
+
+        # H1 paso 2 (MONITOR — no rechaza nada): cuenta las peticiones de manager
+        # que aún van "cabecera-sola" (sin JWT firmado). Cuando este tráfico baje
+        # a ~0 (sesiones renovadas), se podrá activar el rechazo. NO romper a los
+        # usuarios activos: solo log. Excluye descargas por ?token= (links).
+        if (g.perfil is None) and (not jwt_loaded):
+            try:
+                via_query = bool(request.args.get('token'))
+                log.info('H1-monitor manager-header-only m=%s via_query=%s %s %s',
+                         g.id_manager, via_query, request.method, request.path)
+            except Exception:
+                pass
 
         return fn(*args, **kwargs)
     return wrapper

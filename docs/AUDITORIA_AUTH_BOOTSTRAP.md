@@ -67,12 +67,21 @@ tras verificar las credenciales contra NoofitPro. Vincula el **tenant**
 - Verificado: cabecera de manager falsa → se ignora (manda el JWT); selector de
   centro sigue OK; sin JWT → ruta cabecera (cero ruptura); Bearer inválido → 401.
 
-**Falta (Paso 2):** ENFORCEMENT — rechazar peticiones de manager que solo traigan
-cabecera (sin JWT válido), salvo la lista blanca de descargas `?token=` (que se
-pasaría a URLs firmadas). Hasta hacerlo, la ruta cabecera-sola sigue aceptándose
-(compat), así que el agujero no está cerrado del todo: las sesiones legítimas YA
-quedan a prueba de manipulación, pero un atacante con el token podría seguir
-usando la ruta cabecera-sola. Cerrar en Paso 2.
+**Paso 2 — MODO MONITOR desplegado (jun 2026, NO bloquea):** `auth_required`
+registra `H1-monitor manager-header-only ...` cada vez que una sesión de manager
+va "cabecera-sola" (sin JWT firmado), distinguiendo `via_query` (descargas
+`?token=`). NO rechaza nada → **cero impacto en usuarios activos** (verificado:
+había una sesión activa polleando `/api/clientes-atendidos` que habría sido
+expulsada con un bloqueo duro). Sirve para (a) medir cuándo el tráfico
+cabecera-sola baja a ~0 (sesiones renovadas) y (b) enumerar los endpoints de
+descarga `?token=` que necesitan lista blanca.
+
+**Paso 2 — ENFORCEMENT (pendiente, NO hacer con sesiones activas sin JWT):**
+cuando el monitor muestre ~0 peticiones `via_query=False` cabecera-sola, cambiar
+el `log.info` por un `return 401` (salvo `via_query=True` en la lista blanca de
+descargas, o migrar esas a URLs firmadas). Es un cambio de 1 línea, pero solo
+seguro cuando las sesiones activas ya lleven el JWT (re-login). Mientras tanto,
+las sesiones legítimas YA están blindadas; el residual es la ruta cabecera-sola.
 
 #### Descripción original del hallazgo (contexto)
 - Tras el login, la sesión del **manager NoofitPro no usa JWT propio**: cada
