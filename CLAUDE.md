@@ -761,6 +761,11 @@ Tras la prueba, el trainer da de alta al cliente:
 
 ## Referencias rápidas
 
+- **Registro de auditorías + REGLAS/invariantes** (LEER antes de tocar áreas
+  sensibles: auth, recibos, facturación, POS, notas): `docs/AUDITORIAS_ROUND.md`
+  — documento vivo con índice fechado y las reglas extraídas de cada auditoría
+  (cómo se detecta un manager, idempotencias, dedup BD/Odoo, same-trainer, etc.).
+  Detalle de auth en `docs/AUDITORIA_AUTH_BOOTSTRAP.md`.
 - **Modelo manager / trainer / usuario_web** (reglas inmutables de scope y
   privilegios): `docs/MANAGER_TRAINER.md` — **LEER antes de añadir tabla o
   endpoint nuevo**. Reglas clave: NoofitPro decide la jerarquía, manager
