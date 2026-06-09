@@ -228,6 +228,9 @@ export function AuthProvider({ children }) {
         roundManagerId: (boot && boot.id_manager) ? String(boot.id_manager) : null,
         roundTrainerId: (boot && boot.id_trainer) ? String(boot.id_trainer) : null,
         esManager,
+        // H1 paso 1 — JWT firmado del manager (vincula el tenant; se envía
+        // como Authorization: Bearer para no depender de la cabecera).
+        managerJwt: (boot && boot.manager_jwt) || null,
       })
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(userData))
       setUser(userData)

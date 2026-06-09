@@ -47,7 +47,31 @@ def _load_usuario_web_from_jwt():
         return False
     token = auth[len('Bearer '):].strip()
     claims = decode_jwt(token)
-    if not claims or claims.get('kind') != 'usuario_web':
+    if not claims:
+        return False
+    # H1 paso 1 — JWT de MANAGER (kind='manager'): vincula g.id_manager al
+    # tenant firmado por el backend, ignorando la cabecera X-Round-Manager-Id
+    # (que viaja con un token público y es manipulable). perfil=None → control
+    # total, igual que el manager NoofitPro clásico. Si no hay JWT de manager,
+    # se mantiene el comportamiento actual (cabecera) — cero ruptura.
+    if claims.get('kind') == 'manager':
+        mgr = claims.get('mgr')
+        if not mgr:
+            return False
+        g.id_manager = str(mgr)
+        # Solo vinculamos el TENANT. El trainer:
+        #  - si el JWT trae `trn` (login directo de trainer scopeado) → autoritativo.
+        #  - si es manager (trn None) → respetamos X-Round-Trainer-Id (selector de
+        #    centro del manager); es un filtro DENTRO de su propio tenant, sin riesgo.
+        _trn = claims.get('trn')
+        if _trn:
+            g.id_trainer = str(_trn)
+        else:
+            g.id_trainer = (request.headers.get('X-Round-Trainer-Id', '')
+                            or request.args.get('trainer', '')).strip() or None
+        # g.usuario_web y g.perfil quedan en None (ya inicializados arriba).
+        return True
+    if claims.get('kind') != 'usuario_web':
         return False
     try:
         usuario_id = int(claims['sub'])

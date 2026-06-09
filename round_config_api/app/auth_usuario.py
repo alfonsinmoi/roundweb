@@ -78,6 +78,27 @@ def issue_jwt(usuario_id: int, id_manager: str, id_trainer: str | None,
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
 
 
+def issue_jwt_manager(id_manager: str, id_trainer: str | None = None) -> str:
+    """JWT firmado para la sesión de MANAGER NoofitPro (kind='manager').
+
+    Lo emite round-bootstrap SOLO tras verificar las credenciales contra
+    NoofitPro. Vincula el `id_manager` (tenant) ya resuelto por el backend, de
+    modo que las peticiones del manager dejan de depender de la cabecera
+    `X-Round-Manager-Id` (que viaja con un token público). H1, paso 1.
+    """
+    if not JWT_SECRET:
+        raise RuntimeError('JWT_SECRET no configurado')
+    payload = {
+        'sub': str(id_manager),
+        'kind': 'manager',
+        'mgr': str(id_manager),
+        'trn': str(id_trainer) if id_trainer else None,
+        'iat': dt.datetime.utcnow(),
+        'exp': dt.datetime.utcnow() + dt.timedelta(hours=JWT_TTL_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
 def decode_jwt(token: str) -> dict | None:
     if not JWT_SECRET or not token:
         return None
@@ -118,7 +139,29 @@ def usuario_web_required(fn):
             return jsonify({'ok': False, 'error': 'missing_token'}), 401
         token = auth[len('Bearer '):].strip()
         claims = decode_jwt(token)
-        if not claims or claims.get('kind') != 'usuario_web':
+        if not claims:
+            return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+        # H1 paso 1 — JWT de MANAGER (kind='manager'): vincula el tenant firmado
+        # por el backend (ignora la cabecera). perfil=None → control total, como
+        # el manager NoofitPro clásico. Necesario porque `@either_auth` enruta a
+        # este decorador cuando llega un Bearer; sin esto, el JWT de manager
+        # daría 401 en endpoints de notas/etc.
+        if claims.get('kind') == 'manager':
+            mgr = claims.get('mgr')
+            if not mgr:
+                return jsonify({'ok': False, 'error': 'invalid_token'}), 401
+            g.usuario_web = None
+            g.perfil = None
+            g.id_manager = str(mgr)
+            # Solo el tenant se vincula al JWT. Trainer: del JWT si viene
+            # (trainer scopeado), si no del header X-Round-Trainer-Id (selector
+            # del manager dentro de su propio tenant).
+            _trn = claims.get('trn')
+            g.id_trainer = (str(_trn) if _trn
+                            else ((request.headers.get('X-Round-Trainer-Id', '')
+                                   or request.args.get('trainer', '')).strip() or None))
+            return fn(*args, **kwargs)
+        if claims.get('kind') != 'usuario_web':
             return jsonify({'ok': False, 'error': 'invalid_token'}), 401
         usuario_id = int(claims['sub'])
 

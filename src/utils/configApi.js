@@ -2,7 +2,7 @@
 // Backend Flask en /api/config/* que mantiene cuotas, descuentos y
 // modificaciones por trainer. Token compartido en variable Vite.
 
-import { handleAuthExpired, consumeNewToken, isAuthExpiredResponse, getStoredJwt } from './authState'
+import { handleAuthExpired, consumeNewToken, isAuthExpiredResponse, getStoredJwt, getStoredManagerJwt } from './authState'
 
 const BASE = '/api/config'
 
@@ -16,7 +16,11 @@ const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
 // clásica), no añade nada y el backend sigue funcionando como antes.
 function _withBearer(h) {
   const jwt = getStoredJwt()
-  if (jwt) h.Authorization = `Bearer ${jwt}`
+  if (jwt) { h.Authorization = `Bearer ${jwt}`; return h }
+  // H1 paso 1 — sesión de manager NoofitPro: enviar su JWT firmado (vincula el
+  // tenant). Si no hay (sesión vieja), no añade nada y sigue por cabecera.
+  const mjwt = getStoredManagerJwt()
+  if (mjwt) h.Authorization = `Bearer ${mjwt}`
   return h
 }
 

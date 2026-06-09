@@ -51,7 +51,30 @@
 
 ## Hallazgos
 
-### 🔴 H1 (abierto) — Identificación per-request del manager por cabecera
+### 🟠 H1 (PASO 1 hecho — falta enforcement) — Identificación per-request del manager
+
+**Paso 1 implementado (jun 2026):** la sesión de manager ahora lleva un **JWT
+firmado por el backend** (`kind='manager'`), emitido por `round-bootstrap` SOLO
+tras verificar las credenciales contra NoofitPro. Vincula el **tenant**
+(`id_manager`) de forma firmada:
+- `issue_jwt_manager()` en `auth_usuario.py`; lo emite `auth_bootstrap.py` (`manager_jwt`).
+- `auth.py` (`_load_usuario_web_from_jwt`) y `auth_usuario.py` (`usuario_web_required`,
+  vía `@either_auth`) aceptan `kind='manager'`: si llega, `g.id_manager` sale del
+  **JWT** (la cabecera `X-Round-Manager-Id` se ignora). El **trainer** sigue del
+  header (selector de centro del manager, dentro de su propio tenant).
+- Frontend: `AuthContext` guarda `managerJwt`; `configApi` lo envía como
+  `Authorization: Bearer` (`_withBearer` + `getStoredManagerJwt`).
+- Verificado: cabecera de manager falsa → se ignora (manda el JWT); selector de
+  centro sigue OK; sin JWT → ruta cabecera (cero ruptura); Bearer inválido → 401.
+
+**Falta (Paso 2):** ENFORCEMENT — rechazar peticiones de manager que solo traigan
+cabecera (sin JWT válido), salvo la lista blanca de descargas `?token=` (que se
+pasaría a URLs firmadas). Hasta hacerlo, la ruta cabecera-sola sigue aceptándose
+(compat), así que el agujero no está cerrado del todo: las sesiones legítimas YA
+quedan a prueba de manipulación, pero un atacante con el token podría seguir
+usando la ruta cabecera-sola. Cerrar en Paso 2.
+
+#### Descripción original del hallazgo (contexto)
 - Tras el login, la sesión del **manager NoofitPro no usa JWT propio**: cada
   petición se identifica solo con `X-Round-Token` + `X-Round-Manager-Id`, **sin
   re-verificar contra NoofitPro**.

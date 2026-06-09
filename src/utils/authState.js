@@ -29,6 +29,19 @@ export function getStoredJwt() {
   } catch { return '' }
 }
 
+// JWT firmado de la sesión de MANAGER NoofitPro (H1 paso 1). Distinto del
+// `jwt` de usuario_web. Vincula el tenant para que las peticiones no dependan
+// solo de la cabecera X-Round-Manager-Id. Si no hay (sesión vieja sin
+// bootstrap nuevo) devuelve '' y se mantiene el comportamiento por cabecera.
+export function getStoredManagerJwt() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    if (!raw) return ''
+    const s = JSON.parse(raw)
+    return (s && typeof s === 'object' && typeof s.managerJwt === 'string') ? s.managerJwt : ''
+  } catch { return '' }
+}
+
 export function handleAuthExpired() {
   if (_expiring) return
   _expiring = true

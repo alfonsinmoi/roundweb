@@ -169,12 +169,25 @@ def round_bootstrap():
                             f"{'manager' if es_manager else 'trainer ' + id_user} · "
                             f"tenant {tenant}" + (' (reconducido)' if remapped else '')))
 
+    # H1 paso 1 — JWT firmado de la sesión (kind='manager') vinculado al tenant
+    # YA resuelto por el backend. Solo si NoofitPro validó las creds
+    # (password_valida) → es una sesión verificada. El frontend lo enviará como
+    # Authorization: Bearer; el backend dejará de fiarse de la cabecera.
+    manager_jwt = None
+    if password_valida:
+        try:
+            from ..auth_usuario import issue_jwt_manager
+            manager_jwt = issue_jwt_manager(tenant, id_trainer_res)
+        except Exception as e:
+            log.warning(f'round-bootstrap: no se pudo emitir manager_jwt: {e}')
+
     return jsonify({
         'ok': True,
         'id_manager': tenant,
         'id_trainer': id_trainer_res,
         'es_manager': es_manager,
         'is_manager_login': es_manager,
+        'manager_jwt': manager_jwt,
         'id_user': id_user,
         'remapped_to_parent': tenant if remapped else None,
         'creado_manager': creado_manager,
