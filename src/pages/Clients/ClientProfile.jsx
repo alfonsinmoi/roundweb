@@ -32,6 +32,7 @@ import CrearUsuarioWebDesdeClienteModal from '../../components/CrearUsuarioWebDe
 import TrazabilidadModal from '../../components/TrazabilidadModal'
 import { useAltaModo } from '../../components/QrAltaCliente'
 import DevolverReciboBtn from '../../components/recibos/DevolverReciboBtn'
+import CorregirFormaPagoBtn from '../../components/recibos/CorregirFormaPagoBtn'
 import { usuarioWebFindByEmail } from '../../utils/authUsuarioApi'
 import { recibosImpagadosCliente } from '../../utils/configApi'
 import InformesEstadoFisicoButton from '../../components/InformesEstadoFisicoButton'
@@ -2825,6 +2826,9 @@ function ReciboRow({ r, mostrarCliente, onReload }) {
           )}
           {isPosted && r.payment_state === 'paid' && isBd && (
             <DevolverReciboBtn r={r} onReload={onReload} />
+          )}
+          {isPosted && r.payment_state === 'paid' && isBd && (
+            <CorregirFormaPagoBtn r={r} onReload={onReload} />
           )}
           {isPosted && <EnviarFacturaBtn invoiceId={r.id} />}
         </div>

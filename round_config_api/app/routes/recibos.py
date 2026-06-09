@@ -287,22 +287,36 @@ def update_recibo(rid):
             if 'metodo_pago' in d and d['metodo_pago'] not in METODOS_VALIDOS:
                 return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
         elif estado in ('pagado', 'facturado'):
-            forbidden = [f for f in importe_fields if f in d]
-            if forbidden:
-                return jsonify({
-                    'ok': False, 'error': 'estado_no_permite_modificar_importes',
-                    'detalle': f'Recibo {estado}: solo se pueden editar notas/descripciones. '
-                               f'Para cambios contables: anula y recrea.',
-                    'campos_bloqueados': forbidden,
-                }), 400
-            # Sprint 7 M5 — bloqueo extra: si ya hay account_move_id en Odoo,
-            # NO permitir modificar importes (la factura ya está emitida).
-            if r.get('account_move_id'):
-                forbidden_m = [f for f in importe_fields if f in d]
-                if forbidden_m:
-                    return jsonify({'ok': False, 'error': 'recibo_facturado_odoo',
-                                    'detalle': 'Recibo con factura Odoo emitida. '
-                                               'Anula factura en Odoo antes de modificar importes.'}), 400
+            campos_importe_en_d = [f for f in importe_fields if f in d]
+            # Excepción ADMIN — corregir SOLO la forma de pago (error de
+            # registro), indicando el motivo. NO toca importes ni el pago/
+            # journal de Odoo (el cobro ya ocurrió); corrige el dato Round
+            # para informes/SEPA futuros. Requiere ser admin (usuario_web
+            # is_admin) o el manager NoofitPro (perfil None).
+            perfil = getattr(g, 'perfil', None)
+            es_admin = (perfil is None) or bool(perfil.get('is_admin'))
+            if es_admin and campos_importe_en_d == ['metodo_pago']:
+                if d['metodo_pago'] not in METODOS_VALIDOS:
+                    return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
+                motivo = (d.get('motivo') or '').strip()
+                if not motivo:
+                    return jsonify({'ok': False, 'error': 'motivo_requerido',
+                                    'detalle': 'Indica el motivo de la corrección de forma de pago.'}), 400
+                allowed += ['metodo_pago']
+                # Traza dentro del propio recibo (además de log_action + incidencia).
+                d['notas'] = (r.get('notas') or '') + (
+                    f"\n[CORRECCIÓN forma de pago {dt.date.today().isoformat()}] "
+                    f"{r.get('metodo_pago')} → {d['metodo_pago']} · {motivo} ({actor_label})")
+            else:
+                forbidden = campos_importe_en_d
+                if forbidden:
+                    return jsonify({
+                        'ok': False, 'error': 'estado_no_permite_modificar_importes',
+                        'detalle': f'Recibo {estado}: solo se pueden editar notas/descripciones '
+                                   f'(o la forma de pago, solo admin). '
+                                   f'Para cambios contables: anula y recrea.',
+                        'campos_bloqueados': forbidden,
+                    }), 400
         else:
             return jsonify({'ok': False, 'error': 'estado_no_editable',
                             'detalle': f'Estado actual: {estado}'}), 400
