@@ -10,7 +10,7 @@
 - `loginEasy` de NoofitPro devuelve la cabecera **`X-TRAINER_MANAGER`**:
   `"true"` = **MANAGER**, `"false"` = **TRAINER**.
 - La web (frontend) solo **relé** ese valor; nunca lo inventa.
-- El **tenant** (`id_manager` Round) NO viene del frontend: se resuelve en
+- El **tenant** (`id_manager` de noofitweb) NO viene del frontend: se resuelve en
   `trainer_noofit_creds` (prefiriendo el manager padre), no del body.
 
 ## Cómo se identifica un manager — flujo completo
@@ -115,7 +115,7 @@ las sesiones legítimas YA están blindadas; el residual es la ruta cabecera-sol
   no sirve en endpoints de otro.
 - **Validación numérica** de `id_manager`/`id_trainer` (`\d{1,16}`).
 - **Anti-fantasma** del trainer honesto (`false`): hermanos NoofitPro + rechazo
-  si no pertenece a un manager Round.
+  si no pertenece a un manager de noofitweb.
 - **Caché de password** solo si NoofitPro valida (COALESCE) — correcto.
 
 ## Estado

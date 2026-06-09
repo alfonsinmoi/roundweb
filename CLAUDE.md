@@ -762,8 +762,9 @@ Tras la prueba, el trainer da de alta al cliente:
 ## Referencias rápidas
 
 - **Registro de auditorías + REGLAS/invariantes** (LEER antes de tocar áreas
-  sensibles: auth, recibos, facturación, POS, notas): `docs/AUDITORIAS_ROUND.md`
+  sensibles: auth, recibos, facturación, POS, notas): `docs/AUDITORIAS_NOOFITWEB.md`
   — documento vivo con índice fechado y las reglas extraídas de cada auditoría
+  (nota: la plataforma es **noofitweb**; "Round" = el manager de pruebas 17675)
   (cómo se detecta un manager, idempotencias, dedup BD/Odoo, same-trainer, etc.).
   Detalle de auth en `docs/AUDITORIA_AUTH_BOOTSTRAP.md`.
 - **Modelo manager / trainer / usuario_web** (reglas inmutables de scope y

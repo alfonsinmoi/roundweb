@@ -1,4 +1,10 @@
-# Registro de Auditorías — Round
+# Registro de Auditorías — noofitweb
+
+> Nota de nomenclatura: la **plataforma** se llama **noofitweb**. "**Round**" es
+> solo el **manager de pruebas** (tenant `17675` con el que empezamos). Los
+> identificadores de código (`X-Round-Token`, `round_config`, `round-bootstrap`,
+> `round.subscription`, etc.) conservan el prefijo `round` histórico — no se
+> renombran.
 
 > **Documento vivo.** Cada auditoría que hagamos se añade aquí: se marca en el
 > índice con su **fecha** y **estado**, y su sección incluye las **REGLAS
@@ -21,7 +27,7 @@
 | 2 | POS/TPV — Auditorías #1–10 (Sprint 0) | may 2026 | ✅ |
 | 3 | POS/TPV — Sprints 1–6 (contable/SII, gates, pulido) | may 2026 | ✅ |
 | 4 | Recibos mensuales — Sprints 7–8 | jun 2026 | ✅ |
-| 5 | Blindajes financieros B1–B12 (correspondencia férrea Round↔Odoo) | jun 2026 | ✅ |
+| 5 | Blindajes financieros B1–B12 (correspondencia férrea noofitweb↔Odoo) | jun 2026 | ✅ |
 | 6 | Facturación nueva — activación fin_de_mes (gated) | 2026-06-09 | ✅ |
 | 7 | Notas — integridad de envío/recepción + same-trainer | 2026-06-09 | ✅ |
 | 8 | Recibos — cobro de facturados (dedup BD/Odoo) + cobro de move puro | 2026-06-09 | ✅ |
@@ -59,7 +65,7 @@
 - `perfil=None` (manager NoofitPro) → pasa todo (control total). `is_admin` → pasa todo.
 - usuario_web: filtrado por permiso; si su perfil no tiene nada bajo el subárbol del
   tab, el tab se oculta.
-- `usuario_web` es cuenta NATIVA de Round; **su email NO puede existir en NoofitPro**
+- `usuario_web` es cuenta NATIVA de noofitweb; **su email NO puede existir en NoofitPro**
   (si existe, se rechaza — evita tenant fantasma al loguear con creds NF).
 - usuario_web multi-centro: pertenencia en pivote `usuario_web_trainer`; al crear hay
   que asignar centro (si no, "corporativo" sin centro → no aparece en listados por centro).
@@ -144,7 +150,7 @@
   `ref=COBRO-MOVE-<id>`; valida `out_invoice`, `posted`, residual>0; scope manager+trainer).
 - **Excepción admin a "pagado inmovilizado"**: un **admin** (usuario_web `is_admin` o manager)
   puede corregir **SOLO `metodo_pago`** en `pagado/facturado`, con **motivo obligatorio**.
-  No toca importes ni el pago/journal de Odoo (corrige el dato Round). Traza en notas +
+  No toca importes ni el pago/journal de Odoo (corrige el dato en noofitweb). Traza en notas +
   log_action + incidencia. usuario_web no-admin → bloqueado.
 
 ## 9. Alta de cliente — `account.move` sin fila `recibo` BD — 2026-06-09 🟡
