@@ -34,6 +34,7 @@
 | 9 | Alta de cliente — A1 aplazar, A2/A3 keystone recibo BD, A4 enlace_pago, A6 | 2026-06-10 | 🟠 |
 | 10 | Devoluciones SEPA — rendimiento (OneSignal en 2º plano) | 2026-06-09 | ✅ |
 | 11 | Auth & bootstrap multi-tenant (H1/H2) | 2026-06-09 | 🟠 |
+| 12 | Multi-tenant Odoo — barrido de instancias default `get_cuotas()`/`get_alta()` | 2026-06-10 | ✅ |
 
 ---
 
@@ -266,3 +267,55 @@ cualquier `Order` = nº de factura (**secuencial, adivinable**) sin verificar na
   Separación por `kind` (usuario_web/manager/trabajador/cliente). `X-Round-Manager-Id` regex `\d{1,16}`.
 - **H2 (retirado):** el rol viene de NoofitPro; matiz menor: `credenciales_validas` descarta el
   flag que ya recibe — podría usarlo en vez del body. Prioridad baja.
+
+## 12. Multi-tenant Odoo — barrido de instancias default `get_cuotas()`/`get_alta()` — 2026-06-10 ✅
+
+**Origen:** incidente real — el alta estuvo CAÍDA en producción desde el 6-jun porque
+`alta_cliente` usaba `get_alta()` (instancia default, `_id_manager=None`) y el guard B1
+(`_require_company`) abortaba con "Sin empresa Odoo para manager=None". El fix puntual
+(`get_alta(g.id_manager)`, commit `2e9815c`) destapó el patrón: **~26 call-sites más** usaban
+la instancia default.
+
+**Semántica (CLAVE para lectura futura):**
+- `get_cuotas()` / `get_alta()` **sin manager** → instancia default → **company 3 de Round**
+  (`cfg.ODOO_COMPANY` del .env) y URL default. Para CUALQUIER otro manager eso es
+  **lectura/escritura cross-tenant** contra los datos de Round (peor que abortar).
+- `get_cuotas(id_manager)` → company desde `manager_config.odoo_company_id` (B1; trainer-entidad
+  vía `trainer_empresa`) + `odoo_url` propio. Manager sin provisionar → company **None** →
+  `_call_scoped` no devuelve datos de otros y `_require_company` aborta escrituras. Correcto.
+- **NO era teórico:** ya hay 4 managers en `manager_config` y **17679 tiene company 15
+  provisionada** → sus sesiones operaban contra la company 3 de Round (bug ACTIVO).
+
+**REGLA (vigente, inviolable):** en código que sirve peticiones o crons multi-tenant, **NUNCA**
+usar `get_cuotas()`/`get_alta()` a secas ni `cfg.ODOO_COMPANY` en domains/values. Ligar SIEMPRE
+la instancia al tenant: `g.id_manager` (rutas auth), `p['id_manager']` (payload del hilo bg de
+reservas), `r['id_manager']` (fila `slot_reserva`), `doc['id_manager']` (fila `gasto_documento`),
+parámetro `id_manager` (crons que iteran managers). La company en domains/values = `oc.company_id`.
+**Única excepción legítima:** `odoo_provisioner.py` (8 sitios) — corre ANTES de que el manager
+tenga company y pasa `company_id` explícito en cada llamada (conexión cruda).
+
+**Corregido (2026-06-10, desplegado y verificado):** `cuotas_clientes.py` (9 rutas: listados
+recibos, preemisión, emitir, enviar factura, descargar SEPA + 2 hardcodes company en
+paycomet_callback), `crm.py` (6: `_procesar_lead` público —company del manager destino, sin
+fallback a Round—, lead manual, update_lead, stages, kanban, funnel + fallback Tally
+`or cfg.ODOO_COMPANY` eliminado), `slots.py` (2: hilo bg de reserva —lead en la company del
+manager— y anular reserva), `contabilidad.py` (5 + 3 filtros company en ingresos Odoo),
+`clientes_log.py` (sync-odoo partner), `cron_notif_impago.py`, `odoo_gastos.py`
+(`crear_factura_proveedor` → manager del documento). Smoke tests Round OK (leads, stages,
+recibos, funnel — company 3, comportamiento idéntico; `manager_config` de 17675: company 3,
+sin odoo_url → cero regresión).
+
+**Side-fix:** 12 tablas de `round_config` tenían `tableowner=postgres` → el init de schema
+llevaba DÍAS abortando a medias ("must be owner of table…", 52 veces desde el 9-jun) y las
+migraciones automáticas posteriores al primer fallo no corrían. `ALTER TABLE … OWNER TO odoo`
+a todas → arranque limpio. (Refuerza la regla transversal "tablas nuevas → OWNER TO odoo".)
+
+**Derivados pendientes (follow-up):**
+- **IDOR by-id cross-tenant**: `update_borrador`/`delete_borrador`/`enviar_factura_email`/
+  `descargar_sepa` operan por `invoice_id`/`attachment_id` SIN verificar que el move pertenezca
+  a la company del manager → un manager logueado podría tocar borradores de otro pasando ids.
+  Mitigado parcialmente por el binding (la company de la instancia), pero falta el check
+  explícito company-del-move == company-de-la-instancia dentro de esos métodos.
+- `paycomet_callback` (público, sin `g.id_manager`) sigue cayendo a la instancia default
+  (company 3) — limitación ya anotada en la auditoría 9/A4 (multi-tenant del callback pendiente
+  de la verificación de firma).

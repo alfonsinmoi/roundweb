@@ -88,7 +88,7 @@ def _buscar_recibos_impagos_efectivo(id_manager: str, id_trainer: str | None):
     """
     try:
         from .odoo_cuotas import get_cuotas
-        oc = get_cuotas()
+        oc = get_cuotas(id_manager)
         mes_str = date.today().strftime('%Y-%m')
         recibos = oc.list_recibos_filtrado(mes_str=mes_str, estado='not_paid')
         log.info(f'cron_impago: {len(recibos)} recibos not_paid en {mes_str}')

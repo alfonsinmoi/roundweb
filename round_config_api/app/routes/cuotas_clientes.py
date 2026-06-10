@@ -251,7 +251,7 @@ def cuotas_cliente(id_noofit):
         return jsonify({'ok': True, 'recibos': []})
     odoo_rows, odoo_error = [], None
     try:
-        odoo_rows = get_cuotas().list_recibos_cliente(id_noofit)
+        odoo_rows = get_cuotas(g.id_manager).list_recibos_cliente(id_noofit)
     except Exception as e:
         odoo_error = str(e)
         log.exception('cuotas_cliente:odoo')
@@ -295,7 +295,7 @@ def list_cuotas():
 
     odoo_rows, odoo_error = [], None
     try:
-        odoo_rows = get_cuotas().list_recibos_filtrado(mes, estado, partner_id)
+        odoo_rows = get_cuotas(g.id_manager).list_recibos_filtrado(mes, estado, partner_id)
     except Exception as e:
         odoo_error = str(e)
         log.exception('list_cuotas:odoo')
@@ -346,7 +346,7 @@ def list_cuotas():
 def preemision_generar(mes):
     """mes formato YYYY-MM"""
     try:
-        result = get_cuotas().generar_preemision(mes)
+        result = get_cuotas(g.id_manager).generar_preemision(mes)
         log_action(actor_from_request(), 'preemision', 'preemitir',
                    entidad_id=mes,
                    resumen=f'Preemisión generada {mes}',
@@ -363,7 +363,7 @@ def preemision_generar(mes):
 def preemision_listar(mes):
     """Lista los borradores creados para ese mes."""
     try:
-        borradores = get_cuotas().list_borradores_mes(mes)
+        borradores = get_cuotas(g.id_manager).list_borradores_mes(mes)
         return jsonify({'ok': True, 'borradores': [_serialize(b) for b in borradores]})
     except Exception as e:
         log.exception('preemision_listar')
@@ -378,7 +378,7 @@ def preemision_modificar(invoice_id):
     """Modificar un borrador: precio, fecha vencimiento, notas."""
     try:
         d = request.get_json() or {}
-        result = get_cuotas().update_borrador(invoice_id, d)
+        result = get_cuotas(g.id_manager).update_borrador(invoice_id, d)
         log_action(actor_from_request(), 'preemision', 'update',
                    entidad_id=invoice_id,
                    resumen=f'Borrador recibo {invoice_id} modificado',
@@ -397,7 +397,7 @@ def preemision_modificar(invoice_id):
 @require_permission('economico.cuotas_mensuales.borrar_preemision')
 def preemision_eliminar(invoice_id):
     try:
-        get_cuotas().delete_borrador(invoice_id)
+        get_cuotas(g.id_manager).delete_borrador(invoice_id)
         log_action(actor_from_request(), 'preemision', 'delete',
                    entidad_id=invoice_id,
                    resumen=f'Borrador recibo {invoice_id} eliminado')
@@ -416,7 +416,7 @@ def preemision_eliminar(invoice_id):
 @require_permission('economico.cuotas_mensuales.emitir_mes')
 def emitir_remesa(mes):
     try:
-        result = get_cuotas().emitir_remesa(mes)
+        result = get_cuotas(g.id_manager).emitir_remesa(mes)
         log_action(actor_from_request(), 'remesa', 'emitir',
                    entidad_id=mes,
                    resumen=f'Remesa emitida {mes}',
@@ -441,7 +441,7 @@ def enviar_factura(invoice_id):
         d = request.get_json(silent=True) or {}
         dest = (d.get('dest_email') or '').strip() or None
         mensaje = (d.get('mensaje') or '').strip()
-        result = get_cuotas().enviar_factura_email(
+        result = get_cuotas(g.id_manager).enviar_factura_email(
             invoice_id,
             dest_email=dest,
             id_manager=g.id_manager,
@@ -662,7 +662,7 @@ def paycomet_callback():
         if inv.get('payment_state') in ('paid', 'in_payment'):
             ex_pay = oc._call('account.payment', 'search',
                 [('reconciled_invoice_ids', 'in', [inv_id]),
-                 ('company_id', '=', cfg.ODOO_COMPANY), ('state', '=', 'posted')],
+                 ('company_id', '=', oc.company_id), ('state', '=', 'posted')],
                 limit=1)
             pay_id = ex_pay[0] if ex_pay else None
             try:
@@ -690,7 +690,7 @@ def paycomet_callback():
         from ..odoo_payments import crear_account_payment_move
         importe = float(inv.get('amount_residual') or 0) or float(inv.get('amount_total') or 0)
         res_pay = crear_account_payment_move(
-            oc, company_id=cfg.ODOO_COMPANY, move_id=inv_id,
+            oc, company_id=oc.company_id, move_id=inv_id,
             cliente_idnoofit=idnoofit, importe=importe,
             metodo_pago='enlace_pago', fecha=inv.get('invoice_date'))
         if not res_pay.get('ok'):
@@ -999,7 +999,7 @@ def _disparar_notif_devolucion(proc: dict, id_manager: str, id_trainer: str = No
 def descargar_sepa(attachment_id):
     """Devuelve el fichero SEPA pain.008 binario."""
     try:
-        data = get_cuotas().descargar_sepa(attachment_id)
+        data = get_cuotas(g.id_manager).descargar_sepa(attachment_id)
         if not data:
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         return Response(

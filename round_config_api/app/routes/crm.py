@@ -105,7 +105,7 @@ def crear_lead_publico():
     # /api/crm/lead/tally?k=<token>; este endpoint legacy sigue mono-manager.
     id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
     return _procesar_lead(id_manager, d, origen='web_form',
-                          company_id=cfg.ODOO_COMPANY, origen_label='Formulario web')
+                          origen_label='Formulario web')
 
 
 def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
@@ -136,7 +136,9 @@ def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
         return jsonify({'ok': False, 'error': 'email_invalido'}), 400
 
     if company_id is None:
-        company_id = cfg.ODOO_COMPANY
+        # Company del MANAGER destino (multi-tenant) — NO la default del .env,
+        # que es la de Round y filtraría el lead a otro tenant.
+        company_id = get_cuotas(id_manager).company_id
 
     # 1) Determinar centro (del manager destino)
     centro = None
@@ -165,7 +167,7 @@ def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
 
     odoo_lead_id = None
     try:
-        oc = get_cuotas()
+        oc = get_cuotas(id_manager)
         vals = {
             'name': f'Web · {full_name}',
             'contact_name': full_name,
@@ -407,7 +409,10 @@ def lead_tally():
     if submission_id:
         d['_tally_submission_id'] = str(submission_id)
 
-    company_id = mgr.get('odoo_company_id') or cfg.ODOO_COMPANY
+    # Company del manager destino. Sin fallback a la default del .env (la de
+    # Round): si el manager no tiene company, _procesar_lead la resuelve por
+    # instancia (None → lead sin company, scoped consistente, no cross-tenant).
+    company_id = mgr.get('odoo_company_id')
     return _procesar_lead(str(mgr['id_manager']), d, origen='tally',
                           company_id=company_id, origen_label='Formulario Tally')
 
@@ -476,7 +481,7 @@ def crear_lead_manual():
 
     odoo_lead_id = None
     try:
-        oc = get_cuotas()
+        oc = get_cuotas(id_manager)
         vals = {
             'name': f'Manual · {full_name}',
             'contact_name': full_name,
@@ -485,7 +490,7 @@ def crear_lead_manual():
             'description': '<br/>'.join(description_lines),
             'type': 'opportunity',
             'priority': '1',
-            'company_id': cfg.ODOO_COMPANY,
+            'company_id': oc.company_id,
         }
         odoo_lead_id = oc._call('crm.lead', 'create', vals)
         log.info(f'[lead_manual] Odoo lead id={odoo_lead_id} por {actor.get("email")}')
@@ -582,7 +587,7 @@ def update_lead(lead_id):
         if g.id_trainer and str(asig['id_trainer']) != str(g.id_trainer):
             return jsonify({'ok': False, 'error': 'forbidden'}), 403
         id_trainer = asig['id_trainer']
-        oc = get_cuotas()
+        oc = get_cuotas(g.id_manager)
 
         # Snapshot stage_id ANTES (para detectar transición)
         prev_stage_id = None
@@ -691,7 +696,7 @@ def update_lead(lead_id):
 def list_stages():
     """Lista las etapas del pipeline CRM (crm.stage)."""
     try:
-        oc = get_cuotas()
+        oc = get_cuotas(g.id_manager)
         ids = oc._call('crm.stage','search',[], order='sequence,id')
         if not ids: return jsonify({'ok': True, 'stages': []})
         stages = oc._call('crm.stage','read', ids,
@@ -753,7 +758,7 @@ def list_leads():
         # llamada). search_read filtra silenciosamente los inaccesibles y
         # devuelve los visibles. Si un lead queda fuera de leads_by_id se
         # devuelve con `lead: {}` y avisamos en logs.
-        oc = get_cuotas()
+        oc = get_cuotas(g.id_manager)
         ids = [a['odoo_lead_id'] for a in asignaciones if a.get('odoo_lead_id')]
         leads_by_id = {}
         if ids:
@@ -864,7 +869,7 @@ def funnel_analytics():
             asignaciones = cur.fetchall()
 
         # Datos Odoo para conocer la etapa actual
-        oc = get_cuotas()
+        oc = get_cuotas(g.id_manager)
         ids = [a['odoo_lead_id'] for a in asignaciones if a.get('odoo_lead_id')]
         leads_by_id = {}
         if ids:

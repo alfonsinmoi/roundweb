@@ -130,7 +130,9 @@ def crear_factura_proveedor(doc: dict, post: bool = False) -> dict:
     para revisión humana en Odoo).
     """
     try:
-        oc = get_cuotas()
+        # Instancia ligada al manager del documento (gasto_documento.id_manager)
+        # — con la default, el gasto se contabilizaría en la company de Round.
+        oc = get_cuotas(doc.get('id_manager'))
         # 1. Partner
         partner_id = _find_or_create_supplier(oc,
                                               doc.get('proveedor') or '',

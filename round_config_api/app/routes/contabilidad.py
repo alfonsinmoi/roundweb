@@ -1035,7 +1035,7 @@ def desvalidar_documento(doc_id):
         if row.get('odoo_move_id'):
             try:
                 from ..odoo_cuotas import get_cuotas
-                oc = get_cuotas()
+                oc = get_cuotas(g.id_manager)
                 # Intentar action_button_draft (devuelve a borrador en Odoo)
                 # antes que cancel (más reversible).
                 try:
@@ -1124,7 +1124,7 @@ def asiento_documento(doc_id):
         if doc.get('odoo_move_id'):
             try:
                 from ..odoo_cuotas import get_cuotas
-                oc = get_cuotas()
+                oc = get_cuotas(g.id_manager)
                 move = oc._call('account.move', 'read', [doc['odoo_move_id']],
                     ['id', 'name', 'ref', 'state', 'date', 'invoice_date',
                      'amount_untaxed', 'amount_tax', 'amount_total', 'line_ids'])
@@ -1811,13 +1811,13 @@ def _resultados_un_rango(desde, hasta, modo_ingresos='reales',
         try:
             from ..odoo_cuotas import get_cuotas
             from .. import config as cfg
-            oc = get_cuotas()
+            oc = get_cuotas(g.id_manager)
             inv_ids = oc._call('account.move', 'search', [
                 ('move_type','=','out_invoice'),
                 ('state','=','posted'),
                 ('invoice_date','>=', desde),
                 ('invoice_date','<=', hasta),
-                ('company_id','=', cfg.ODOO_COMPANY),
+                ('company_id','=', oc.company_id),
             ])
             if inv_ids:
                 invs = oc._call('account.move','read', inv_ids, ['amount_untaxed_signed'])
@@ -1944,13 +1944,13 @@ def listado_resultados_disponibles():
         try:
             from ..odoo_cuotas import get_cuotas
             from .. import config as cfg
-            oc = get_cuotas()
+            oc = get_cuotas(g.id_manager)
             inv_ids = oc._call('account.move', 'search', [
                 ('move_type','=','out_invoice'),
                 ('state','=','posted'),
                 ('payment_state','in',['paid','in_payment']),
                 ('invoice_date','>=', ini),
-                ('company_id','=', cfg.ODOO_COMPANY),
+                ('company_id','=', oc.company_id),
             ])
             if inv_ids:
                 invs = oc._call('account.move','read', inv_ids, ['invoice_date'])
@@ -2045,13 +2045,13 @@ def listado_resultados():
             try:
                 from ..odoo_cuotas import get_cuotas
                 from .. import config as cfg
-                oc = get_cuotas()
+                oc = get_cuotas(g.id_manager)
                 inv_ids = oc._call('account.move', 'search', [
                     ('move_type','=','out_invoice'),
                     ('state','=','posted'),
                     ('invoice_date','>=', desde),
                     ('invoice_date','<=', hasta),
-                    ('company_id','=', cfg.ODOO_COMPANY),
+                    ('company_id','=', oc.company_id),
                 ])
                 if inv_ids:
                     invs = oc._call('account.move', 'read', inv_ids,

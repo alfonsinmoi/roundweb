@@ -414,7 +414,9 @@ def _procesar_reserva_async(p):
         try:
             from ..odoo_cuotas import get_cuotas
             from .. import config as cfg
-            oc = get_cuotas()
+            # Instancia ligada al manager de la reserva: el lead debe crearse
+            # en SU company (con la default iría a la company de Round).
+            oc = get_cuotas(p['id_manager'])
             full_name = f"{p['nombre']} {p['apellidos']}".strip() or p['email']
             sala = p['sala']
             fecha_clase = p['fecha_clase']
@@ -433,7 +435,7 @@ def _procesar_reserva_async(p):
                 'description': desc,
                 'type': 'opportunity',
                 'priority': '0',
-                'company_id': cfg.ODOO_COMPANY,
+                'company_id': oc.company_id,
             })
         except Exception as e:
             log.warning(f'[bg reserva-{p["reserva_id"]}] odoo lead: {e}')
@@ -722,7 +724,7 @@ def anular_reserva(token):
     try:
         if r.get('odoo_lead_id'):
             from ..odoo_cuotas import get_cuotas
-            oc = get_cuotas()
+            oc = get_cuotas(r.get('id_manager'))
             stages = oc._call('crm.stage', 'search',
                 [('name', 'ilike', 'perdido')], limit=1)
             if stages:

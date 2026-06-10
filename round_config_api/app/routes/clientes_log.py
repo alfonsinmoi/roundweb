@@ -444,7 +444,7 @@ def sync_odoo(id_noofit):
             'cp':        cli.get('postal_code') or '',
             'fecha_nacimiento': cli.get('birthdate') or '',
         }
-        partner_id = get_alta().upsert_partner(datos)
+        partner_id = get_alta(g.id_manager).upsert_partner(datos)
         return jsonify({
             'ok': True, 'partner_id': partner_id,
             'sincronizado': {'email': datos['email'], 'movil': datos['movil'],
