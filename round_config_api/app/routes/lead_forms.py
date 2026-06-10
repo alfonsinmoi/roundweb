@@ -33,17 +33,10 @@ log = logging.getLogger(__name__)
 bp = Blueprint('lead_forms', __name__)
 
 # Rate limit por IP en memoria (igual patrón que crm.py)
-_RL = defaultdict(list)
+# Límites del submit público — consumidos por app.rate_limit (contador
+# COMPARTIDO en BD entre workers; el viejo dict en memoria era por worker).
 _RL_MAX = 10
 _RL_WINDOW = 60 * 5
-
-
-def _rate_ok(ip):
-    now = time.time()
-    b = [t for t in _RL[ip] if now - t < _RL_WINDOW]
-    b.append(now)
-    _RL[ip] = b
-    return len(b) <= _RL_MAX
 
 
 def _gen_public_id():
@@ -163,10 +156,9 @@ def form_slots(public_id):
 
 @bp.route('/api/crm/form/<public_id>', methods=['POST'])
 def form_submit(public_id):
-    ip = (request.headers.get('X-Real-IP')
-          or request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
-          or request.remote_addr or 'unknown')
-    if not _rate_ok(ip):
+    from ..rate_limit import client_ip, rate_limit_ok
+    if not rate_limit_ok('form_submit', client_ip(), max_hits=_RL_MAX,
+                         window_seconds=_RL_WINDOW):
         return jsonify({'ok': False, 'error': 'rate_limited'}), 429
 
     form = _load_form(public_id)

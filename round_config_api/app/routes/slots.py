@@ -232,6 +232,12 @@ def leads_en_sala(id_sala):
 @bp.route('/api/crm/lead-prueba', methods=['POST', 'OPTIONS'])
 def crear_lead_con_reserva():
     if request.method == 'OPTIONS': return ('', 204)
+    # Auditoría #13 P-2 — este endpoint NO tenía rate-limit: un bot podía
+    # agotar todas las plazas de prueba (cada submit reserva un slot 1h).
+    # Limitador compartido en BD (5/5min por IP; un usuario real reserva 1).
+    from ..rate_limit import client_ip, rate_limit_ok
+    if not rate_limit_ok('lead_prueba', client_ip(), max_hits=5):
+        return jsonify({'ok': False, 'error': 'rate_limited'}), 429
     try:
         d = request.get_json(silent=True) or request.form.to_dict() or {}
     except Exception:

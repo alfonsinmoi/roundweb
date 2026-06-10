@@ -22,18 +22,10 @@ from datetime import datetime, timezone
 bp = Blueprint('crm', __name__)
 log = logging.getLogger(__name__)
 
-# Rate limit muy simple por IP en memoria (resetea al reiniciar servicio)
-_RL_BUCKET = defaultdict(list)
+# Rate limit del lead público — límites consumidos por app.rate_limit
+# (contador COMPARTIDO en BD; el viejo dict en memoria era por worker).
 _RL_MAX = 8           # peticiones
 _RL_WINDOW = 60 * 5   # 5 min
-
-
-def _rate_limit_ok(ip):
-    now = time.time()
-    bucket = [t for t in _RL_BUCKET[ip] if now - t < _RL_WINDOW]
-    bucket.append(now)
-    _RL_BUCKET[ip] = bucket
-    return len(bucket) <= _RL_MAX
 
 
 def _email_valid(s):
@@ -86,8 +78,11 @@ def crear_lead_publico():
         # CORS preflight
         return ('', 204)
 
-    ip = request.headers.get('X-Real-IP') or request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or request.remote_addr or 'unknown'
-    if not _rate_limit_ok(ip):
+    # Limitador COMPARTIDO entre workers (BD) — auditoría #13 P-2. El anterior
+    # era en memoria por worker (×4) y se vaciaba al reiniciar.
+    from ..rate_limit import client_ip, rate_limit_ok
+    if not rate_limit_ok('lead_publico', client_ip(), max_hits=_RL_MAX,
+                         window_seconds=_RL_WINDOW):
         return jsonify({'ok': False, 'error': 'rate_limited'}), 429
 
     try:

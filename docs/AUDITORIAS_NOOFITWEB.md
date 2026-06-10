@@ -351,18 +351,29 @@ reserva vía `/reserva/<token>/...`). **Confirmado en prod**: `curl` sin token �
 - **REGLA:** un endpoint que devuelve PII/tokens **NUNCA** es público; si el frontend lo llama con
   `fetch()` crudo, gatearlo exige migrar esas llamadas a `configApi`/`_requestRoot` (cabeceras).
 
-**Hallazgos abiertos:**
-- **P-2 (medio) — rate-limit débil/parcial.** `_rate_limit_ok` es **en memoria por worker**
-  (4 gunicorn → el tope de 8/5min se multiplica ×4 ≈ 32) y se borra al reiniciar. Cubre `/lead`
-  y el form-builder, **no** `lead-prueba` (slots) ni otros. → spam de leads y **agotamiento de
-  slots** (un bot reserva todas las plazas de prueba) sin freno real. Fix sugerido: limiter
-  compartido (Redis/tabla) + cubrir `lead-prueba`.
+**P-2 — rate-limit compartido (CORREGIDO 2026-06-10 ✅).** El limitador era un dict **en
+memoria POR WORKER** (4 gunicorn → tope ×4) que se vaciaba al reiniciar, y solo cubría `/lead`
+y el form-builder. Resuelto con **`app/rate_limit.py`**: contador de **ventana fija en Postgres**
+(tabla `rate_limit_hit`, owner `odoo`, creación lazy, limpieza oportunista, **fail-open** si la
+BD falla — la captación de leads no se cae por el limitador). Aplicado a:
+- `POST /api/crm/lead` (8/5min) y `POST /api/crm/form/<id>` (10/5min) — sustituye in-memory.
+- `POST /api/crm/lead-prueba` (**NUEVO**, 5/5min) — antes SIN límite: un bot podía **agotar
+  todas las plazas de prueba** (cada submit reserva un slot 1h).
+- `POST /api/cliente/login` (**NUEVO**, 10/5min) — anti credential-stuffing (delega en NoofitPro).
+**VERIFICADO en prod**: 7 POSTs seguidos a `lead-prueba` → 5×400 (validación) + **2×429**; el
+contador es global entre workers (antes habrían pasado ~20). `slots-disponibles` y resto OK.
+
+**XSS — hipótesis DESCARTADA en el kanban (verificado 2026-06-10).** No hay
+`dangerouslySetInnerHTML` en el CRM (React escapa por defecto) → el HTML inyectado en la
+`description` del lead NO se ejecuta en el panel. Único sink en todo el frontend:
+`PortalCliente/BuzonTab.jsx` pinta `cuerpo_html` de noticias — pero ese HTML lo redacta **solo
+staff autenticado** (notif_sender), no un atacante público. Riesgo bajo; hardening opcional:
+sanitizar `cuerpo_html` (DOMPurify) si algún día interpola variables de origen cliente.
+
+**Hallazgo abierto:**
 - **P-3 (bajo, residual #12) — `lead_forms._manager_company` cae a `cfg.ODOO_COMPANY`** (company
   3 de Round) para un manager sin provisionar → un lead del form-builder de otro manager se
   crearía en la company de Round. Mismo patrón cross-tenant que la auditoría #12.
-- **XSS (hipótesis, sin verificar)** — el nombre/mensaje del lead se concatena en la `description`
-  HTML del `crm.lead` de Odoo. Pendiente comprobar si el kanban del frontend lo pinta con
-  `dangerouslySetInnerHTML` (si sí → XSS almacenado en el panel del manager).
 
 **✅ Verificado sólido (sin cambios):** token de reserva `secrets.token_urlsafe(32)` (256 bits)
 + expira 1h; **portal cliente sin IDOR** (todos los `@cliente_required` filtran por

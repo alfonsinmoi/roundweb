@@ -32,6 +32,13 @@ def login_cliente():
     Para el fichaje, los endpoints de control horario validan que SÍ sea
     trabajador activo.
     """
+    # Auditoría #13 P-2 — anti credential-stuffing: este login delega en
+    # NoofitPro; sin freno, un bot podía probar credenciales masivamente a
+    # través nuestro. Limitador compartido en BD (10/5min por IP).
+    from ..rate_limit import client_ip, rate_limit_ok
+    if not rate_limit_ok('portal_login', client_ip(), max_hits=10):
+        return jsonify({'ok': False, 'error': 'rate_limited'}), 429
+
     d = request.get_json() or {}
     email = (d.get('email') or '').strip().lower()
     password = d.get('password') or ''
