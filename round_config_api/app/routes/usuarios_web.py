@@ -15,7 +15,7 @@ import logging
 import secrets
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_manager
 from ..db import get_conn
 from ..auth_usuario import (
     hash_password, random_token, audit,
@@ -162,6 +162,7 @@ def _sync_pivot_trainers(cur, usuario_id, id_manager, id_trainers):
 @bp.route('/', methods=['POST'])
 @auth_required
 @require_permission('configuracion.usuarios_web.crear')
+@require_manager
 def create_usuario():
     d = request.get_json() or {}
     email = (d.get('email') or '').strip().lower()
@@ -247,6 +248,7 @@ def create_usuario():
 @bp.route('/<int:uid>', methods=['PATCH', 'PUT'])
 @auth_required
 @require_permission('configuracion.usuarios_web.editar')
+@require_manager
 def update_usuario(uid):
     d = request.get_json() or {}
     # Si llega `id_trainers` (array), sincronizamos el pivote y ponemos el
@@ -297,6 +299,7 @@ def update_usuario(uid):
 @bp.route('/<int:uid>/reset-password', methods=['POST'])
 @auth_required
 @require_permission('configuracion.usuarios_web.reset_password')
+@require_manager
 def reset_password(uid):
     """Manager fuerza un reset. Genera nuevo token y manda email.
 
@@ -345,6 +348,7 @@ def reset_password(uid):
 @bp.route('/<int:uid>/resend-verification', methods=['POST'])
 @auth_required
 @require_permission('configuracion.usuarios_web.editar')
+@require_manager
 def resend_verification(uid):
     """Reenvía email de verificación si el usuario no completó el alta."""
     token = random_token()
@@ -374,6 +378,7 @@ def resend_verification(uid):
 @bp.route('/<int:uid>', methods=['DELETE'])
 @auth_required
 @require_permission('configuracion.usuarios_web.borrar')
+@require_manager
 def delete_usuario(uid):
     """Soft delete: marca activo=false. Hard delete con ?hard=1."""
     hard = request.args.get('hard') == '1'

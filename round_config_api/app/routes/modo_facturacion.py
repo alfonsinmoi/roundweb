@@ -7,7 +7,7 @@
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_manager
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 
@@ -35,6 +35,7 @@ def get_modo():
 @bp.route('/', methods=['PUT'])
 @auth_required
 @require_permission('configuracion.modo_facturacion.editar')
+@require_manager
 def set_modo():
     d = request.get_json() or {}
     nuevo = (d.get('modo_facturacion') or '').strip()

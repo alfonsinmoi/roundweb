@@ -35,7 +35,8 @@
 | 10 | Devoluciones SEPA — rendimiento (OneSignal en 2º plano) | 2026-06-09 | ✅ |
 | 11 | Auth & bootstrap multi-tenant (H1/H2) | 2026-06-09 | 🟠 |
 | 12 | Multi-tenant Odoo — barrido de instancias default `get_cuotas()`/`get_alta()` | 2026-06-10 | ✅ |
-| 13 | Endpoints públicos (slots/crm/forms/portal) — P-1 fuga PII `leads-en-sala` | 2026-06-10 | 🟠 |
+| 13 | Endpoints públicos (slots/crm/forms/portal) — PII, rate-limit, XSS | 2026-06-10 | 🟠 |
+| 14 | Barrido manager-only — `perfil=None` (trainer NoofitPro) vs `require_permission` | 2026-06-10 | ✅ |
 
 ---
 
@@ -379,3 +380,40 @@ sanitizar `cuerpo_html` (DOMPurify) si algún día interpola variables de origen
 + expira 1h; **portal cliente sin IDOR** (todos los `@cliente_required` filtran por
 `cliente_idnoofit`+`id_manager` del JWT; login delega en NoofitPro, sin password local que forzar);
 forms con honeypot + consentimiento RGPD + validación de requeridos; `public_id` ~72 bits.
+
+## 14. Barrido manager-only — `perfil=None` vs `require_permission` — 2026-06-10 ✅
+
+**El agujero (recordatorio, ver auditoría 11):** una sesión NoofitPro tiene `g.perfil=None` y
+`require_permission` con perfil None = **control total**. Un **TRAINER** que entra con sus
+propias credenciales NoofitPro (remapeado: `id_manager=padre`, `id_trainer=él`, `perfil=None`)
+pasaba por tanto TODOS los endpoints "manager-only" que solo llevaban `require_permission`.
+
+**Escalada confirmada y cerrada:** el peor camino era `POST /api/config/usuarios-web` — un
+trainer podía **crear un usuario_web admin** con permisos plenos (o editar perfiles) y obtener
+control total del tenant. También podía activar/desactivar módulos y provisionar Odoo.
+
+**Fix (2026-06-10, desplegado):** `@require_manager` añadido a **17 mutaciones** en 5 ficheros
+(recordar semántica: bloquea solo `perfil=None` + `g.id_trainer`; usuario_web lo decide su
+perfil — no rompe admins usuario_web):
+- `usuarios_web.py` (5): crear, editar, reset-password, resend-verification, borrar.
+- `perfiles.py` (3): crear, editar, borrar.
+- `manager_odoo.py` (6): wc-check, wcommerce-cliente, provision/<modulo>,
+  solicitud-despliegue POST, trainers-contabilidad PATCH, admin/reintentar.
+- `horario.py` (2): activar / desactivar módulo control horario.
+- `modo_facturacion.py` (1): PUT modo.
+
+**VERIFICADO en prod:** sesión trainer (17674) → `403 manager_only` en crear usuario_web /
+crear perfil / provision; manager (sin trainer) pasa el gate (400 de validación con body vacío)
+y los GET (listados) siguen abiertos a sesiones scopeadas.
+
+**REGLAS (para lectura futura):**
+- **Todo endpoint que MUTA configuración de nivel tenant** (usuarios web, perfiles, activación
+  de módulos, provisión Odoo, modo de facturación, menú de trainers) lleva `@require_manager`
+  ADEMÁS de `@require_permission`. Los GET de esas áreas pueden quedar abiertos (gating fino
+  por perfil) salvo que filtren secretos.
+- **Efecto colateral aceptado:** el manager con un CENTRO SELECCIONADO en la UI (manda
+  `X-Round-Trainer-Id`) también recibe 403 en estas mutaciones → deseleccionar el centro para
+  administrar (mismo comportamiento ya aceptado en facturación).
+- Quedan con `require_permission` solo (per-trainer BY DESIGN, política de scope mayo 2026):
+  `centro_contacto`, `pasarela_credenciales`, `email_proveedor`, `trainer_empresa`, catálogos
+  (cuota/descuento/categoría/convenio/pausa_motivo) y operativa diaria.

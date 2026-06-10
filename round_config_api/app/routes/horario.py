@@ -31,7 +31,7 @@ del trabajador en lugar del token compartido.
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_manager
 from ..db import get_conn
 from ..odoo_guard import require_feature
 from ..audit_log import log_action, actor_from_request, diff_dict
@@ -55,6 +55,7 @@ TRABAJADOR_CATEGORIAS = ('Trabajador', 'Trabajadores', 'Empleado', 'Empleados')
 @bp.route('/activar', methods=['POST'])
 @auth_required
 @require_permission('control_horario.modulo.activar')
+@require_manager
 def activar_modulo():
     """Activa el módulo control horario para el manager actual.
 
@@ -89,6 +90,7 @@ def activar_modulo():
 @bp.route('/desactivar', methods=['POST'])
 @auth_required
 @require_permission('control_horario.modulo.desactivar')
+@require_manager
 def desactivar_modulo():
     """Desactiva el módulo. NO borra datos (los fichajes históricos se
     conservan 4 años por normativa). Sólo deshabilita nuevos fichajes."""

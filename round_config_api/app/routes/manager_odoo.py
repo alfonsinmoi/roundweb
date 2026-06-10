@@ -28,7 +28,7 @@ import logging
 
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_manager
 from ..db import get_conn
 from .. import wcommerce_check
 from ..audit_log import log_action, actor_from_request, diff_dict
@@ -160,6 +160,7 @@ def checklist():
 
 @bp.route('/wc-check', methods=['POST'])
 @auth_required
+@require_manager
 def wc_check():
     """Consulta wcommerce on-demand y devuelve si el manager es elegible
     para desplegar Odoo. Si el manager ya lo tiene desplegado, devuelve
@@ -237,6 +238,7 @@ def wc_check():
 @bp.route('/wcommerce-cliente', methods=['PATCH', 'PUT'])
 @auth_required
 @require_permission('manager_odoo.editar_id_wcommerce')
+@require_manager
 def set_wcommerce_cliente():
     """Permite (al admin del manager) introducir/cambiar manualmente el id
     de cliente en wcommerce."""
@@ -322,6 +324,7 @@ def _validar_elegibilidad(row, modulo_flag_col=None):
 @bp.route('/provision/<modulo>', methods=['POST'])
 @auth_required
 @require_permission('configuracion.suscripciones.activar')
+@require_manager
 def provision_modulo(modulo):
     """Activa un módulo concreto (crm / cuotas / contabilidad) idempotente.
 
@@ -413,6 +416,7 @@ def get_solicitud_despliegue():
 @bp.route('/solicitud-despliegue', methods=['POST'])
 @auth_required
 @require_permission('configuracion.suscripciones.activar')
+@require_manager
 def post_solicitud_despliegue():
     """Crea una solicitud nueva. Solo permitida si:
       - el manager tiene tipoPago='S' (verificable on-demand) o ya lo tenía guardado
@@ -678,6 +682,7 @@ def get_trainers_contabilidad():
 @bp.route('/trainers-contabilidad/<id_trainer>', methods=['PATCH'])
 @auth_required
 @require_permission('manager_odoo.trainers_contabilidad_editar')
+@require_manager
 def patch_trainer_contabilidad(id_trainer):
     """Cambia el modo del trainer (`heredar=true|false`).
 
@@ -804,6 +809,7 @@ def admin_get_solicitud(sol_id):
 @bp.route('/admin/solicitudes-despliegue/<int:sol_id>/reintentar', methods=['POST'])
 @auth_required
 @require_permission('manager_odoo.reintentar_solicitud_admin')
+@require_manager
 def admin_reintentar_solicitud(sol_id):
     """Re-ejecuta el provisioner sobre una solicitud en estado pendiente
     con motivo_rechazo. Útil cuando el primer intento falló por un error
