@@ -197,6 +197,14 @@ export const asignacionesClienteList = (identity, idnoofit) =>
   _request('GET', `/descuentos/asignaciones/cliente/${encodeURIComponent(idnoofit)}`, identity)
     .then(d => d.asignaciones)
 
+// ── Leads apuntados a una sala (marcador en Clases / ClaseDetalle) ───────────
+// Ruta raíz /api/crm → _requestRoot. Autenticado + permiso
+// `crm.reservas_prueba.ver_leads_en_sala` (auditoría #3 P-1: antes era público
+// y filtraba PII + token de reserva). Devuelve {ok, leads:[...]}; el caller
+// hace .catch para degradar a [] si no hay permiso (403) o falla.
+export const leadsEnSala = (identity, salaId) =>
+  _requestRoot('GET', `/api/crm/leads-en-sala/${Number(salaId)}`, identity)
+
 // ── Familias ────────────────────────────────────────────────────────────────
 // El blueprint familias se registra bajo `/api/familias` (NO bajo
 // `/api/config/familias`), por eso usamos _requestRoot con la URL absoluta
@@ -411,6 +419,23 @@ export async function estadoFisicoSessionsCliente(idCliente, identity = null) {
                        identity)
     .then(d => d.sessions || [])
 }
+
+// ── Informe de ejercicios realizados (ranking de consumo) ────────────────
+// GET /api/informes/ejercicios con filtros + group_by. Cache local en BD
+// (`ejercicio_realizado`) sincronizada desde NoofitPro getTrainingsUser.
+export const informeEjercicios = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  for (const k of ['desde', 'hasta', 'sexo', 'franja_edad', 'dia_semana',
+                   'franja_horaria', 'id_trainer', 'group_by', 'limit']) {
+    if (params[k]) qs.set(k, params[k])
+  }
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return _requestRoot('GET', `/api/informes/ejercicios${suffix}`, identity)
+}
+export const informeEjerciciosEstado = (identity) =>
+  _requestRoot('GET', '/api/informes/ejercicios/estado', identity)
+export const informeEjerciciosSync = (identity, force = false) =>
+  _requestRoot('POST', `/api/informes/ejercicios/sync${force ? '?force=1' : ''}`, identity)
 
 // ── Baja programada de cliente (fecha futura/pasada de inactivación) ─────
 // La pestaña vive en /api/clientes (no /api/config). Endpoints:

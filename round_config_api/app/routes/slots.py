@@ -12,7 +12,8 @@ Todos públicos (sin auth_required) excepto rate-limit por IP.
 import os, re, json, secrets, logging, threading, time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from flask import Blueprint, request, jsonify, render_template_string, abort, redirect
+from flask import Blueprint, request, jsonify, render_template_string, abort, redirect, g
+from ..auth import auth_required, require_permission
 from ..db import get_conn
 from ..slot_affluence import slots_disponibles, get_sala_info, _ms_to_dt
 from ..email_templates import trigger as trigger_email
@@ -163,11 +164,19 @@ def listar_slots():
 
 
 # ── 1.b) Marcar leads en una clase: para que la UI distinga lead vs cliente ─
-@bp.route('/api/crm/leads-en-sala/<int:id_sala>', methods=['GET', 'OPTIONS'])
+@bp.route('/api/crm/leads-en-sala/<int:id_sala>', methods=['GET'])
+@auth_required
+@require_permission('crm.reservas_prueba.ver_leads_en_sala')
 def leads_en_sala(id_sala):
     """Devuelve los `noofit_cliente_id` apuntados a una sala que provienen
     de una reserva de prueba (es decir: SON LEADS, no clientes pagantes
     todavía).
+
+    AUTENTICADO (auditoría #3 P-1): antes era PÚBLICO y filtraba PII (email,
+    teléfono, DNI) + el `token` de reserva por `id_sala` enumerable. Ahora
+    exige sesión + permiso `crm.reservas_prueba.ver_leads_en_sala`, scopea por
+    `g.id_manager` (no el manager del .env) y, si la sesión es de un trainer,
+    solo devuelve los leads de SU centro.
 
     Respuesta:
         {ok: true,
@@ -177,22 +186,26 @@ def leads_en_sala(id_sala):
               odoo_lead_id}, …
          ]}
     """
-    if request.method == 'OPTIONS': return ('', 204)
-    id_manager = os.getenv('ROUND_DEFAULT_MANAGER', '17675')
+    id_manager = g.id_manager
     try:
+        params = [str(id_manager), int(id_sala)]
+        trainer_filter = ''
+        if g.id_trainer:
+            trainer_filter = ' AND id_trainer::text = %s'
+            params.append(str(g.id_trainer))
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT id, noofit_cliente_id, estado,
                        nombre_lead, apellidos_lead, email_lead, telefono_lead,
                        dni, token, fecha_clase, expira_at, confirmado_at,
                        odoo_lead_id, created_at
                   FROM slot_reserva
                  WHERE id_manager = %s
-                   AND noofit_sala_id = %s
+                   AND noofit_sala_id = %s{trainer_filter}
                    AND estado IN ('creando','pendiente','confirmada')
                    AND noofit_cliente_id IS NOT NULL
                  ORDER BY created_at DESC
-            """, (id_manager, int(id_sala)))
+            """, params)
             rows = cur.fetchall()
         leads = [{
             'idnoofit':       r['noofit_cliente_id'],

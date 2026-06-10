@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
+import { getRoundIdentity, leadsEnSala } from '../utils/configApi'
 import {
   ArrowLeft, Users, Clock, CheckCircle2, XCircle, UserPlus,
   UserMinus, Loader2, Search, CalendarCheck, X, Sparkles,
@@ -18,6 +20,8 @@ export default function ClaseDetalle() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
+  const { user } = useAuth()
+  const identity = useMemo(() => getRoundIdentity(user), [user])
   const [sala, setSala] = useState(null)
   const [usuarios, setUsuarios] = useState([])
   const [loading, setLoading] = useState(true)
@@ -46,8 +50,7 @@ export default function ClaseDetalle() {
         getUsuariosBySala(Number(id)),
         getClientes().catch(() => []),
         // Marca de leads: usuarios apuntados que provienen de reserva de prueba
-        fetch(`/api/crm/leads-en-sala/${Number(id)}`)
-          .then(r => r.json()).catch(() => ({ leads: [] })),
+        leadsEnSala(identity, Number(id)).catch(() => ({ leads: [] })),
       ])
       const found = salasData.find(s => String(s.id) === String(id))
       if (!found) { setError('No se pudo cargar la información solicitada'); return }

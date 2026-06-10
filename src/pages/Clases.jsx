@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   ChevronLeft, ChevronRight, Loader2, Users, Clock, Plus, Pencil, Trash2,
@@ -15,6 +15,8 @@ import {
 } from '../utils/api'
 import { colorFromName } from '../utils/colors'
 import { formatHora } from '../utils/formatters'
+import { useAuth } from '../contexts/AuthContext'
+import { getRoundIdentity, leadsEnSala } from '../utils/configApi'
 
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
@@ -37,6 +39,8 @@ function isClaseActiva(sala, now) {
 
 export default function Clases() {
   const toast = useToast()
+  const { user } = useAuth()
+  const identity = useMemo(() => getRoundIdentity(user), [user])
   const [baseDate, setBaseDate]   = useState(startOfDay(new Date()))
   const [salas, setSalas]         = useState([])
   const [loading, setLoading]     = useState(true)
@@ -130,7 +134,7 @@ export default function Clases() {
     try {
       const [users, leadsResp] = await Promise.all([
         getUsuariosBySala(sala.id),
-        fetch(`/api/crm/leads-en-sala/${sala.id}`).then(r => r.json()).catch(() => ({ leads: [] })),
+        leadsEnSala(identity, sala.id).catch(() => ({ leads: [] })),
       ])
       const leadsMap = new Map((leadsResp?.leads || []).map(l => [String(l.idnoofit), l]))
       const enriched = (users || []).map(u => {

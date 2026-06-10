@@ -35,6 +35,7 @@
 | 10 | Devoluciones SEPA — rendimiento (OneSignal en 2º plano) | 2026-06-09 | ✅ |
 | 11 | Auth & bootstrap multi-tenant (H1/H2) | 2026-06-09 | 🟠 |
 | 12 | Multi-tenant Odoo — barrido de instancias default `get_cuotas()`/`get_alta()` | 2026-06-10 | ✅ |
+| 13 | Endpoints públicos (slots/crm/forms/portal) — P-1 fuga PII `leads-en-sala` | 2026-06-10 | 🟠 |
 
 ---
 
@@ -330,3 +331,40 @@ adjunto SEPA legacy de company 1 → rechazado ✓. Endpoints de Round sin regre
 - `paycomet_callback` (público, sin `g.id_manager`) sigue cayendo a la instancia default
   (company 3) — limitación ya anotada en la auditoría 9/A4 (multi-tenant del callback pendiente
   de la verificación de firma).
+
+## 13. Endpoints públicos (slots/crm/forms/portal) — 2026-06-10 🟠
+**Revisado (solo lectura):** `slots.py`, `crm.py`, `lead_forms.py`, `cliente_portal.py`.
+Enumeradas las rutas sin auth + trazada validación, tokens, rate-limit y scoping.
+
+**P-1 — `GET /api/crm/leads-en-sala/<id_sala>` PÚBLICO filtraba PII + token (CORREGIDO 2026-06-10 ✅).**
+Sin `@auth_required` ni el permiso `crm.reservas_prueba.ver_leads_en_sala` (que EXISTÍA en el
+catálogo pero no se aplicaba). Devolvía por `id_sala` (entero enumerable): nombre, apellidos,
+**email, teléfono, DNI** + el **`token` de reserva** (que permite confirmar/cancelar/cambiar la
+reserva vía `/reserva/<token>/...`). **Confirmado en prod**: `curl` sin token → 200. Resuelto:
+- Backend (`slots.py`): `@auth_required` + `@require_permission('crm.reservas_prueba.ver_leads_en_sala')`;
+  scope por `g.id_manager` (no el manager del `.env`) + filtro por `g.id_trainer` si la sesión es
+  de trainer; quitado `'OPTIONS'` (era interno, no cross-origin). **Verificado**: sin token → 401,
+  con token+manager → 200.
+- Frontend: `Clases.jsx` y `ClaseDetalle.jsx` llamaban con `fetch()` **crudo sin cabeceras** →
+  migrados a `leadsEnSala(identity, salaId)` (configApi, vía `_requestRoot` → cabeceras auth).
+  `.catch(()=>({leads:[]}))` degrada sin romper si no hay permiso. Build + deploy OK.
+- **REGLA:** un endpoint que devuelve PII/tokens **NUNCA** es público; si el frontend lo llama con
+  `fetch()` crudo, gatearlo exige migrar esas llamadas a `configApi`/`_requestRoot` (cabeceras).
+
+**Hallazgos abiertos:**
+- **P-2 (medio) — rate-limit débil/parcial.** `_rate_limit_ok` es **en memoria por worker**
+  (4 gunicorn → el tope de 8/5min se multiplica ×4 ≈ 32) y se borra al reiniciar. Cubre `/lead`
+  y el form-builder, **no** `lead-prueba` (slots) ni otros. → spam de leads y **agotamiento de
+  slots** (un bot reserva todas las plazas de prueba) sin freno real. Fix sugerido: limiter
+  compartido (Redis/tabla) + cubrir `lead-prueba`.
+- **P-3 (bajo, residual #12) — `lead_forms._manager_company` cae a `cfg.ODOO_COMPANY`** (company
+  3 de Round) para un manager sin provisionar → un lead del form-builder de otro manager se
+  crearía en la company de Round. Mismo patrón cross-tenant que la auditoría #12.
+- **XSS (hipótesis, sin verificar)** — el nombre/mensaje del lead se concatena en la `description`
+  HTML del `crm.lead` de Odoo. Pendiente comprobar si el kanban del frontend lo pinta con
+  `dangerouslySetInnerHTML` (si sí → XSS almacenado en el panel del manager).
+
+**✅ Verificado sólido (sin cambios):** token de reserva `secrets.token_urlsafe(32)` (256 bits)
++ expira 1h; **portal cliente sin IDOR** (todos los `@cliente_required` filtran por
+`cliente_idnoofit`+`id_manager` del JWT; login delega en NoofitPro, sin password local que forzar);
+forms con honeypot + consentimiento RGPD + validación de requeridos; `public_id` ~72 bits.
