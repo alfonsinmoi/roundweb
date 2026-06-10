@@ -31,7 +31,7 @@
 | 6 | Facturación nueva — activación fin_de_mes (gated) | 2026-06-09 | ✅ |
 | 7 | Notas — integridad de envío/recepción + same-trainer | 2026-06-09 | ✅ |
 | 8 | Recibos — cobro de facturados (dedup BD/Odoo) + cobro de move puro | 2026-06-09 | ✅ |
-| 9 | Alta de cliente — `account.move` sin fila `recibo` BD | 2026-06-09 | 🟡 |
+| 9 | Alta de cliente — A1 aplazar, A2/A3 keystone recibo BD, A4 enlace_pago, A6 | 2026-06-10 | 🟠 |
 | 10 | Devoluciones SEPA — rendimiento (OneSignal en 2º plano) | 2026-06-09 | ✅ |
 | 11 | Auth & bootstrap multi-tenant (H1/H2) | 2026-06-09 | 🟠 |
 
@@ -153,14 +153,83 @@
   No toca importes ni el pago/journal de Odoo (corrige el dato en noofitweb). Traza en notas +
   log_action + incidencia. usuario_web no-admin → bloqueado.
 
-## 9. Alta de cliente — `account.move` sin fila `recibo` BD — 2026-06-09 🟡
-**Hallazgo (no implementado):** `crear_recibo_alta` (`odoo_alta.py`) crea la factura de
-alta DIRECTAMENTE como `account.move` y **NO inserta fila en `recibo`**. Si el pago no es
-inmediato (aplazar/enlace) → move posteado e impagado sin recibo BD ("huérfano").
+## 9. Alta de cliente — flujo, idempotencia, aplazar (A1) y recibo BD — 2026-06-09 🟠
+**Revisado:** `crear_alta_cliente`, `crear_subscription`, `crear_recibo_alta`,
+`procesar_pago_alta` (`odoo_alta.py`); endpoint `alta_cliente` (`cuotas_clientes.py:462`).
+Flujo: partner → cuota (B6, no auto-crea) → subscription (B4 anti-dup) → `account.move`
+de alta → `procesar_pago_alta` (efectivo/tpv | enlace_pago | aplazar) → cierra lead CRM →
+reactiva NF si recaptación. **Sin transacción** entre los 7 pasos.
 
-**REGLA deseada (pendiente):** el alta debe **crear también la fila `recibo`** enlazada
-(`account_move_id`, estado según pago) para correspondencia 1:1 en ambos sentidos.
-Mitigado operativamente por la auditoría 8 (cobro de move puro). 4 altas huérfanas detectadas.
+**A1 — aplazar = doble cobro (CORREGIDO 2026-06-09 ✅).** `procesar_pago_alta` con
+`forma_pago_alta='aplazar'` hacía `action_post` de la factura de alta (deuda posteada)
+**Y** creaba un `round.modificacion.recibo` `cargo_extra` para el mes siguiente → el alta
+se cobraría DOS veces. Verificado en datos reales: **0 ocurrencias** (latente, nadie lo
+había disparado), pero **expuesto en la UI** (ERPModal / AltaClienteModal).
+- **REGLA (vigente):** `aplazar` = el cargo del alta se DIFIERE al próximo recibo **solo**
+  vía `cargo_extra`. La factura de alta **NO se postea**; tras crear el `cargo_extra` se
+  **cancela** (`button_cancel`) — es draft (sin numerar, sin SII) → seguro, con rastro en
+  `narration`. Si el cancel falla, el move queda DRAFT (no es deuda hasta postearse) → sigue
+  sin doble cobro. Sin suscripción (no se puede diferir) → se postea como **deuda ÚNICA**
+  sin `cargo_extra` (respaldo). Detección de regresión: `round_modificacion_recibo` con
+  `razon LIKE 'Alta aplazada%'` cuyo move referenciado esté `state='posted'`.
+
+**A2 + A3 — keystone: alta crea recibo BD idempotente (CORREGIDO 2026-06-10 ✅).**
+Antes `crear_recibo_alta` creaba la factura como `account.move` y **NO** insertaba fila en
+`recibo` → si el pago no era inmediato quedaba un move posteado/impagado sin recibo BD
+("huérfano"), origen del bug "trimestral/no se puede cobrar" (auditoría 8). Y sin
+idempotencia de petición, un doble submit duplicaba factura/pago de alta (la suscripción ya
+estaba protegida por B4). Resuelto:
+- **A2 (idempotencia Odoo):** `crear_recibo_alta` marca el move con `ref='ALTA-SUB-<sub_id>'`
+  y hace **search-before-create** (reusa el move no cancelado de esa sub). Con B4 → alta
+  idempotente.
+- **A3 (recibo BD):** tras `procesar_pago_alta`, `OdooAlta._crear_recibo_bd_alta` inserta la
+  fila `recibo` enlazada (`account_move_id`, `account_move_ref`), `id_trainer` = trainer REAL
+  del cliente. **Idempotente** por `(id_manager, origen='alta_cliente', origen_ref=sub_id)`
+  (UNIQUE `uq_recibo_import_origenref`). `estado`: `pagado`+`fecha_pago` si se cobró;
+  `emitido` (posteado, cobrable) si pendiente. Si el move fue **cancelado** (alta aplazada,
+  A1) → NO crea recibo (el cargo va a la emisión). **Best-effort:** si el insert BD falla, NO
+  rompe el alta (el move ya existe en Odoo); se loguea y se backfillea.
+- **Backfill** `scripts/backfill_recibos_alta.py` (DRY-RUN / `CONFIRM=1`): crea recibos BD
+  para moves de alta huérfanos (`narration LIKE 'Alta cliente%'`, posteados, sin recibo).
+  Aplicado a las **5 altas huérfanas** (Valeria, Carmen, Priya, Beatriz = `emitido`;
+  mar morillas = `pagado`). Idempotente (re-run = 0). Mismo esquema que el keystone.
+- **REGLA (vigente):** toda alta con pago NO diferido deja **recibo BD ↔ account.move 1:1**.
+  Detección de regresión: moves `out_invoice` con `narration LIKE 'Alta cliente%'`,
+  `state='posted'`, cuyo `id` no esté en `recibo.account_move_id`.
+
+**A6 — `log_action` con `entidad_id` NULL (CORREGIDO 2026-06-10 ✅).** El endpoint
+`alta_cliente` leía `id_noofit`/`idNoofit` pero el payload trae `idnoofit` (minúsculas) →
+`entidad_id` siempre NULL. Ahora lee `idnoofit` primero.
+
+**A4 — `enlace_pago` + callback PayComet (CORREGIDO 2026-06-10 ✅).** El callback
+`POST /api/cuotas/paycomet-callback` (público, lo invoca PayComet) registraba el pago con el
+wizard `payment.register` **sin idempotencia** y **sin actualizar el recibo BD**, y aceptaba
+cualquier `Order` = nº de factura (**secuencial, adivinable**) sin verificar nada. Resuelto:
+- **A4.1 (idempotencia):** si la factura ya está `paid`/`in_payment` → NO crea otro payment
+  (localiza el existente por `reconciled_invoice_ids` y lo enlaza). Si no, cobra con
+  `crear_account_payment_move` (idempotente por `ref=COBRO-MOVE-<id>`, postea + reconcilia +
+  valida residual). Un webhook reintentado ya no duplica el cobro.
+- **A4.2 (anti-desync):** `_sync_recibo_bd_pago_paycomet` actualiza la fila `recibo` enlazada
+  (alta enlace_pago, keystone) → `estado='pagado'` + `fecha_pago` + `account_payment_id` +
+  `link_pago_pagado_at`. Idempotente. Evita el desync (Odoo pagado ↔ BD `emitido`) y el
+  **re-cobro accidental** desde la ficha (con `account_payment_id` puesto, `marcar_pagado` lo
+  bloquea por C2).
+- **A4.3 (hardening seguridad):** el callback **rechaza** (`403 sin_enlace_paycomet`) si la
+  factura no tiene un enlace PayComet emitido (marcador `[PayComet]` en narration **o** recibo
+  BD con `link_pago_url`). Cierra el agujero de marcar pagada cualquier factura por su nº
+  adivinable. **VERIFICADO**: POST con `INV/2026/00005` (sin link) → 403, sin mutación.
+- **PENDIENTE (no bloqueante):** verificación de **FIRMA PayComet** del webhook (requiere el
+  secret en `.env`; PayComet aún en modo **stub**, no producción). El callback además solo
+  scopea a `ODOO_COMPANY` (company 3) — limitación multi-tenant del endpoint público.
+
+**Hallazgos abiertos:**
+- **A5** — los 7 pasos no son transaccionales (fallo a medias deja estado parcial). El
+  keystone es best-effort (no rollback de Odoo), por diseño.
+- **A7 (latente, no confirmado)** — el recibo de alta (periodo M, `origen='alta_cliente'`)
+  NO entra en el índice anti-dup de emisión (`uq_recibo_emision_periodo`, solo
+  `cron_emision`/`emision_v2`) → en teoría la emisión del mes M podría facturar otra vez.
+  **Spot-check (5 altas):** ningún cliente tiene recibo de alta y `cron_emision` del MISMO
+  periodo (la emisión arranca el mes siguiente). Queda como observación, no bug activo.
 
 ## 10. Devoluciones SEPA — rendimiento — 2026-06-09 ✅
 **REGLAS**

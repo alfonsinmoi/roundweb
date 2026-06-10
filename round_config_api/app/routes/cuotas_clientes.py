@@ -478,7 +478,8 @@ def alta_cliente():
         )
         _cli = payload.get('cliente') or {}
         log_action(actor_from_request(), 'alta_cliente', 'alta',
-                   entidad_id=_cli.get('id_noofit') or _cli.get('idNoofit'),
+                   entidad_id=(_cli.get('idnoofit') or _cli.get('id_noofit')
+                               or _cli.get('idNoofit')),
                    resumen=f"Alta cliente {_cli.get('nombre','') or ''}".strip(),
                    cambios={'cliente': _cli.get('nombre'),
                             'cuota': (payload.get('suscripcion') or {}).get('cuota_codigo'),
@@ -563,6 +564,28 @@ async function responder(resp){{
     return Response(html, mimetype='text/html')
 
 
+def _sync_recibo_bd_pago_paycomet(move_id, payment_id=None):
+    """A4.2 — tras un pago PayComet OK, sincroniza la fila `recibo` BD enlazada
+    a este account.move → estado='pagado'. Idempotente (solo si no estaba ya
+    pagado/cancelado). Evita el desync Odoo-pagado ↔ BD-'emitido' y el re-cobro
+    accidental desde la ficha (marcar_pagado bloquea si estado=pagado+payment).
+    Devuelve el id del recibo actualizado, o None si no había recibo BD."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            UPDATE recibo
+               SET estado='pagado',
+                   fecha_pago=COALESCE(fecha_pago, now()),
+                   link_pago_pagado_at=COALESCE(link_pago_pagado_at, now()),
+                   account_payment_id=COALESCE(account_payment_id, %s),
+                   updated_by='paycomet_callback', updated_at=now()
+             WHERE account_move_id=%s
+               AND estado NOT IN ('pagado','cancelado','anulado')
+            RETURNING id
+        """, (payment_id, move_id))
+        row = cur.fetchone()
+        return row['id'] if row else None
+
+
 @bp.route('/paycomet-callback', methods=['POST', 'GET'])
 def paycomet_callback():
     """Webhook server-to-server de PayComet. Cuando un pago se completa
@@ -604,26 +627,79 @@ def paycomet_callback():
         if not ok:
             # Pago fallido; no hacemos nada (la factura sigue posted/not_paid)
             return jsonify({'ok': True, 'invoice_id': inv_id, 'paid': False})
-        # Registrar pago via account.payment.register
-        inv = oc._call('account.move','read',[inv_id],['invoice_date','state'])[0]
-        if inv.get('state') != 'posted':
-            try: oc._call('account.move','action_post',[inv_id])
-            except Exception: pass
-        journals = oc._call('account.journal','search',
-            [('type','=','bank'),('company_id','=',cfg.ODOO_COMPANY)], limit=1)
-        if not journals:
-            return jsonify({'ok': False, 'error': 'no bank journal'}), 500
-        ctx = {'active_model':'account.move','active_ids':[inv_id]}
-        wiz = oc._call_ctx('account.payment.register','create', ctx, {
-            'journal_id': journals[0],
-            'payment_date': inv.get('invoice_date') or False,
-        })
-        oc._call_ctx('account.payment.register','action_create_payments', ctx, [wiz])
 
-        # ── Notif automática al cliente: "pago_alta" ──
-        # Si la config del manager/trainer tiene auto_pago_alta=True, mandamos
-        # un push al cliente confirmándole el pago. Defensivo: cualquier error
-        # aquí NO debe romper el callback (el pago ya está marcado).
+        inv = oc._call('account.move', 'read', [inv_id],
+            ['invoice_date', 'state', 'payment_state', 'narration',
+             'amount_total', 'amount_residual', 'partner_id'])[0]
+
+        # A4.3 (hardening) — solo aceptamos el callback si ESTA factura tiene un
+        # enlace PayComet emitido (marcador [PayComet] en narration o recibo BD
+        # con link_pago_url). El `order` = nº de factura (secuencial, adivinable);
+        # sin esto cualquiera podría POSTear el callback y marcar pagado un recibo
+        # ajeno. La verificación de FIRMA PayComet sigue PENDIENTE (requiere el
+        # secret en .env; PayComet aún no está en producción — modo stub).
+        tiene_link = '[PayComet]' in (inv.get('narration') or '')
+        if not tiene_link:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""SELECT 1 FROM recibo
+                                WHERE account_move_id=%s AND link_pago_url IS NOT NULL
+                                LIMIT 1""", (inv_id,))
+                tiene_link = cur.fetchone() is not None
+        if not tiene_link:
+            log.warning(f'PayComet callback RECHAZADO: move {inv_id} ({order}) '
+                        f'sin enlace PayComet emitido')
+            return jsonify({'ok': False, 'error': 'sin_enlace_paycomet'}), 403
+
+        # A4.1 (idempotencia) — si la factura YA está pagada (este callback ya
+        # corrió, o se cobró por otra vía), NO creamos otro payment: un webhook
+        # reintentado duplicaría el cobro. Localizamos el payment existente para
+        # enlazarlo al recibo BD y devolvemos OK idempotente.
+        if inv.get('payment_state') in ('paid', 'in_payment'):
+            ex_pay = oc._call('account.payment', 'search',
+                [('reconciled_invoice_ids', 'in', [inv_id]),
+                 ('company_id', '=', cfg.ODOO_COMPANY), ('state', '=', 'posted')],
+                limit=1)
+            pay_id = ex_pay[0] if ex_pay else None
+            try:
+                _sync_recibo_bd_pago_paycomet(inv_id, pay_id)
+            except Exception as e:
+                log.warning(f'paycomet_callback sync recibo BD (idempotente): {e}')
+            return jsonify({'ok': True, 'invoice_id': inv_id, 'paid': True,
+                            'idempotent': True, 'payment_id': pay_id})
+
+        if inv.get('state') != 'posted':
+            try: oc._call('account.move', 'action_post', [inv_id])
+            except Exception: pass
+
+        # idnoofit del cliente (para resolver el partner Odoo)
+        pid = (inv['partner_id'][0] if isinstance(inv.get('partner_id'), (list, tuple))
+               else inv.get('partner_id'))
+        idnoofit = None
+        if pid:
+            pr = oc._call('res.partner', 'read', [pid], ['id_noofit'])
+            idnoofit = (pr[0].get('id_noofit') if pr else None)
+
+        # A4.1 — cobro Odoo idempotente + reconcile (ref=COBRO-MOVE-<id>). Un
+        # webhook reintentado en vuelo reusa el payment, no lo duplica. Valida
+        # residual=0 internamente (no marca pagado en silencio si falla).
+        from ..odoo_payments import crear_account_payment_move
+        importe = float(inv.get('amount_residual') or 0) or float(inv.get('amount_total') or 0)
+        res_pay = crear_account_payment_move(
+            oc, company_id=cfg.ODOO_COMPANY, move_id=inv_id,
+            cliente_idnoofit=idnoofit, importe=importe,
+            metodo_pago='enlace_pago', fecha=inv.get('invoice_date'))
+        if not res_pay.get('ok'):
+            log.error(f'PayComet callback: cobro Odoo falló move={inv_id}: {res_pay.get("error")}')
+            return jsonify({'ok': False, 'error': f"cobro_odoo: {res_pay.get('error')}"}), 500
+        pay_id = res_pay.get('payment_id')
+
+        # A4.2 — sincronizar el recibo BD (alta enlace_pago, keystone) → 'pagado'.
+        try:
+            _sync_recibo_bd_pago_paycomet(inv_id, pay_id)
+        except Exception as e:
+            log.warning(f'paycomet_callback sync recibo BD: {e}')
+
+        # ── Notif automática al cliente: "pago_alta" ── (defensivo)
         try:
             _disparar_notif_pago_alta(oc, inv_id, d)
         except Exception as e:
@@ -632,8 +708,9 @@ def paycomet_callback():
         log_action(actor_from_request(), 'recibo', 'cobrar',
                    entidad_id=inv_id,
                    resumen=f'Pago PayComet registrado recibo {order}',
-                   cambios={'order': order, 'invoice_id': inv_id})
-        return jsonify({'ok': True, 'invoice_id': inv_id, 'paid': True})
+                   cambios={'order': order, 'invoice_id': inv_id, 'payment_id': pay_id})
+        return jsonify({'ok': True, 'invoice_id': inv_id, 'paid': True,
+                        'payment_id': pay_id, 'reused': res_pay.get('reused', False)})
     except Exception as e:
         log.exception('paycomet_callback')
         return jsonify({'ok': False, 'error': str(e)}), 500

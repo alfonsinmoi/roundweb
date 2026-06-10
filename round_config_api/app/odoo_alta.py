@@ -346,6 +346,22 @@ class OdooAlta(OdooCuotas):
                 'product_id': product_id,
                 **line_extras,
             }))
+        # A2 — idempotencia: marcamos el move de alta con un `ref` determinista
+        # por suscripción. Si ya existe un move de alta NO cancelado para esta
+        # sub, lo reusamos (un doble submit no duplica factura/pago de alta).
+        # Combinado con B4 (subscription anti-dup) → el alta es idempotente.
+        ref_alta = f'ALTA-SUB-{sub_id}'
+        try:
+            ex = self._call('account.move', 'search',
+                [('ref', '=', ref_alta), ('move_type', '=', 'out_invoice'),
+                 ('company_id', '=', self.company_id), ('state', '!=', 'cancel')],
+                limit=1)
+            if ex:
+                log.info(f'crear_recibo_alta idempotente: reuso move {ex[0]} ref={ref_alta}')
+                return ex[0]
+        except Exception as e:
+            log.warning(f'crear_recibo_alta search idempotente falló (sigo creando): {e}')
+
         inv_vals = {
             'partner_id': partner_id,
             'move_type': 'out_invoice',
@@ -353,6 +369,7 @@ class OdooAlta(OdooCuotas):
             'invoice_date_due': str(date.today()),
             'invoice_line_ids': line_vals,
             'round_subscription_id': sub_id,
+            'ref': ref_alta,
             'narration': (f'Alta cliente {date.today().isoformat()}'
                           + (f' · {narration_extra}' if narration_extra else '')),
             'company_id': self.company_id,
@@ -402,11 +419,17 @@ class OdooAlta(OdooCuotas):
             log.warning(f'procesar_pago_alta: read amount: {e}')
 
         if forma_pago_alta == 'aplazar':
-            # No postear ahora, solo crear modificacion para el próximo mes
+            # APLAZAR (UI: "Aplazar al próximo recibo" / "modificación próximo
+            # recibo"): el cargo del alta se DIFIERE al próximo recibo vía un
+            # cargo_extra. NO se postea como factura de alta independiente:
+            # hacerlo ADEMÁS del cargo_extra cobraría el alta DOS VECES (deuda
+            # standalone posteada + línea del recibo siguiente). A1 (jun 2026).
+            # La factura de alta sigue en draft → tras crear el cargo_extra la
+            # cancelamos (draft sin numerar, sin SII → seguro) para que no quede
+            # una deuda paralela. Si no hubiera suscripción (no se puede diferir)
+            # se postea como deuda ÚNICA, sin cargo_extra (respaldo).
             inv = self._call('account.move', 'read', [invoice_id],
-                ['amount_total','round_subscription_id'])[0]
-            # Cancel/draft → mantenemos como borrador? Mejor postear y registrar deuda.
-            self._call('account.move','action_post',[invoice_id])
+                ['amount_total','round_subscription_id','narration'])[0]
             sub = inv.get('round_subscription_id')
             if sub:
                 # Crear modificacion tipo cargo_extra para el próximo mes
@@ -423,6 +446,26 @@ class OdooAlta(OdooCuotas):
                     'estado': 'activa',
                 })
                 result['modificacion_proximo_mes'] = True
+                # Cargo diferido OK → cancelar la factura de alta draft para que
+                # NO genere una deuda paralela (doble cobro). Rastro en narration.
+                # Si el cancel falla, el move se queda en DRAFT (no es deuda hasta
+                # postearse) → sigue sin haber doble cobro, solo queda el draft.
+                try:
+                    nota = ('[ALTA APLAZADA] Cargo diferido al próximo recibo '
+                            '(cargo_extra). Factura de alta cancelada para no '
+                            'duplicar el cobro.')
+                    nueva = ((inv.get('narration') or '') + '\n' + nota).strip()
+                    self._call('account.move','write',[invoice_id], {'narration': nueva})
+                    self._call('account.move','button_cancel',[invoice_id])
+                    result['invoice_diferida_cancelada'] = True
+                except Exception as e:
+                    log.warning(f'aplazar: no se pudo cancelar move alta {invoice_id}: {e}')
+                    result['warning'] = f'cargo diferido OK pero move {invoice_id} no cancelado: {e}'
+            else:
+                # Sin suscripción no se puede diferir → postear como deuda ÚNICA
+                # (sin cargo_extra), comportamiento de respaldo.
+                self._call('account.move','action_post',[invoice_id])
+                result['warning'] = 'aplazar sin subscription: factura posteada como deuda única'
             return result
 
         # Postear el recibo
@@ -577,6 +620,98 @@ class OdooAlta(OdooCuotas):
         log.info(f'notif enlace_pago inv={invoice_id} cliente={cliente_idnoofit} → {res.get("estado")}')
 
     # ── Punto de entrada ─────────────────────────────────────────────────────
+    def _crear_recibo_bd_alta(self, *, id_manager, id_trainer, cli, cuota,
+                              sub_id, invoice_id, pago, forma_pago_alta):
+        """A3/A2 — crea la fila `recibo` (round_config) enlazada al account.move
+        de alta, para correspondencia 1:1 noofitweb↔Odoo (regla B-financiera).
+
+        - **Idempotente** por `(id_manager, origen='alta_cliente',
+          origen_ref=sub_id)` (UNIQUE `uq_recibo_import_origenref`): un doble
+          submit no duplica el recibo. Hace SELECT-guard previo; el índice UNIQUE
+          es el backstop ante una carrera real.
+        - Si el move fue **cancelado** (alta APLAZADA → diferida al próximo
+          recibo, ver A1) NO crea recibo: el cargo aparecerá en la emisión.
+        - `estado`: `pagado` (con fecha_pago) si el alta se cobró; `emitido`
+          (posteado, cobrable) si queda pendiente (enlace_pago / impagado).
+        Devuelve dict con `recibo_id`/`estado`/`created`, o `skipped`.
+        Best-effort: el caller envuelve en try/except (el move ya existe en Odoo).
+        """
+        from .db import get_conn
+        mv = self._call('account.move', 'read', [invoice_id],
+            ['amount_total', 'amount_untaxed', 'amount_tax',
+             'invoice_date', 'name', 'state', 'payment_state'])[0]
+        if mv.get('state') == 'cancel':
+            return {'skipped': 'move_cancelado_o_diferido'}
+
+        importe_total = float(mv.get('amount_total') or 0)
+        importe_base = float(mv.get('amount_untaxed') or 0)
+        importe_iva = float(mv.get('amount_tax') or 0)
+        iva_pct = round(importe_iva / importe_base * 100, 2) if importe_base else 21.00
+        inv_date = str(mv.get('invoice_date') or date.today())
+        periodo = inv_date[:7]
+
+        metodo_map = {'efectivo': 'caja_efectivo',
+                      'tpv_fisico': 'caja_tpv_fisico',
+                      'enlace_pago': 'enlace_pago'}
+        metodo_pago = metodo_map.get(forma_pago_alta, 'caja_efectivo')
+
+        pagado = bool(pago.get('paid'))
+        estado = 'pagado' if pagado else 'emitido'
+        fecha_pago = inv_date if pagado else None
+        nombre_cli = (f"{cli.get('nombre','')} {cli.get('apellidos','')}".strip()
+                      or None)
+        params = {
+            'id_manager': str(id_manager),
+            'id_trainer': str(id_trainer) if id_trainer else None,
+            'cliente_idnoofit': str(cli.get('idnoofit') or ''),
+            'cliente_nombre': nombre_cli,
+            'cuota_id': cuota.get('id'),
+            'cuota_codigo': cuota.get('codigo'),
+            'cuota_descripcion': cuota.get('descripcion') or cuota.get('codigo'),
+            'periodo': periodo,
+            'fecha_desde': inv_date, 'fecha_hasta': None, 'periodicidad': None,
+            'importe_base': importe_base, 'importe_iva': importe_iva,
+            'importe_total': importe_total, 'iva_pct': iva_pct,
+            'metodo_pago': metodo_pago, 'estado': estado,
+            'fecha_emision': inv_date, 'fecha_pago': fecha_pago,
+            'account_move_id': invoice_id, 'account_move_ref': mv.get('name'),
+            'link_pago_url': pago.get('enlace_pago_url'),
+            'origen': 'alta_cliente', 'origen_ref': str(sub_id),
+            'notas': (f"Alta cliente · forma_pago={forma_pago_alta} · "
+                      f"move {mv.get('name') or invoice_id}"),
+        }
+        with get_conn() as conn, conn.cursor() as cur:
+            # SELECT-guard de idempotencia (backstop = índice UNIQUE)
+            cur.execute("""SELECT id, estado FROM recibo
+                            WHERE id_manager=%s AND origen='alta_cliente'
+                              AND origen_ref=%s""",
+                        (str(id_manager), str(sub_id)))
+            ya = cur.fetchone()
+            if ya:
+                return {'recibo_id': ya['id'], 'estado': ya['estado'],
+                        'created': False}
+            cur.execute("""
+                INSERT INTO recibo
+                  (id_manager, id_trainer, cliente_idnoofit, cliente_nombre,
+                   cuota_id, cuota_codigo, cuota_descripcion,
+                   periodo, fecha_desde, fecha_hasta, periodicidad,
+                   importe_base, importe_iva, importe_total, iva_pct,
+                   metodo_pago, estado, fecha_emision, fecha_pago,
+                   account_move_id, account_move_ref, link_pago_url,
+                   origen, origen_ref, notas, sync_status, created_by, updated_by)
+                VALUES (%(id_manager)s, %(id_trainer)s, %(cliente_idnoofit)s, %(cliente_nombre)s,
+                        %(cuota_id)s, %(cuota_codigo)s, %(cuota_descripcion)s,
+                        %(periodo)s, %(fecha_desde)s, %(fecha_hasta)s, %(periodicidad)s,
+                        %(importe_base)s, %(importe_iva)s, %(importe_total)s, %(iva_pct)s,
+                        %(metodo_pago)s, %(estado)s, %(fecha_emision)s, %(fecha_pago)s,
+                        %(account_move_id)s, %(account_move_ref)s, %(link_pago_url)s,
+                        %(origen)s, %(origen_ref)s, %(notas)s, 'synced',
+                        'alta_cliente', 'alta_cliente')
+                RETURNING id
+            """, params)
+            rid = cur.fetchone()['id']
+        return {'recibo_id': rid, 'estado': estado, 'created': True}
+
     def crear_alta_cliente(self, payload, id_manager=None, id_trainer=None):
         """payload = {
             cliente:    {nombre, apellidos, dni, email, movil, direccion,
@@ -654,6 +789,21 @@ class OdooAlta(OdooCuotas):
             id_manager=id_manager, id_trainer=id_trainer,
         )
 
+        # 5b) A3/A2 — registrar el recibo en BD (round_config) enlazado al move,
+        # para correspondencia 1:1 noofitweb↔Odoo. id_trainer del recibo = el
+        # trainer REAL del cliente (id_trainer_cli), no el del contexto. Best
+        # effort: el move ya existe en Odoo; si esto falla NO rompemos el alta
+        # (se loguea y se puede backfillear con el script).
+        recibo_bd = None
+        try:
+            recibo_bd = self._crear_recibo_bd_alta(
+                id_manager=id_manager, id_trainer=id_trainer_cli, cli=cli,
+                cuota=cuota, sub_id=sub_id, invoice_id=invoice_id, pago=pago,
+                forma_pago_alta=(alta.get('forma_pago_alta') or 'aplazar'))
+        except Exception as e:
+            log.exception('crear_recibo_bd_alta')
+            recibo_bd = {'error': str(e)}
+
         # 6) Auto-mover lead CRM a "Alta" si existe (busca por DNI/email/idnoofit)
         lead_movido = self._cerrar_lead_crm(cli, recaptacion=recaptacion,
                                             id_manager=id_manager,
@@ -676,6 +826,7 @@ class OdooAlta(OdooCuotas):
             'invoice_id': invoice_id,
             'cuota': {'id': cuota['id'], 'codigo': cuota['codigo']},
             'pago': pago,
+            'recibo_bd': recibo_bd,
             'lead_cerrado': lead_movido,
             'recaptacion': recaptacion,
             'cliente_reactivado_noofit': cliente_reactivado,
