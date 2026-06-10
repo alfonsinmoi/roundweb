@@ -84,6 +84,55 @@ class OdooCuotas:
             raise RuntimeError(f'company {comp} es legacy/prohibida.')
         return comp
 
+    def _companies_del_manager(self):
+        """Companies Odoo legítimas de ESTE tenant: la del manager + las de sus
+        trainers con entidad jurídica propia (`trainer_empresa.odoo_company_id`).
+        Frontera de tenant = manager; dentro puede haber N companies (por CIF)."""
+        comps = set()
+        if self.company_id is not None:
+            comps.add(int(self.company_id))
+        if self._id_manager:
+            try:
+                from .db import get_conn
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("""SELECT odoo_company_id FROM trainer_empresa
+                                    WHERE id_manager=%s AND odoo_company_id IS NOT NULL""",
+                                (self._id_manager,))
+                    comps |= {int(r['odoo_company_id']) for r in cur.fetchall()}
+            except Exception as e:
+                log.warning(f'_companies_del_manager: {e}')
+        return comps
+
+    def _require_record_company(self, record_id, model='account.move'):
+        """Guard anti-IDOR by-id (auditoría #12, follow-up): un registro Odoo
+        referenciado por id desde la web DEBE pertenecer a una company del
+        tenant de ESTA instancia. Sin esto, un manager logueado podía operar
+        sobre borradores/facturas/adjuntos de OTRO manager pasando ids.
+        Lanza ValueError (→ 400 en los endpoints), nunca toca el registro."""
+        try:
+            rec = self._call(model, 'read', [int(record_id)], ['company_id'])
+        except ValueError:
+            raise
+        except Exception:
+            # Odoo deniega el read por sus propias record rules (p.ej. adjunto
+            # de una company fuera del alcance del usuario API) → mismo veredicto
+            # que el guard, con error limpio (400) en vez de Fault (500).
+            raise ValueError('registro_no_accesible')
+        if not rec:
+            raise ValueError('registro_no_encontrado')
+        comp = rec[0].get('company_id')
+        comp_id = comp[0] if isinstance(comp, (list, tuple)) else comp
+        allowed = self._companies_del_manager()
+        if not allowed:
+            raise ValueError('sin_empresa_odoo')
+        # Registro sin company (False) → no se puede atribuir: solo lo
+        # permitimos si el modelo lo admite globalmente (no es el caso de
+        # account.move; ir.attachment puede venir sin company → rechazar
+        # igualmente por prudencia: los SEPA llevan company).
+        if not comp_id or int(comp_id) not in allowed:
+            raise ValueError('registro_de_otra_empresa')
+        return True
+
     def _ensure_identity(self):
         """Resuelve company_id (de la instancia = la del manager) y odoo_url.
 
@@ -503,6 +552,7 @@ class OdooCuotas:
         dest_email indicado). Devuelve dict con resultado."""
         import re
         from .email_sender import enviar as enviar_email
+        self._require_record_company(invoice_id)
         inv = self._call('account.move', 'read', [invoice_id],
             ['name', 'state', 'amount_total', 'partner_id', 'invoice_date',
              'currency_id'])[0]
@@ -690,6 +740,7 @@ class OdooCuotas:
           - modificaciones_borrar: [int] → borra esos modificaciones (round.modificacion.recibo)
         Si se han cambiado descuentos o modificaciones, el importe final se recalcula.
         """
+        self._require_record_company(invoice_id)
         inv = self._call('account.move','read',[invoice_id],
             ['state','invoice_line_ids','round_subscription_id','invoice_date'])[0]
         if inv['state'] != 'draft':
@@ -759,6 +810,7 @@ class OdooCuotas:
         return self._list_recibos([('id','=',invoice_id)])[0]
 
     def delete_borrador(self, invoice_id):
+        self._require_record_company(invoice_id)
         inv = self._call('account.move','read',[invoice_id],['state'])[0]
         if inv['state'] != 'draft':
             raise ValueError('Solo se pueden eliminar borradores')
@@ -956,6 +1008,7 @@ class OdooCuotas:
             move_id = int(move_id)
         except (TypeError, ValueError):
             return 0
+        self._require_record_company(move_id)
         pagos = self._call('account.payment', 'search',
                            [('reconciled_invoice_ids', 'in', [move_id])])
         n = 0
@@ -972,6 +1025,7 @@ class OdooCuotas:
         return n
 
     def descargar_sepa(self, attachment_id):
+        self._require_record_company(attachment_id, model='ir.attachment')
         att = self._call('ir.attachment','read',[attachment_id],['name','datas','mimetype'])
         if not att:
             return None

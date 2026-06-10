@@ -310,12 +310,23 @@ llevaba DÍAS abortando a medias ("must be owner of table…", 52 veces desde el
 migraciones automáticas posteriores al primer fallo no corrían. `ALTER TABLE … OWNER TO odoo`
 a todas → arranque limpio. (Refuerza la regla transversal "tablas nuevas → OWNER TO odoo".)
 
-**Derivados pendientes (follow-up):**
-- **IDOR by-id cross-tenant**: `update_borrador`/`delete_borrador`/`enviar_factura_email`/
-  `descargar_sepa` operan por `invoice_id`/`attachment_id` SIN verificar que el move pertenezca
-  a la company del manager → un manager logueado podría tocar borradores de otro pasando ids.
-  Mitigado parcialmente por el binding (la company de la instancia), pero falta el check
-  explícito company-del-move == company-de-la-instancia dentro de esos métodos.
+**IDOR by-id cross-tenant (CORREGIDO 2026-06-10 ✅):** `update_borrador`/`delete_borrador`/
+`enviar_factura_email`/`anular_pagos_de_move`/`descargar_sepa` operaban por
+`invoice_id`/`attachment_id` SIN verificar tenant → un manager logueado podía tocar
+borradores/facturas/adjuntos de otro pasando ids. Resuelto con el guard
+**`OdooCuotas._require_record_company(record_id, model)`** al inicio de los 5 métodos:
+- El registro debe pertenecer a una company del **conjunto del tenant**
+  (`_companies_del_manager()` = company del manager + las de sus trainers con CIF propio en
+  `trainer_empresa`) — la frontera es el manager, no una sola company.
+- Sin company en la instancia (manager sin provisionar) → rechazo (`sin_empresa_odoo`).
+- Si Odoo deniega el read por sus record rules (p.ej. adjunto de company legacy) → se
+  normaliza a `ValueError('registro_no_accesible')` (400 limpio, no Fault/500).
+- Lanza `ValueError` ANTES de tocar nada → los endpoints devuelven 400.
+**VERIFICADO con test real cross-tenant:** Round (17675) accede a su move 1945 ✓; el manager
+17679 (company 15) → `registro_de_otra_empresa` ✓; 17677 (sin company) → `sin_empresa_odoo` ✓;
+adjunto SEPA legacy de company 1 → rechazado ✓. Endpoints de Round sin regresión.
+
+**Derivado pendiente (follow-up):**
 - `paycomet_callback` (público, sin `g.id_manager`) sigue cayendo a la instancia default
   (company 3) — limitación ya anotada en la auditoría 9/A4 (multi-tenant del callback pendiente
   de la verificación de firma).
