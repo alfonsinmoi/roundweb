@@ -471,7 +471,12 @@ def alta_cliente():
         payload = request.get_json() or {}
         if not payload.get('cliente') or not payload.get('suscripcion') or not payload.get('alta'):
             return jsonify({'ok': False, 'error': 'payload incompleto (cliente / suscripcion / alta)'}), 400
-        result = get_alta().crear_alta_cliente(
+        # La instancia DEBE ir ligada al manager: el guard B1 de blindajes
+        # (crear_subscription → _require_company) resuelve la company Odoo desde
+        # self._id_manager. Con get_alta() (default, _id_manager=None) resolvía
+        # company=None y abortaba con "Sin empresa Odoo para manager=None",
+        # aunque el manager tuviera su company provisionada.
+        result = get_alta(g.id_manager).crear_alta_cliente(
             payload,
             id_manager=g.id_manager,
             id_trainer=g.id_trainer,
