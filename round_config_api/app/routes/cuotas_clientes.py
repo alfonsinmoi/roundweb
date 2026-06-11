@@ -746,7 +746,11 @@ def _parse_importe_dev(v):
 
 def _cliente_idnoofit_por_dni(id_manager, dni):
     """DNI → cliente_idnoofit dentro del MANAGER (todos sus trainers; la
-    devolución no sale de la esfera del manager). None si no hay match único."""
+    devolución no sea de la esfera del manager). Devuelve el id SOLO si el
+    match es ÚNICO; si hay 0 o ≥2 (mismo DNI en 2 cuentas NF, dato erróneo…)
+    → None. Auditoría #16 S-2: antes hacía `LIMIT 1` y devolvía el primero
+    arbitrario → la devolución podía aplicarse a la cuenta equivocada. Mejor
+    no casar que casar mal: el operador lo resuelve a mano por idnoofit."""
     if not dni:
         return None
     with get_conn() as conn, conn.cursor() as cur:
@@ -754,10 +758,15 @@ def _cliente_idnoofit_por_dni(id_manager, dni):
             SELECT id::text AS id FROM cliente_cache
              WHERE id_manager = %s
                AND upper(regexp_replace(coalesce(raw_data->>'dni',''),'[^A-Za-z0-9]','','g')) = %s
-             LIMIT 1
+             LIMIT 2
         """, (str(id_manager), dni))
-        row = cur.fetchone()
-    return row['id'] if row else None
+        rows = cur.fetchall()
+    if len(rows) != 1:
+        if len(rows) > 1:
+            log.warning(f'devolucion: DNI {dni} ambiguo en manager {id_manager} '
+                        f'({len(rows)} clientes) → no se casa automáticamente')
+        return None
+    return rows[0]['id']
 
 
 def _recibo_para_devolucion(id_manager, cliente_idnoofit, periodo, importe):
@@ -780,6 +789,7 @@ def _recibo_para_devolucion(id_manager, cliente_idnoofit, periodo, importe):
 
 @bp.route('/devoluciones', methods=['POST'])
 @auth_required
+@require_permission('economico.cuotas_mensuales.anular_pago')
 def devoluciones():
     """Procesa devoluciones SEPA. Cada fila casa con la EMISIÓN (mes/año) + el
     CLIENTE (DNI), NO con la referencia Odoo. Body:

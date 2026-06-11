@@ -38,6 +38,7 @@
 | 13 | Endpoints públicos (slots/crm/forms/portal) — PII, rate-limit, XSS | 2026-06-10 | 🟠 |
 | 14 | Barrido manager-only — `perfil=None` (trainer NoofitPro) vs `require_permission` | 2026-06-10 | ✅ |
 | 15 | Provisioner Odoo (`odoo_provisioner.py`) — rollback, idempotencia, veto legacy | 2026-06-10 | 🟠 |
+| 16 | SEPA / remesas / devoluciones — pain.008, matcher, gating | 2026-06-10 | ✅ |
 
 ---
 
@@ -465,3 +466,42 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 16. SEPA / remesas / devoluciones — 2026-06-10 ✅
+**Revisado:** `emitir_remesa` + `_registrar_pagos_auto` (`odoo_cuotas.py`), `banco_matcher.py`,
+`banco_parser.py`, `iban_validator.py`, endpoint `/devoluciones` + `_recibo_para_devolucion` +
+`_cliente_idnoofit_por_dni` (`cuotas_clientes.py`). Datos: `account_payment_order` #5 = 7 líneas
+189,75€ (la vía SEPA SÍ se usa).
+
+**REGLA / alcance (lectura futura):**
+- **El `pain.008` lo genera ODOO** (`account.payment.order` → `draft2open` → `open2generated`,
+  módulo SEPA OCA), NO nuestro código. Por tanto **FRST vs RCUR** (lo deriva el `sdd.mandate`
+  por uso), **validación IBAN** (`res.partner.bank` valida el checksum al crear) y el redondeo/
+  escape del XML son responsabilidad de Odoo → las hipótesis del plan quedan **mitigadas por
+  delegación** a un módulo maduro. Nuestra parte: montar bien las líneas (mandate_id +
+  partner_bank por invoice) y el ciclo de devolución.
+- **El matcher de devoluciones NO es por importe global** (esa era la hipótesis temida): casa por
+  `(id_manager, cliente_idnoofit|DNI, periodo)`. `banco_matcher.py` es OTRA cosa (concilia banco
+  ↔ GASTOS de proveedor, no devoluciones de cliente).
+
+**Hallazgos CORREGIDOS (2026-06-10 ✅):**
+- **S-4 (gating) — `/devoluciones` sin permiso.** El endpoint revierte pagos (anula
+  `account.payment`, marca recibos `devuelto`) **manager-wide** y solo tenía `@auth_required` →
+  cualquier usuario_web (de cualquier perfil) podía revertir cobros. Fix: `@require_permission(
+  'economico.cuotas_mensuales.anular_pago')` (clave destructiva ya existente). Verificado:
+  manager NoofitPro pasa; un usuario_web sin la clave → 403.
+- **S-2 (matching) — `_cliente_idnoofit_por_dni` adivinaba.** El docstring decía "None si no hay
+  match único" pero hacía `LIMIT 1` → con un DNI repetido (2 cuentas NF, dato erróneo) devolvía
+  el primero arbitrario → **la devolución se aplicaba a la cuenta equivocada** (anula el pago de
+  otro). Fix: `LIMIT 2`; devuelve id SOLO si el match es único, si no None (+ warn). "Mejor no
+  casar que casar mal" — el operador lo resuelve a mano por idnoofit.
+
+**Verificado sólido / no-bug:**
+- **S-1 (descartado)**: se temía que `emitir_remesa` marcara los SEPA pagados (auto-pago) ANTES
+  de construir la `payment.order` leyendo `amount_residual` (→ líneas 0€). La order real tiene
+  189,75€ → no manifiesta. El orden es frágil pero empíricamente correcto; **no se toca**.
+- **B12 idempotencia de devolución** por `movimiento_financiero UNIQUE(manager,tipo,recibo,ref)`
+  + chequeo previo por `referencia` de banco — sólido. (Edge anotado S-3: si NO viene ref de
+  banco y el cliente tiene 2 recibos mismo periodo+importe, la ref sintética
+  `cliente|periodo|importe` puede colisionar → 2ª devolución legítima se marca "ya_procesada".
+  Raro; pedir siempre la `referencia` del banco lo evita.)
