@@ -40,6 +40,7 @@
 | 15 | Provisioner Odoo (`odoo_provisioner.py`) — rollback, idempotencia, veto legacy | 2026-06-10 | 🟠 |
 | 16 | SEPA / remesas / devoluciones — pain.008, matcher, gating | 2026-06-10 | ✅ |
 | 17 | Entradas puntuales — carrera de cobro (cobrar_evento / emitir-mes) | 2026-06-10 | ✅ |
+| 18 | Incidente nginx caído por blip de DNS en upstream (disponibilidad) | 2026-06-11 | ✅ |
 
 ---
 
@@ -467,6 +468,43 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 18. Incidente nginx — caída por blip de DNS en upstream — 2026-06-11 ✅
+**Qué pasó:** 06:48 CEST nginx se reinició (logrotate/diario); a las 06:49:07 un chequeo de
+config falló con `[emerg] host not found in upstream "pro.wiemspro.com" in
+.../noofit.wiemspro.com:250` → `nginx -t failed` → systemd dejó el servicio **failed** (sin
+reintento) → **web caída hasta restart manual**. Causa: un parpadeo transitorio de DNS en el
+VPS justo en el arranque. NO fue por ningún cambio de código.
+
+**Causa raíz:** `proxy_pass https://pro.wiemspro.com/wiemspro/;` (hostname **literal**) → nginx
+resuelve el upstream **al arrancar/validar**. Si el DNS parpadea en ese instante, `nginx -t`
+falla y el server no levanta. Patrón frágil: cualquier microcorte de DNS en un restart deja la
+web caída hasta intervención manual.
+
+**Fix (VPS, 2026-06-11 — NO está en git, es infra; backups en `/root/*.bak_*`):**
+1. **Resolución en tiempo de PETICIÓN** (causa raíz) — en el bloque `^~ /wiemspro/` de
+   `noofit.wiemspro.com` **y** `round.wiemspro.com` (el legacy tenía la misma mina; `nginx -t`
+   valida TODOS los vhosts, así que cualquiera tumbaba el arranque):
+   ```
+   resolver 127.0.0.53 valid=30s ipv6=off;
+   resolver_timeout 5s;
+   set $nf_host pro.wiemspro.com;
+   proxy_pass https://$nf_host$request_uri;   # variable → resuelve por request
+   ```
+   `$request_uri` preserva ruta+query (el mapeo `/wiemspro/`→`/wiemspro/` es identidad). Con
+   variable, nginx NO resuelve al arrancar → un blip de DNS degrada 1 request a 502, **no tumba
+   el server**.
+2. **Cinturón systemd** — drop-in `/etc/systemd/system/nginx.service.d/override.conf`:
+   `Restart=on-failure`, `RestartSec=5s`, `StartLimitBurst=5`/`IntervalSec=300` (reintenta solo,
+   sin bucle infinito). Antes era `Restart=no`.
+
+**Verificado:** `nginx -t` OK; `systemctl restart nginx` (el escenario exacto que falló) →
+arranque limpio sin `emerg`; web 200; proxy `/wiemspro` 200.
+
+**REGLA (lectura futura / recovery):** ningún `proxy_pass` a un hostname **externo** debe usar el
+literal — siempre `resolver` + variable (`set $x host; proxy_pass …$x…`). Si se reconstruye el
+VPS o se reescriben los vhosts, **reaplicar** este patrón + el drop-in systemd. (Pendiente real
+ya conocido: retirar `round.wiemspro.com`, que sigue activo — al hacerlo desaparece su copia.)
 
 ## 17. Entradas puntuales — carrera de cobro — 2026-06-10 ✅
 **Revisado:** `cron_entradas_puntuales.py` (detección), endpoints `entradas_puntuales.py`
