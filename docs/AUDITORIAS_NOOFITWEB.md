@@ -39,6 +39,7 @@
 | 14 | Barrido manager-only — `perfil=None` (trainer NoofitPro) vs `require_permission` | 2026-06-10 | ✅ |
 | 15 | Provisioner Odoo (`odoo_provisioner.py`) — rollback, idempotencia, veto legacy | 2026-06-10 | 🟠 |
 | 16 | SEPA / remesas / devoluciones — pain.008, matcher, gating | 2026-06-10 | ✅ |
+| 17 | Entradas puntuales — carrera de cobro (cobrar_evento / emitir-mes) | 2026-06-10 | ✅ |
 
 ---
 
@@ -466,6 +467,33 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 17. Entradas puntuales — carrera de cobro — 2026-06-10 ✅
+**Revisado:** `cron_entradas_puntuales.py` (detección), endpoints `entradas_puntuales.py`
+(altas, cobrar, anular, emitir-mes, detectar), UNIQUE `entrada_evento_unico`.
+
+**Verificado sólido:**
+- **Detección (cron + /detectar)**: `INSERT … ON CONFLICT (id_manager,cliente_idnoofit,sala_id,
+  fecha_clase) DO NOTHING` → la carrera cron↔timer↔/detectar **no duplica eventos**. La
+  deduplicación entre creds manager+trainers (cada login NF ve lo suyo) la hace un dict en
+  memoria + la UNIQUE. Sólido.
+- Gating: todos los endpoints mutadores llevan `@require_permission('entradas_puntuales.*')`.
+
+**Hallazgos CORREGIDOS (2026-06-10 ✅) — doble cobro por carrera:**
+- **E-1 `cobrar_evento`**: leía `estado='pendiente'`, llamaba a Odoo (lento) y marcaba 'cobrado'
+  en OTRA conexión, **sin lock**. Dos POST concurrentes (doble clic recepción / 2 terminales)
+  → ambos pasaban el check → **2 recibos sueltos = doble cobro**. Fix: **CLAIM atómico** — un
+  único `UPDATE … SET estado='cobrado' WHERE estado='pendiente' RETURNING …` decide el ganador
+  ANTES de crear el recibo; el perdedor recibe 409. Si Odoo falla, se revierte el claim
+  (`estado='pendiente'` guard `recibo_odoo_id IS NULL`) para reintentar.
+- **E-2 `emitir-mes`**: mismo patrón en batch (leía grupos pendiente → recibo → marcaba
+  facturado). Fix: por grupo, **CLAIM atómico** (`UPDATE … 'facturado' WHERE 'pendiente' …
+  RETURNING`) y el **importe se calcula sobre lo reclamado**, no sobre el recuento previo → una
+  ejecución concurrente reclama 0 y se salta (no doble-factura). Revert del grupo si Odoo falla.
+
+**REGLA:** todo cobro/emisión que cree un recibo en Odoo desde un estado BD debe **reclamar el
+estado atómicamente ANTES** de la llamada a Odoo (no "leer→Odoo→marcar"), y **revertir** si la
+creación falla. Mismo principio que recibos `marcar_pagado` (Sprint 7 C2) y POS.
 
 ## 16. SEPA / remesas / devoluciones — 2026-06-10 ✅
 **Revisado:** `emitir_remesa` + `_registrar_pagos_auto` (`odoo_cuotas.py`), `banco_matcher.py`,

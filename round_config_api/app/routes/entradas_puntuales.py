@@ -223,14 +223,30 @@ def cobrar_evento(evt_id):
     """Genera el recibo de UNA entrada y la marca cobrada.
     body opcional: {forma_pago} (si se quiere sobreescribir la del alta)."""
     d = request.get_json(silent=True) or {}
+    actor = actor_from_request()
+    actor_label = actor.get('label') or actor.get('email') or 'API'
+
+    # Auditoría #17 E-1 — anti doble-cobro por carrera (doble clic en recepción /
+    # dos terminales): CLAIM atómico. Marcamos 'cobrado' SOLO si sigue
+    # 'pendiente'; solo un POST gana el UPDATE. El que pierde no llega a crear
+    # recibo. Si Odoo falla luego, revertimos el claim (queda re-cobrable).
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM entrada_puntual_evento WHERE id=%s AND id_manager=%s",
-                    (evt_id, str(g.id_manager)))
+        cur.execute("""
+            UPDATE entrada_puntual_evento
+               SET estado='cobrado', cobrado_at=NOW(), cobrado_por=%s
+             WHERE id=%s AND id_manager=%s AND estado='pendiente'
+            RETURNING id, cliente_idnoofit, cliente_nombre, cuota_codigo,
+                      actividad_nombre, fecha_clase, precio_entrada, forma_pago
+        """, (actor_label, evt_id, str(g.id_manager)))
         evt = cur.fetchone()
     if not evt:
-        return jsonify({'ok': False, 'error': 'not_found'}), 404
-    if evt['estado'] != 'pendiente':
-        return jsonify({'ok': False, 'error': f"estado_{evt['estado']}"}), 400
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT estado FROM entrada_puntual_evento WHERE id=%s AND id_manager=%s",
+                        (evt_id, str(g.id_manager)))
+            row = cur.fetchone()
+        if not row:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        return jsonify({'ok': False, 'error': f"estado_{row['estado']}"}), 409
 
     forma_pago = (d.get('forma_pago') or evt.get('forma_pago') or 'efectivo').strip()
     importe = float(evt.get('precio_entrada') or 0)
@@ -245,17 +261,23 @@ def cobrar_evento(evt_id):
         )
     except Exception as e:
         log.exception('cobrar_evento')
+        # Revertir el claim: el cobro no se materializó (sin recibo Odoo) →
+        # vuelve a 'pendiente' para reintentar. Guard recibo_odoo_id IS NULL
+        # para no pisar un cobro que sí llegó a finalizarse.
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""UPDATE entrada_puntual_evento
+                             SET estado='pendiente', cobrado_at=NULL, cobrado_por=NULL
+                           WHERE id=%s AND id_manager=%s AND estado='cobrado'
+                             AND recibo_odoo_id IS NULL""",
+                        (evt_id, str(g.id_manager)))
         return jsonify({'ok': False, 'error': str(e)}), 500
 
-    actor = actor_from_request()
-    actor_label = actor.get('label') or actor.get('email') or 'API'
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             UPDATE entrada_puntual_evento
-               SET estado='cobrado', forma_pago=%s, recibo_odoo_id=%s,
-                   cobrado_at=NOW(), cobrado_por=%s
+               SET forma_pago=%s, recibo_odoo_id=%s
              WHERE id=%s
-        """, (forma_pago, res.get('invoice_id'), actor_label, evt_id))
+        """, (forma_pago, res.get('invoice_id'), evt_id))
     log_action(
         actor, 'entrada_puntual_evento', 'cobrar',
         entidad_id=evt_id,
@@ -301,12 +323,10 @@ def emitir_mes():
     if len(mes) != 7:
         return jsonify({'ok': False, 'error': 'mes_invalido (YYYY-MM)'}), 400
 
+    # Solo las CLAVES de grupo (el importe se calcula sobre lo realmente
+    # RECLAMADO abajo, no sobre este recuento previo).
     sql = """
         SELECT cliente_idnoofit, cliente_nombre, cuota_codigo, forma_pago,
-               array_agg(id ORDER BY fecha_clase) AS evt_ids,
-               array_agg(fecha_clase ORDER BY fecha_clase) AS fechas,
-               count(*) AS n,
-               max(precio_entrada) AS precio_entrada,
                min(id_trainer) AS id_trainer
           FROM entrada_puntual_evento
          WHERE id_manager=%s AND mes=%s AND modo='por_mes' AND estado='pendiente'
@@ -326,10 +346,35 @@ def emitir_mes():
 
     recibos = []
     for grp in grupos:
-        n = int(grp['n'])
-        precio = float(grp['precio_entrada'] or 0)
+        # Auditoría #17 E-2 — CLAIM atómico del grupo: marca 'facturado' las que
+        # SIGAN 'pendiente' y calcula el importe sobre lo reclamado. Dos
+        # ejecuciones concurrentes (doble clic / cron+UI) no doble-facturan: la
+        # segunda reclama 0 y se salta. Si Odoo falla, se revierte el grupo.
+        claim_params = [str(g.id_manager), mes, grp['cliente_idnoofit'],
+                        grp['cuota_codigo'], grp.get('forma_pago')]
+        claim_sql = """
+            UPDATE entrada_puntual_evento
+               SET estado='facturado', cobrado_at=NOW()
+             WHERE id_manager=%s AND mes=%s AND modo='por_mes'
+               AND estado='pendiente'
+               AND cliente_idnoofit=%s AND cuota_codigo=%s
+               AND forma_pago IS NOT DISTINCT FROM %s
+        """
+        if g.id_trainer:
+            claim_sql += " AND id_trainer=%s"
+            claim_params.append(str(g.id_trainer))
+        claim_sql += " RETURNING id, fecha_clase, precio_entrada"
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(claim_sql, claim_params)
+            claimed = cur.fetchall()
+        if not claimed:
+            continue  # otra ejecución reclamó este grupo
+        evt_ids = [c['id'] for c in claimed]
+        n = len(claimed)
+        precio = float(max((c['precio_entrada'] or 0) for c in claimed))
         importe = round(n * precio, 2)
-        dias = ', '.join(f.strftime('%d') for f in grp['fechas'])
+        dias = ', '.join(c['fecha_clase'].strftime('%d')
+                         for c in sorted(claimed, key=lambda x: x['fecha_clase']))
         concepto = (f"Entradas {grp['cuota_codigo']} {mes}: {n} días "
                     f"({dias}) × {precio:.2f}€")
         forma_pago = grp.get('forma_pago') or 'sepa'
@@ -341,15 +386,18 @@ def emitir_mes():
             )
             invoice_id = res.get('invoice_id')
             with get_conn() as conn, conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE entrada_puntual_evento
-                       SET estado='facturado', recibo_odoo_id=%s, cobrado_at=NOW()
-                     WHERE id = ANY(%s)
-                """, (invoice_id, list(grp['evt_ids'])))
+                cur.execute("""UPDATE entrada_puntual_evento SET recibo_odoo_id=%s
+                                WHERE id = ANY(%s)""", (invoice_id, evt_ids))
             recibos.append({'cliente': grp['cliente_idnoofit'], 'cuota': grp['cuota_codigo'],
                             'entradas': n, 'importe': importe, 'invoice_id': invoice_id})
         except Exception as e:
             log.exception('emitir_mes grupo')
+            # Revertir el claim de este grupo (no se materializó recibo Odoo).
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""UPDATE entrada_puntual_evento
+                                 SET estado='pendiente', cobrado_at=NULL
+                               WHERE id = ANY(%s) AND estado='facturado'
+                                 AND recibo_odoo_id IS NULL""", (evt_ids,))
             recibos.append({'cliente': grp['cliente_idnoofit'], 'error': str(e)})
     emitidos = [r for r in recibos if r.get('invoice_id')]
     if emitidos:
