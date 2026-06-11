@@ -114,9 +114,28 @@ def ensure_company(id_manager, datos, steps=None):
                                f'manager {id_manager} no existe en manager_config',
                                partial={})
     if row.get('odoo_company_id'):
+        comp = int(row['odoo_company_id'])
+        # Auditoría #15 D-3 — validar la company REUSADA: ni legacy/prohibida
+        # ni archivada (p.ej. tras un rollback previo que archivó la company
+        # pero dejó el puntero en manager_config). Sin esto, todo lo posterior
+        # se provisionaría sobre una company muerta o prohibida.
+        if comp in cfg.ODOO_LEGACY_COMPANY_IDS:
+            raise ProvisionerError(
+                'ensure_company',
+                f'manager_config apunta a company {comp} LEGACY/prohibida; '
+                f'corrige odoo_company_id antes de provisionar', partial={})
+        oc = get_cuotas()
+        info = oc._call('res.company', 'read', [comp], ['active', 'name'])
+        if not info or not info[0].get('active'):
+            raise ProvisionerError(
+                'ensure_company',
+                f'manager_config apunta a company {comp} ARCHIVADA '
+                f'({(info[0].get("name") if info else "?")}); limpia '
+                f'odoo_company_id o reactiva la company antes de provisionar',
+                partial={})
         _log(steps, 'ensure_company', True,
-             {'company_id': row['odoo_company_id'], 'reused': True})
-        return row['odoo_company_id']
+             {'company_id': comp, 'reused': True})
+        return comp
 
     # Validar datos mínimos
     razon = (datos.get('razon_social') or '').strip()
@@ -202,11 +221,20 @@ def ensure_analytic(id_manager, company_id, razon_social, steps=None):
                             'default_applicability': 'optional'})
 
     analytic_name = f'GENERAL {(razon_social or "")[:50]}'.strip()
-    analytic_id = oc._call('account.analytic.account', 'create',
-        {'name': analytic_name,
-         'plan_id': plan_id,
-         'company_id': company_id,
-         'code': f'GEN-{company_id}'})
+    # Auditoría #15 D-5 — search-before-create por code: si manager_config
+    # perdió el puntero (p.ej. rollback) pero la analítica ya existe, se
+    # reutiliza en vez de duplicarla.
+    ex = oc._call('account.analytic.account', 'search',
+                  [('code', '=', f'GEN-{company_id}'),
+                   ('company_id', '=', company_id)], limit=1)
+    if ex:
+        analytic_id = ex[0]
+    else:
+        analytic_id = oc._call('account.analytic.account', 'create',
+            {'name': analytic_name,
+             'plan_id': plan_id,
+             'company_id': company_id,
+             'code': f'GEN-{company_id}'})
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""UPDATE manager_config
@@ -312,6 +340,17 @@ def ensure_journals(company_id, journals, steps=None):
         except Exception as e:
             log.warning(f'  journal {code} falló: {str(e)[:150]}')
             creados.append({'code': code, 'error': str(e)[:200]})
+    # Auditoría #15 D-4 — los journals son CRÍTICOS para cobrar: antes un
+    # fallo se tragaba (step ok=True) y la provisión quedaba a medias en
+    # silencio. Ahora cualquier error aborta el paso.
+    errores = [c for c in creados if c.get('error')]
+    if errores:
+        _log(steps, 'ensure_journals', False, {'journals': creados})
+        raise ProvisionerError(
+            'ensure_journals',
+            f'{len(errores)} journal(s) fallaron: '
+            + ', '.join(f"{c['code']}: {c['error'][:80]}" for c in errores),
+            partial={'company_id': company_id, 'journals': creados})
     _log(steps, 'ensure_journals', True, {'journals': creados})
     return creados
 
@@ -454,6 +493,10 @@ def provision_crm(id_manager, datos, steps=None) -> dict:
     steps = steps if steps is not None else []
     partial = {}
     try:
+        # D-1: marcar si la company se CREA en esta ejecución (vs reusada) —
+        # rollback() solo puede archivar lo creado aquí, nunca una reusada.
+        _prev = _read_manager_row(id_manager)
+        partial['company_creada'] = not bool(_prev and _prev.get('odoo_company_id'))
         partial['company_id'] = ensure_company(id_manager, datos, steps)
         ensure_adminround(partial['company_id'], steps)
         try:
@@ -492,6 +535,8 @@ def provision_cuotas(id_manager, datos, steps=None) -> dict:
     steps = steps if steps is not None else []
     partial = {}
     try:
+        _prev = _read_manager_row(id_manager)
+        partial['company_creada'] = not bool(_prev and _prev.get('odoo_company_id'))
         partial['company_id'] = ensure_company(id_manager, datos, steps)
         company_id = partial['company_id']
         partial['chart'] = ensure_chart(
@@ -531,6 +576,8 @@ def provision_contabilidad(id_manager, datos, steps=None) -> dict:
     steps = steps if steps is not None else []
     partial = {}
     try:
+        _prev = _read_manager_row(id_manager)
+        partial['company_creada'] = not bool(_prev and _prev.get('odoo_company_id'))
         partial['company_id'] = ensure_company(id_manager, datos, steps)
         company_id = partial['company_id']
         partial['chart'] = ensure_chart(
@@ -722,16 +769,27 @@ def _mark_partners_sync_finished(solicitud_id, total, synced, errors):
 # activando Contabilidad, no podemos archivar la company sin romper Cuotas).
 # ═══════════════════════════════════════════════════════════════════════════
 
-def rollback(partial):
-    """Intenta deshacer la creación de la company (solo si es la primera vez
-    que la creamos — si ya existía y fallamos en pasos posteriores, NO la
-    archivamos).
+def rollback(partial, id_manager=None):
+    """Intenta deshacer la creación de la company — SOLO si se creó en esta
+    ejecución (`partial['company_creada']`). Si la company ya existía (reuso)
+    y fallamos en pasos posteriores, NO se toca: archivar la company viva de
+    un manager operativo (p.ej. la 3 de Round en una re-provisión) destruiría
+    su contabilidad. (Auditoría #15 D-1 — antes el guard solo existía en el
+    docstring, no en el código.)
+
+    Si archiva, además LIMPIA los punteros de manager_config
+    (odoo_company_id + analítica) para que el reintento cree una company
+    nueva en vez de "reusar" la archivada (D-2).
 
     Devuelve dict con lo que se pudo hacer.
     """
     out = {'attempted': True}
     company_id = partial.get('company_id')
     if not company_id:
+        return out
+    if not partial.get('company_creada'):
+        out['skipped'] = 'company_reusada_no_se_archiva'
+        log.warning(f'rollback: company {company_id} era REUSADA → no se archiva')
         return out
     oc = get_cuotas()
     try:
@@ -749,4 +807,18 @@ def rollback(partial):
         out['archived'] = True
     except Exception as e:
         out['archived'] = f'failed: {str(e)[:100]}'
+    # D-2 — limpiar punteros para que el reintento no "reuse" la archivada.
+    if id_manager:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("""UPDATE manager_config
+                                  SET odoo_company_id = NULL,
+                                      odoo_analytic_plan_id = NULL,
+                                      odoo_analytic_default_id = NULL
+                                WHERE id_manager = %s
+                                  AND odoo_company_id = %s""",
+                            (str(id_manager), int(company_id)))
+                out['manager_config_limpiado'] = cur.rowcount > 0
+        except Exception as e:
+            out['manager_config_limpiado'] = f'failed: {str(e)[:100]}'
     return out

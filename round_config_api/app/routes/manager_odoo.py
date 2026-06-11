@@ -518,7 +518,7 @@ def post_solicitud_despliegue():
         created = prov.run()
     except ProvisionerError as e:
         # Falló a mitad — intentar rollback y dejar la solicitud para retry
-        rb = rollback(e.partial)
+        rb = rollback(e.partial, id_manager=g.id_manager)
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 UPDATE odoo_solicitud_despliegue
@@ -860,7 +860,7 @@ def admin_reintentar_solicitud(sol_id):
     try:
         created = prov.run()
     except ProvisionerError as e:
-        rb = rollback(e.partial)
+        rb = rollback(e.partial, id_manager=row['id_manager'])
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""UPDATE odoo_solicitud_despliegue
                               SET estado='pendiente',

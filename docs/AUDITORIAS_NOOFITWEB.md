@@ -37,6 +37,7 @@
 | 12 | Multi-tenant Odoo — barrido de instancias default `get_cuotas()`/`get_alta()` | 2026-06-10 | ✅ |
 | 13 | Endpoints públicos (slots/crm/forms/portal) — PII, rate-limit, XSS | 2026-06-10 | 🟠 |
 | 14 | Barrido manager-only — `perfil=None` (trainer NoofitPro) vs `require_permission` | 2026-06-10 | ✅ |
+| 15 | Provisioner Odoo (`odoo_provisioner.py`) — rollback, idempotencia, veto legacy | 2026-06-10 | 🟠 |
 
 ---
 
@@ -417,3 +418,50 @@ y los GET (listados) siguen abiertos a sesiones scopeadas.
 - Quedan con `require_permission` solo (per-trainer BY DESIGN, política de scope mayo 2026):
   `centro_contacto`, `pasarela_credenciales`, `email_proveedor`, `trainer_empresa`, catálogos
   (cuota/descuento/categoría/convenio/pausa_motivo) y operativa diaria.
+
+## 15. Provisioner Odoo (`odoo_provisioner.py`) — 2026-06-10 🟠
+**Revisado:** los 8 `ensure_*`, los 3 orquestadores (`provision_crm/cuotas/contabilidad`), el
+wrapper retro `OdooProvisioner.run()`, `rollback()` y los 2 callers en `manager_odoo.py`.
+**Estado real verificado:** company 3 = Round (17675, operativa); company 15 = "Pruebas Noofit
+SL" (17679, CRM activo); companies 5–14 = `ZZZ_TEST*_DELETE_ME` archivadas (restos de pruebas
+del provisioner); 1 y 2 = legacy/`active=false`.
+
+**ARQUITECTURA (anotar):** el provisioner crea **`res.company` dentro de la BD compartida
+`round_facturacion`**, NO una BD por manager. La regla documentada "1 BD Odoo por manager"
+**aún NO está implementada** — hoy es multi-company en una sola BD. Aceptable en pruebas; antes
+de escalar a managers reales con datos sensibles hay que decidir si se migra a DB-per-manager
+(es la frontera de aislamiento fuerte). **Pendiente de decisión de arquitectura.**
+
+**Hallazgos CORREGIDOS (2026-06-10 ✅):**
+- **D-1 — rollback archivaba companies REUSADAS.** `rollback()` archivaba la company del
+  `partial` SIN comprobar si se había creado en esa ejecución (el guard solo vivía en el
+  docstring). Una re-provisión de un manager ya operativo (p.ej. Round/company 3) que fallara a
+  mitad → **archivaba su company viva = contabilidad destruida**. Fix: los orquestadores marcan
+  `partial['company_creada']` (comparando el puntero ANTES de `ensure_company`); `rollback()`
+  solo archiva si `company_creada` es True.
+- **D-2 — tras archivar, el puntero quedaba sucio.** `manager_config.odoo_company_id` seguía
+  apuntando a la company archivada → el reintento la "reusaba" (muerta). Fix: `rollback(...,
+  id_manager)` limpia `odoo_company_id` + analítica para que el reintento cree una nueva.
+- **D-3 — `ensure_company` reusaba sin validar.** La rama de reuso devolvía
+  `odoo_company_id` a ciegas. Fix: rechaza si es **legacy** (`ODOO_LEGACY_COMPANY_IDS`) o
+  **archivada** (`active=false`) → no se provisiona sobre una company muerta/prohibida.
+- **D-4 — `ensure_journals` se tragaba errores.** Un journal que fallara se anotaba pero el paso
+  seguía `ok=True` → provisión a medias en silencio (sin journal SEPA = no se puede cobrar).
+  Fix: si algún journal falla, el paso aborta con `ProvisionerError`.
+- **D-5 — `ensure_analytic` no era idempotente por code.** Si el puntero se perdía pero la
+  analítica `GEN-<company>` ya existía, creaba un duplicado. Fix: search-before-create por code.
+
+**REGLAS (lectura futura):**
+- `rollback()` SOLO toca lo creado en esa ejecución (`company_creada`). NUNCA archivar una
+  company reusada/operativa. Tras archivar, limpiar punteros de `manager_config`.
+- `ensure_company` (reuso) valida: no legacy + `active=true`. `ensure_*` idempotentes por
+  clave natural (code/company). Los journals son CRÍTICOS → su fallo aborta, no se ignora.
+- **430XXX**: rango forzado `1..999` (`cuenta_430_code`), UNIQUE `(id_manager,id_trainer)` en
+  `facturacion_trainer`. La asignación de sufijo la hace facturación (auditoría 6/B), no el
+  provisioner; **sin colisión** verificada.
+
+**Pendiente (no bloqueante):**
+- **Limpieza**: borrar/archivar definitivamente las companies `ZZZ_TEST*` (5–14) en Odoo.
+- **Arquitectura DB-per-manager** (decisión, ver arriba).
+- `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
+  corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
