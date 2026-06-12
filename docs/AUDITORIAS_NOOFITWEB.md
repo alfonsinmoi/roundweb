@@ -41,6 +41,7 @@
 | 16 | SEPA / remesas / devoluciones — pain.008, matcher, gating | 2026-06-10 | ✅ |
 | 17 | Entradas puntuales — carrera de cobro (cobrar_evento / emitir-mes) | 2026-06-10 | ✅ |
 | 18 | Incidente nginx caído por blip de DNS en upstream (disponibilidad) | 2026-06-11 | ✅ |
+| 19 | Modificar recibo (no cobrado) — desincronía con factura Odoo posteada | 2026-06-12 | ✅ |
 
 ---
 
@@ -468,6 +469,43 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 19. Modificar recibo (no cobrado) — desincronía con factura Odoo — 2026-06-12 ✅
+**Pregunta auditada:** ¿el botón "Modificar" de un recibo NO cobrado funciona en todas sus
+selecciones y queda Odoo modificado correctamente? **Revisado:** `update_recibo` (PATCH
+`/api/recibos/<id>`), `ModificarReciboBtn.jsx`, serializador unificado `_bd_recibo_to_unified`.
+
+**Hallazgo:** `update_recibo` **NUNCA toca Odoo** — solo escribe la fila BD `recibo`. Estados
+editables (importes): `borrador_remesa/pendiente/impagado/devuelto`. El problema: `impagado` y
+`devuelto` **suelen tener `account_move_id`** (factura Odoo YA posteada; tras emisión→SEPA
+devuelta/impagada). Datos reales: **27 impagado + 3 devuelto con move**, los 30 **posteados**
+(`state='posted'`). Editar el importe de uno de esos → cambiaba la BD pero **NO la factura Odoo**
+(que es inmutable fiscalmente / SII) → **desincronía BD↔factura**; solo se registraba una
+incidencia, no se corregía Odoo.
+
+**REGLA / decisión (correcta contablemente):** una factura **posteada** NO se edita en sitio
+(habría que emitir rectificativa). Por tanto, si el recibo tiene `account_move_id`, "Modificar"
+**no permite tocar importes/contable** — solo notas/descripción; para cambiar importes hay que
+**anular + recrear**. (No se "propaga a Odoo" porque propagar a un asiento posteado es
+incorrecto.)
+
+**Fix (2026-06-12, desplegado):**
+- **Backend** `update_recibo`: si `editable_full` PERO `account_move_id` presente → bloquea los
+  campos de importe (`409 recibo_con_factura_odoo`); permite solo base (cliente/cuota/desc/notas).
+  Sin move → editable total como antes (cambio local, se refleja al emitir).
+- **Frontend** `ModificarReciboBtn`: `editableFull` ahora exige además `!account_move_id` →
+  inputs de importe deshabilitados + aviso "ya tiene factura en Odoo #N; anula y recrea".
+- **Serializador** `_bd_recibo_to_unified`: expone `account_move_id`/`account_move_ref` para que
+  el bloqueo funcione también en el listado unificado de cuotas (no solo en la ficha de cliente).
+
+**VERIFICADO en prod (3 escenarios):** recibo devuelto CON move → editar importe = **409**;
+mismo recibo editar solo notas = **ok**; recibo impagado SIN move → editar importe = **ok**.
+(Los 2 recibos tocados en las pruebas se restauraron del backup; incidencia de prueba eliminada.)
+
+**Observación anotada (no de este botón):** 5 de los 30 moves están `payment_state='paid'` en
+Odoo pero su recibo BD figura `impagado`/`devuelto` → desincronía de ESTADO preexistente
+(devolución que anuló el estado BD sin cancelar el payment Odoo, o viceversa). Pendiente de
+revisar aparte.
 
 ## 18. Incidente nginx — caída por blip de DNS en upstream — 2026-06-11 ✅
 **Qué pasó:** 06:48 CEST nginx se reinició (logrotate/diario); a las 06:49:07 un chequeo de

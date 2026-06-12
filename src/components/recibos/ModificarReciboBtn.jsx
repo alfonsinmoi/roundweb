@@ -39,9 +39,14 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   const set = (k, v) => setF(p => ({ ...p, [k]: v }))
 
   const isBd = r._source === 'bd'
+  // ¿El recibo ya tiene factura Odoo posteada? Si la tiene, los importes NO
+  // son editables aquí aunque el estado sea "no cobrado" (impagado/devuelto):
+  // la factura fiscal es inmutable y editarla en BD la desincronizaría. Espejo
+  // del backend (auditoría #19): para cambiar importes → anular + recrear.
+  const tieneMoveOdoo = !!(r.account_move_id || r.account_move_ref)
   // Estados con importes editables (espejo del backend)
   const editableFull = ['borrador_remesa', 'pendiente', 'impagado', 'devuelto']
-    .includes(r.estado_bd || r.estado)
+    .includes(r.estado_bd || r.estado) && !tieneMoveOdoo
 
   if (!canModificar) return null
   if (!isBd) return null
@@ -115,8 +120,10 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </strong>
           {!editableFull && (
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-              ⚠ Solo descripciones/notas editables — el recibo está
-              cobrado/facturado y los importes ya están en contabilidad.
+              {tieneMoveOdoo
+                ? '⚠ Solo descripciones/notas editables — este recibo ya tiene factura en Odoo (#'
+                  + (r.account_move_ref || r.account_move_id) + '). Para cambiar importes: anula y recrea.'
+                : '⚠ Solo descripciones/notas editables — el recibo está cobrado/facturado y los importes ya están en contabilidad.'}
             </div>
           )}
         </div>

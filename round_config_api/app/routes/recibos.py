@@ -280,12 +280,33 @@ def update_recibo(rid):
         if trainer_bloquea(r['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
         estado = r['estado']
+        tiene_move = bool(r.get('account_move_id'))
+        importe_en_d = [f for f in importe_fields if f in d]
         editable_full = estado in ('borrador_remesa', 'pendiente',
                                     'impagado', 'devuelto')
-        if editable_full:
+        if editable_full and not tiene_move:
+            # Sin factura Odoo (recibo BD puro) → editable total: el cambio es
+            # solo local y se reflejará cuando se emita/facture.
             allowed += importe_fields
             if 'metodo_pago' in d and d['metodo_pago'] not in METODOS_VALIDOS:
                 return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
+        elif editable_full and tiene_move:
+            # Auditoría #19 — el recibo NO cobrado pero YA tiene factura Odoo
+            # posteada (account_move_id; típico de impagado/devuelto). La
+            # factura fiscal es INMUTABLE: editar importes aquí los cambiaría en
+            # BD pero NO en Odoo (update_recibo nunca tocó Odoo) → desincronía
+            # BD↔factura. Por eso aquí solo notas/descripción; para cambiar
+            # importes hay que ANULAR (rectificativa) + RECREAR el recibo.
+            if importe_en_d:
+                return jsonify({
+                    'ok': False, 'error': 'recibo_con_factura_odoo',
+                    'detalle': (f'Recibo {estado} con factura Odoo #{r["account_move_id"]}: '
+                                'no se pueden editar importes/contable aquí (desincronizaría '
+                                'la factura, que ya está en contabilidad). Para cambiar '
+                                'importes: anula y recrea el recibo.'),
+                    'campos_bloqueados': importe_en_d,
+                }), 409
+            # allowed se queda en los campos base (cliente/cuota/desc/notas).
         elif estado in ('pagado', 'facturado'):
             campos_importe_en_d = [f for f in importe_fields if f in d]
             # Excepción ADMIN — corregir SOLO la forma de pago (error de

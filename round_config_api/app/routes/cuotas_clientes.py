@@ -139,6 +139,10 @@ def _bd_recibo_to_unified(r):
         'partner_id': {'id': None, 'name': r.get('cliente_nombre') or ''},
         'partner_idnoofit': r.get('cliente_idnoofit'),
         'round_subscription_id': None,
+        # Expuesto para que el front sepa si el recibo BD ya tiene factura Odoo
+        # posteada (auditoría #19): si la tiene, "Modificar" bloquea importes.
+        'account_move_id': r.get('account_move_id'),
+        'account_move_ref': r.get('account_move_ref'),
         'cuota_codigo': r.get('cuota_codigo') or '',
         'cuota_descripcion': r.get('cuota_descripcion') or '',
         'cuota_actividades': '',
