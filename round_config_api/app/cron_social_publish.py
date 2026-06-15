@@ -28,12 +28,15 @@ def publicar_pendientes():
     publicados, fallidos, intentos = 0, 0, 0
     with get_conn() as conn, conn.cursor() as cur:
         # Atomic: marca como 'publicando' los que vamos a procesar
+        # Reclama también los 'publicando' atascados >15 min (TTL): si un worker
+        # crashea entre el claim y el resultado, el post quedaría 'publicando'
+        # para siempre. Patrón del lock POS (auditoría #7). attempts<3 corta el bucle.
         cur.execute("""
             UPDATE social_post SET estado='publicando', attempts=attempts+1
              WHERE id IN (
                SELECT id FROM social_post
-                WHERE estado='pendiente'
-                  AND schedule_at <= NOW() + INTERVAL '1 minute'
+                WHERE ((estado='pendiente' AND schedule_at <= NOW() + INTERVAL '1 minute')
+                       OR (estado='publicando' AND updated_at < NOW() - INTERVAL '15 minutes'))
                   AND attempts < 3
                 ORDER BY schedule_at ASC
                 LIMIT 20

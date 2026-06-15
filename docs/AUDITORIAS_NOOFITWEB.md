@@ -43,6 +43,7 @@
 | 18 | Incidente nginx caído por blip de DNS en upstream (disponibilidad) | 2026-06-11 | ✅ |
 | 19 | Modificar recibo (no cobrado) — desincronía con factura Odoo posteada | 2026-06-12 | ✅ |
 | 20 | Trimestral legacy — convivencia con dedup + gating de facturar | 2026-06-15 | ✅ |
+| 21 | Notificaciones / Meta (redes) / Email — robustez de envío + TTL `publicando` | 2026-06-15 | ✅ |
 
 ---
 
@@ -470,6 +471,45 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 21. Notificaciones / Meta (redes) / Email — robustez de envío — 2026-06-15 ✅
+**Revisado:** `cron_social_publish.py`, `meta_client.py`, `email_sender.py`
+(`_enviar_smtp`/`_enviar_postmark`/`_enviar_resend`), `social_cuenta`/`social_post`.
+
+**Contexto:** Meta está **inactivo** (0 `social_cuenta`, 0 token, 0 `social_post` en prod —
+falta App Review + Page Access Token de 60d, ver CLAUDE.md). El email transaccional (Resend/
+Postmark/SMTP) **sí** está vivo.
+
+**Verificado sólido / no-bug:**
+- **N-1 (carrera del scheduler) — descartado.** `publicar_pendientes()` usa **claim atómico**:
+  `UPDATE social_post SET estado='publicando' WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)
+  RETURNING id`. Dos timers concurrentes no publican el mismo post dos veces (el patrón "reclamar
+  estado ANTES de la llamada externa" de auditorías #17/#4). `attempts<3` corta el bucle; al
+  fallar, `_marcar_fallido` lo vuelve a 'pendiente' (o 'fallido' al 3º).
+- **N-2 (token Meta caducado) — manejado.** Antes de publicar comprueba
+  `expires_at < now()` → `_marcar_fallido('access_token caducado · renueva la cuenta Meta')`.
+  No hay publicación silenciosa con token muerto. (Limitación conocida, NO bug: **no hay refresco
+  proactivo** del token de 60d ni aviso anticipado — cuando Meta entre en producción habrá que
+  renovarlo a mano antes de expirar. Anotado como pendiente menor.)
+- **N-3 (inyección de cabeceras email) — mitigado.** `_enviar_smtp` construye con
+  `email.message.EmailMessage` (`msg['Subject']`, `msg['To']` → la stdlib escapa CR/LF, no hay
+  concatenación de cabeceras a mano); `_enviar_postmark`/`_enviar_resend` usan **API JSON HTTP**
+  (sin parseo de cabeceras); y el `To` se valida como email RFC antes de enviar
+  (rechaza `_MAK`/inválidos). Sin vector de header-injection.
+
+**Hallazgo CORREGIDO (2026-06-15 ✅):**
+- **N-4 `'publicando'` atascado sin TTL (clase del lock POS #7).** El claim marca
+  `estado='publicando'` y luego publica; si el **worker crashea** entre el claim y el resultado,
+  el post quedaba en `'publicando'` **para siempre** (la query solo recogía `'pendiente'`) → no se
+  reintentaba nunca. Fix: el `SELECT` del claim también reclama
+  `(estado='publicando' AND updated_at < NOW() - INTERVAL '15 minutes')`, con `attempts<3` como
+  corte. Un post atascado por crash se re-reclama a los 15 min. (Latente: Meta inactivo, pero se
+  blinda antes de producción.)
+
+**REGLA:** todo cron que marque un estado intermedio de "en proceso" (`publicando`/`syncing`/…)
+antes de una llamada externa lenta debe poder **reclamar ese estado tras un TTL** (worker muerto
+no debe dejar la fila bloqueada). Cuando Meta entre en producción: renovar el Page Access Token
+(60d) **antes** de `expires_at` (no hay refresco automático).
 
 ## 20. Trimestral legacy — convivencia con dedup + gating — 2026-06-15 ✅
 **Revisado:** `routes/facturacion_trimestre.py` (`preview`, `preview_excel`, `facturar`),
