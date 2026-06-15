@@ -42,6 +42,7 @@
 | 17 | Entradas puntuales — carrera de cobro (cobrar_evento / emitir-mes) | 2026-06-10 | ✅ |
 | 18 | Incidente nginx caído por blip de DNS en upstream (disponibilidad) | 2026-06-11 | ✅ |
 | 19 | Modificar recibo (no cobrado) — desincronía con factura Odoo posteada | 2026-06-12 | ✅ |
+| 20 | Trimestral legacy — convivencia con dedup + gating de facturar | 2026-06-15 | ✅ |
 
 ---
 
@@ -469,6 +470,35 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 20. Trimestral legacy — convivencia con dedup + gating — 2026-06-15 ✅
+**Revisado:** `routes/facturacion_trimestre.py` (`preview`, `preview_excel`, `facturar`),
+interacción con el dedup BD/Odoo (auditoría #8) y con `marcar_pagado`.
+
+**Funcionamiento:** `facturar` agrupa **N recibos → 1 `account.move`** por cliente (N líneas,
+1 por recibo); marca los N recibos con el mismo `account_move_id` (estado `pagado`→`facturado`;
+`impagado`/`devuelto` conservan estado pero con asiento) y reconcilia los pagos previos contra
+la factura (C3 netting).
+
+**Hipótesis del plan (sobre-conciliación) — DESCARTADA.** Se temía: dedup quita el 1 move y
+muestra N filas BD pagables → N pagos contra 1 move. Verificado que **no** se materializa:
+`marcar_pagado` crea el payment por el **importe del recibo** (su share, no el total del move) y
+reconcilia **aditivamente** contra el move compartido; la suma de shares = total del move →
+residual 0 correcto. El guard C2 (`pagado`+`account_payment_id`) evita pagar dos veces el mismo
+recibo. La cardinalidad recibo↔move pasa a **N:1** para trimestral, y el dedup la maneja bien
+(bd_move_ids = {move}, oculta el move Odoo, muestra las N filas BD). Coherente.
+
+**Hallazgo CORREGIDO (2026-06-15 ✅) — gating ausente.** `preview`, `preview_excel` y sobre todo
+`facturar` (crea `account.move` posteados) solo tenían `@auth_required` + `@require_feature` →
+**cualquier sesión autenticada podía facturar el trimestre** (postear facturas). Las claves de
+permiso existían pero no se aplicaban. Fix: `@require_permission` con
+`economico.cuotas_mensuales.facturacion_trimestre_{ver,excel,emitir}` respectivamente.
+**Verificado:** manager (perfil None) pasa; usuario_web sin la clave → 403.
+
+**Abierto (bajo, no bloqueante):** `facturar` no tiene advisory lock; la idempotencia viene del
+filtro `account_move_id IS NULL` (no re-factura recibos ya facturados), pero dos `facturar`
+concurrentes del mismo trimestre podrían duplicar facturas (acción manual trimestral → riesgo
+bajo). Si se quiere blindar: `pg_advisory_xact_lock(manager+trim)` al entrar.
 
 ## 19. Modificar recibo (no cobrado) — desincronía con factura Odoo — 2026-06-12 ✅
 **Pregunta auditada:** ¿el botón "Modificar" de un recibo NO cobrado funciona en todas sus
