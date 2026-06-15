@@ -205,6 +205,23 @@ export const asignacionesClienteList = (identity, idnoofit) =>
 export const leadsEnSala = (identity, salaId) =>
   _requestRoot('GET', `/api/crm/leads-en-sala/${Number(salaId)}`, identity)
 
+// ── Pagadores (instrumento de cobro compartido — docs/PLAN_PAGADOR.md) ───────
+// Ruta raíz /api/pagadores → _requestRoot. Perm cuotas_clientes.pagadores.{ver,editar}.
+export const pagadoresList     = (identity) =>
+  _requestRoot('GET', '/api/pagadores', identity).then(d => d.pagadores || [])
+export const pagadorCreate     = (identity, body) =>
+  _requestRoot('POST', '/api/pagadores', identity, body)
+export const pagadorUpdate     = (identity, id, body) =>
+  _requestRoot('PATCH', `/api/pagadores/${id}`, identity, body)
+export const pagadorDelete     = (identity, id) =>
+  _requestRoot('DELETE', `/api/pagadores/${id}`, identity)
+export const pagadorClientes   = (identity, id) =>
+  _requestRoot('GET', `/api/pagadores/${id}/clientes`, identity).then(d => d.clientes || [])
+export const pagadorAddClientes = (identity, id, clientes) =>
+  _requestRoot('POST', `/api/pagadores/${id}/clientes`, identity, { clientes })
+export const pagadorBajaCliente = (identity, id, idnoofit) =>
+  _requestRoot('DELETE', `/api/pagadores/${id}/clientes/${encodeURIComponent(idnoofit)}`, identity)
+
 // ── Familias ────────────────────────────────────────────────────────────────
 // El blueprint familias se registra bajo `/api/familias` (NO bajo
 // `/api/config/familias`), por eso usamos _requestRoot con la URL absoluta

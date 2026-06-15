@@ -1,7 +1,13 @@
 # Plan — Figura "Pagador" (instrumento de cobro compartido)
 
-> Estado: **diseño cerrado, pendiente de implementar.** Estudio previo en el chat de
-> auditoría (jun 2026). Este documento es la especificación acordada con el usuario.
+> Estado: **F1 (BD+backend) y F2 (frontend) HECHAS y desplegadas (jun 2026).** F3 (emisión +
+> Odoo) y F4 (pulido) pendientes. Estudio previo en el chat de auditoría.
+>
+> **⚠️ INFRA (recovery, NO en git):** la ruta `/api/pagadores` necesita su propio bloque
+> `location ^~ /api/pagadores { proxy_pass http://127.0.0.1:8095/api/pagadores; ... }` en el
+> vhost nginx `noofit.wiemspro.com` (el vhost no tiene catch-all `/api/`; sin el bloque, la ruta
+> cae al SPA y el frontend recibe HTML). Añadido el 2026-06-15. Si se reconstruye el VPS,
+> reaplicar (igual que el resto de prefijos `/api/*`).
 
 ## 1. Concepto (acordado)
 
