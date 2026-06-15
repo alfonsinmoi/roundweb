@@ -44,8 +44,10 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // la factura fiscal es inmutable y editarla en BD la desincronizaría. Espejo
   // del backend (auditoría #19): para cambiar importes → anular + recrear.
   const tieneMoveOdoo = !!(r.account_move_id || r.account_move_ref)
-  // Estados con importes editables (espejo del backend)
-  const editableFull = ['borrador_remesa', 'pendiente', 'impagado', 'devuelto']
+  // Estados con importes editables (espejo del backend). 'emitido' incluido
+  // (recibo no cobrado): sin él, modificar un emitido daba estado_no_editable
+  // y no dejaba tocar ni las notas.
+  const editableFull = ['borrador_remesa', 'pendiente', 'emitido', 'impagado', 'devuelto']
     .includes(r.estado_bd || r.estado) && !tieneMoveOdoo
 
   if (!canModificar) return null

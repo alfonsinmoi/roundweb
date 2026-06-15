@@ -507,6 +507,23 @@ Odoo pero su recibo BD figura `impagado`/`devuelto` → desincronía de ESTADO p
 (devolución que anuló el estado BD sin cancelar el payment Odoo, o viceversa). Pendiente de
 revisar aparte.
 
+**BUG adicional (CORREGIDO 2026-06-15) — el estado `emitido` NO era modificable.** Reportado:
+"al perfil Administrador no le deja modificar NADA del popup". Causa: `emitido` (recibo NO
+cobrado, posteado-pendiente; 173 recibos, muchos migrados) **no estaba** en la lista de estados
+editables (`borrador_remesa/pendiente/impagado/devuelto`) ni era `pagado/facturado` → caía en
+`estado_no_editable` (403) → el backend rechazaba CUALQUIER cambio, **incluidas las notas** → el
+admin abría el popup, editaba y al guardar saltaba el error. No era un problema de permisos (el
+perfil "Administrador" tiene `is_admin=true` → pasa el gate; el botón sí aparecía). Fix: añadir
+`'emitido'` a los estados editables (backend `update_recibo` + frontend `ModificarReciboBtn`).
+El guard `tiene_move` (#19) sigue aplicando: `emitido` SIN factura Odoo → editable total;
+`emitido` CON factura posteada (111 de 173) → solo notas/descripción (importes bloqueados).
+**Verificado:** recibo 2089 (emitido, move 2347) → PATCH notas OK, PATCH importe 409. (Recibo
+de prueba restaurado del backup.)
+**REGLA:** la lista de estados "no cobrados / editables" es
+`borrador_remesa|pendiente|emitido|impagado|devuelto` (debe coincidir EXACTA en backend y
+frontend). Terminales no editables: `pagado|facturado` (solo notas + metodo_pago admin),
+`cancelado|anulado`.
+
 ## 18. Incidente nginx — caída por blip de DNS en upstream — 2026-06-11 ✅
 **Qué pasó:** 06:48 CEST nginx se reinició (logrotate/diario); a las 06:49:07 un chequeo de
 config falló con `[emerg] host not found in upstream "pro.wiemspro.com" in

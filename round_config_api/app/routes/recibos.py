@@ -282,7 +282,12 @@ def update_recibo(rid):
         estado = r['estado']
         tiene_move = bool(r.get('account_move_id'))
         importe_en_d = [f for f in importe_fields if f in d]
-        editable_full = estado in ('borrador_remesa', 'pendiente',
+        # 'emitido' SÍ es editable (recibo no cobrado, posteado-pendiente). Antes
+        # quedaba fuera → caía en estado_no_editable y NO dejaba modificar NADA
+        # (ni notas) — el admin lo reportaba como "no puedo modificar el recibo".
+        # Con factura Odoo posteada, el guard tiene_move de abajo lo limita a
+        # notas/descripción (igual que impagado/devuelto con move).
+        editable_full = estado in ('borrador_remesa', 'pendiente', 'emitido',
                                     'impagado', 'devuelto')
         if editable_full and not tiene_move:
             # Sin factura Odoo (recibo BD puro) → editable total: el cambio es
