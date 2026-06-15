@@ -265,6 +265,8 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
 | `round_cliente_log.timer` | diario 03:30 | log cambios estado cliente |
 | `round_social_publish.timer` | cada 5 min | publica posts Meta programados |
 | `round_entradas_puntuales.timer` | cada 5 min | detecta reservas confirmadas → entradas puntuales |
+| `round_estado_fisico_sync.timer` | diario 03:45 | sync tests estado físico NoofitPro → cache local |
+| `round_ejercicios_sync.timer` | diario 04:15 | sync ejercicios realizados (getTrainingsUser) → `ejercicio_realizado` |
 
 ## Tablas BD principales (round_config)
 
@@ -302,6 +304,14 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
   baja programada. Filtro de listado "Temporal inactivo".
 - `social_cuenta`, `social_post` — agenda Meta Instagram + Facebook
 - `cliente_gympass` — extensión local para gympassId
+- `ejercicio_realizado` + `ejercicio_sync_cliente` — cache local de los
+  ejercicios ejecutados por cliente (NoofitPro `getTrainingsUser`, lista hija
+  `informe`: nombre, reps, duración…). Sync INCREMENTAL por cliente vía header
+  `initialId` (= max id de sesión vista). Alimenta el informe "Ejercicios"
+  (`/informe-ejercicios`): ranking de consumo con filtros/desglose por sexo
+  (gender M/H=hombre, F=mujer), franja edad (birthdate), día semana y franja
+  horaria. Demografía cruzada con `cliente_cache.raw_data`, no duplicada.
+  Endpoints: `GET /api/informes/ejercicios[/estado]` + `POST .../sync`.
 - `categoria` + `cliente_categoria` — categorías de cliente per manager
   (Gympass / Trabajador / Invitado / …) con flags `puede_reservar`,
   `tiene_cuota`, `activa`

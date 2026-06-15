@@ -10,8 +10,16 @@
 //
 // Convención: ✗ marca acción destructiva o crítica (suele dejarse OFF
 // por defecto en perfiles no-admin).
+//
+// ORDEN (jun 2026): el árbol sigue el orden del menú lateral de la app
+// (src/config/routes.js) y, dentro de Configuración, el orden de pestañas
+// (MANAGER_TABS en Configuracion.jsx). Los subtrees sin menú propio van
+// junto a la pantalla en la que viven sus botones (p.ej. cuotas_clientes
+// bajo Clientes = ficha de cliente), y los administrativos/legacy al final.
+// Reordenar aquí NO cambia ningún permiso: solo el orden visual del editor.
 
 export const PERMISSIONS = {
+  // ── Menú: Dashboard ───────────────────────────────────────────────────
   inicio: {
     label: 'Inicio (dashboard)',
     children: {
@@ -19,6 +27,7 @@ export const PERMISSIONS = {
     },
   },
 
+  // ── Menú: Clientes (listado + ficha de cliente) ───────────────────────
   clientes: {
     label: 'Clientes',
     children: {
@@ -76,6 +85,29 @@ export const PERMISSIONS = {
     },
   },
 
+  // Botones de la FICHA de cliente (cards Cuota / Descuentos): sin menú
+  // propio — vive dentro de Clientes → ficha.
+  cuotas_clientes: {
+    label: 'Cuotas asignadas (suscripciones cliente)',
+    children: {
+      ver:                { label: 'Ver cuotas del cliente', action: true },
+      asignar:            { label: 'Asignar cuota nueva', action: true },
+      reemplazar:         { label: '✗ Reemplazar suscripción activa', action: true },
+      cancelar:           { label: '✗ Cancelar suscripción', action: true },
+      cambiar_forma_pago: { label: 'Cambiar forma de pago de la cuota', action: true },
+      asignar_descuento:  { label: 'Asignar / quitar descuento', action: true },
+      // Pagadores: instrumento de cobro compartido (pestaña en Cuotas clientes).
+      pagadores: {
+        label: 'Pagadores',
+        children: {
+          ver:    { label: 'Ver pagadores', action: true },
+          editar: { label: '✗ Alta/baja/edición de pagador y sus clientes', action: true },
+        },
+      },
+    },
+  },
+
+  // ── Menú: CRM (Leads / Comunicaciones / Calendario RRSS / Notas) ──────
   crm: {
     label: 'CRM',
     children: {
@@ -143,6 +175,7 @@ export const PERMISSIONS = {
     },
   },
 
+  // ── Menú: Clases ──────────────────────────────────────────────────────
   clases: {
     label: 'Clases',
     children: {
@@ -153,32 +186,7 @@ export const PERMISSIONS = {
     },
   },
 
-  cuotas_clientes: {
-    label: 'Cuotas asignadas (suscripciones cliente)',
-    children: {
-      ver:                { label: 'Ver cuotas del cliente', action: true },
-      asignar:            { label: 'Asignar cuota nueva', action: true },
-      reemplazar:         { label: '✗ Reemplazar suscripción activa', action: true },
-      cancelar:           { label: '✗ Cancelar suscripción', action: true },
-      cambiar_forma_pago: { label: 'Cambiar forma de pago de la cuota', action: true },
-      asignar_descuento:  { label: 'Asignar / quitar descuento', action: true },
-    },
-  },
-
-  entradas_puntuales: {
-    label: 'Entradas puntuales (drop-in)',
-    children: {
-      ver_altas:        { label: 'Ver altas en cuota puntual', action: true },
-      crear_alta:       { label: 'Dar de alta cliente en cuota puntual', action: true },
-      borrar_alta:      { label: '✗ Borrar alta puntual', action: true },
-      ver_eventos:      { label: 'Ver entradas detectadas', action: true },
-      cobrar_recepcion: { label: 'Cobrar entrada en recepción (por_entrada)', action: true },
-      anular_evento:    { label: '✗ Anular entrada detectada', action: true },
-      emitir_mes:       { label: '✗ Facturar mes agregado (por_mes)', action: true },
-      detectar_ahora:   { label: 'Disparar detección manual', action: true },
-    },
-  },
-
+  // ── Menú: Económico (Cuotas mensuales / Contabilidad) ─────────────────
   economico: {
     label: 'Económico',
     children: {
@@ -251,197 +259,22 @@ export const PERMISSIONS = {
     },
   },
 
-  informe_asistencia: {
-    label: 'Informe de Asistencia',
+  // Menú: Económico → Entradas puntuales (submenú; subtree propio).
+  entradas_puntuales: {
+    label: 'Entradas puntuales (drop-in)',
     children: {
-      // Tabs reales (espejo de VALID_TABS en src/pages/InformeAsistencia.jsx).
-      faltas:        { label: 'Faltas de asistencia',     action: true },
-      control:       { label: 'Control de asistencia',    action: true },
-      distribucion:  { label: 'Distribución de clases',   action: true },
-      revisar:       { label: 'Para revisar (recomendaciones)', action: true },
-      riesgo:        { label: 'Clientes en riesgo (score fuga)', action: true },
-      patrones:      { label: 'Análisis de patrones (clusters)', action: true },
-      retos:         { label: 'Retos', action: true },
-      estado_fisico: { label: 'Estado físico (tests)',    action: true },
+      ver_altas:        { label: 'Ver altas en cuota puntual', action: true },
+      crear_alta:       { label: 'Dar de alta cliente en cuota puntual', action: true },
+      borrar_alta:      { label: '✗ Borrar alta puntual', action: true },
+      ver_eventos:      { label: 'Ver entradas detectadas', action: true },
+      cobrar_recepcion: { label: 'Cobrar entrada en recepción (por_entrada)', action: true },
+      anular_evento:    { label: '✗ Anular entrada detectada', action: true },
+      emitir_mes:       { label: '✗ Facturar mes agregado (por_mes)', action: true },
+      detectar_ahora:   { label: 'Disparar detección manual', action: true },
     },
   },
 
-  informe_clientes: {
-    label: 'Informe de Clientes',
-    children: {
-      ver:            { label: 'Ver informe agregado de clientes', action: true },
-      exportar_excel: { label: 'Exportar a Excel', action: true },
-    },
-  },
-
-  informe_integridad: {
-    label: 'Informe de Integridad (reservas sin cliente)',
-    children: {
-      ver:            { label: 'Ver listado', action: true },
-      exportar_excel: { label: 'Exportar a Excel', action: true },
-    },
-  },
-
-  configuracion: {
-    label: 'Configuración',
-    children: {
-      centros_trainers: {
-        label: 'Centros / Trainers',
-        children: {
-          ver:    { label: 'Ver centros', action: true },
-          editar: { label: 'Editar centro', action: true },
-          crear:  { label: '✗ Crear centro nuevo', action: true },
-          borrar: { label: '✗ Borrar centro', action: true },
-        },
-      },
-      // Cada pestaña catálogo tiene su perm. cuotas_descuentos queda como
-      // legacy/compat para perfiles antiguos — los nuevos usan cuotas,
-      // descuentos y modificaciones por separado.
-      cuotas: {
-        label: 'Cuotas (catálogo)',
-        children: {
-          ver:     { label: 'Ver cuotas', action: true },
-          editar:  { label: 'Editar cuotas', action: true },
-          crear:   { label: 'Crear cuota', action: true },
-          borrar:  { label: '✗ Borrar cuota', action: true },
-          adoptar: { label: 'Adoptar cuota manager-wide → trainer', action: true },
-        },
-      },
-      descuentos: {
-        label: 'Descuentos (catálogo)',
-        children: {
-          ver:                  { label: 'Ver descuentos', action: true },
-          editar:               { label: 'Editar descuento', action: true },
-          crear:                { label: 'Crear descuento', action: true },
-          borrar:               { label: '✗ Borrar descuento', action: true },
-          asignar_a_cliente:    { label: 'Asignar descuento a cliente', action: true },
-          borrar_asignacion:    { label: '✗ Quitar asignación de descuento', action: true },
-          adoptar:              { label: 'Adoptar descuento manager-wide → trainer', action: true },
-        },
-      },
-      modificaciones: {
-        label: 'Modificaciones (catálogo)',
-        children: {
-          ver:    { label: 'Ver modificaciones', action: true },
-          editar: { label: 'Editar modificaciones', action: true },
-          crear:  { label: 'Crear modificación', action: true },
-          borrar: { label: '✗ Borrar modificación', action: true },
-        },
-      },
-      modo_facturacion: {
-        label: 'Forma de facturar (mensual / trimestral / directa)',
-        children: {
-          ver:    { label: 'Ver modo', action: true },
-          editar: { label: '✗ Cambiar modo (impacto fiscal)', action: true },
-        },
-      },
-      contabilidad_tab: {
-        label: 'Contabilidad (toggle per-trainer + visibilidad listados)',
-        children: {
-          ver:    { label: 'Ver config', action: true },
-          editar: { label: 'Editar config', action: true },
-        },
-      },
-      cuotas_descuentos:   { label: 'Cuotas y Descuentos (legacy)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
-      email:               { label: 'Email (proveedores)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
-      email_templates:     { label: 'Plantillas email transaccional', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
-      pasarelas:           { label: 'Pasarelas de pago (PayComet)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar credenciales', action: true } } },
-      trainer_creds:       { label: 'Credenciales NoofitPro per-trainer',
-        children: {
-          ver:        { label: 'Ver lista (passwords enmascaradas)', action: true },
-          editar:     { label: 'Crear / editar / borrar', action: true },
-          test_login: { label: 'Probar login NoofitPro', action: true },
-        },
-      },
-      notificaciones:      { label: 'Notificaciones (OneSignal)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
-      categorias_cliente:  {
-        label: 'Categorías de cliente',
-        children: {
-          ver:                { label: 'Ver catálogo', action: true },
-          editar:             { label: 'Editar categoría', action: true },
-          crear:              { label: 'Crear categoría', action: true },
-          borrar:             { label: '✗ Borrar categoría', action: true },
-          asignar_a_cliente:  { label: 'Asignar categoría a cliente', action: true },
-          quitar_de_cliente:  { label: '✗ Quitar categoría de cliente', action: true },
-          ver_asignaciones:   { label: 'Ver asignaciones (cliente↔categoría)', action: true },
-        },
-      },
-      catalogos:           { label: 'Catálogos (motivos baja, etc)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
-      meta:                { label: 'Meta (Instagram + Facebook)',
-        children: {
-          ver:         { label: 'Ver cuentas', action: true },
-          conectar:    { label: 'Conectar nueva cuenta', action: true },
-          desconectar: { label: '✗ Desconectar cuenta', action: true },
-        },
-      },
-      perfiles:            { label: 'Perfiles (solo admin)',
-        children: { ver: { label: 'Ver', action: true }, editar: { label: 'Crear/Editar', action: true } } },
-      usuarios_web:        { label: 'Usuarios web (solo admin)',
-        children: {
-          ver:            { label: 'Ver', action: true },
-          crear:          { label: 'Crear usuario', action: true },
-          editar:         { label: 'Editar usuario', action: true },
-          reset_password: { label: 'Reset contraseña', action: true },
-          borrar:         { label: '✗ Borrar usuario', action: true },
-        },
-      },
-      suscripciones:       { label: 'Suscripciones Odoo (CRM / Cuotas / Contabilidad)',
-        children: {
-          ver:      { label: 'Ver estado de módulos', action: true },
-          activar:  { label: '✗ Activar módulo Odoo (irreversible)', action: true },
-        },
-      },
-      canales_captacion:   { label: 'Canales de captación (UTMs)',
-        children: {
-          ver:    { label: 'Ver canales', action: true },
-          editar: { label: 'Crear / editar canal', action: true },
-        },
-      },
-      formularios:         { label: 'Formularios de captación (embebibles)',
-        children: {
-          ver:    { label: 'Ver formularios', action: true },
-          editar: { label: 'Crear / editar formulario', action: true },
-          borrar: { label: '✗ Borrar formulario', action: true },
-        },
-      },
-      actividades:         { label: 'Actividades (sincronizadas con NoofitPro)',
-        children: {
-          ver:    { label: 'Ver actividades', action: true },
-          editar: { label: 'Crear / editar / activar actividades', action: true },
-        },
-      },
-      pos:                 { label: 'Terminal de Caja (POS) — catálogo',
-        children: {
-          productos_ver:      { label: 'Ver productos / catálogo', action: true },
-          productos_editar:   { label: 'Crear / editar productos', action: true },
-          productos_archivar: { label: 'Archivar / restaurar productos', action: true },
-          categorias_editar:  { label: 'Gestionar categorías per-manager', action: true },
-          descuentos_editar:  { label: 'Crear / editar descuentos', action: true },
-          stock_ajuste:       { label: 'Ajuste manual de stock (reposición / baja)', action: true },
-          stock_historial:    { label: 'Ver historial de movimientos de stock', action: true },
-        },
-      },
-      checklist:           { label: 'Checklist post-activación',
-        children: {
-          ver: { label: 'Ver checklist', action: true },
-        },
-      },
-    },
-  },
-
-  // ── Bandeja de incidencias internas (admin) ─────────────────────────────
-  // Avisos automáticos creados por el sistema cuando hay anomalías
-  // (pagos parciales, sync errors, descuadres de caja…). El admin las
-  // revisa y marca como leídas.
-  incidencias: {
-    label: 'Incidencias del sistema',
-    children: {
-      ver:          { label: 'Ver bandeja de incidencias', action: true },
-      marcar_leida: { label: 'Marcar incidencia como leída', action: true },
-    },
-  },
-
-  // ── TPV — operativa (vender / cobrar / cuadre) ──────────────────────────
+  // ── Menú: TPV (Vender / Proveedores / Dashboard) ──────────────────────
   // El catálogo de productos/descuentos vive en `configuracion.pos`. Este
   // subtree es para el USO del terminal en recepción (vender, anular, cuadrar
   // caja, ver dashboard). Recepción típica: cobrar + ver. Encargados: anular
@@ -473,12 +306,6 @@ export const PERMISSIONS = {
           aplicar: { label: 'Aplicar descuentos del catálogo al ticket', action: true },
         },
       },
-      dashboard: {
-        label: 'Dashboard analítico',
-        children: {
-          ver: { label: 'Ver dashboard de ventas', action: true },
-        },
-      },
       proveedores: {
         label: 'Facturas de proveedor (compras)',
         children: {
@@ -489,17 +316,50 @@ export const PERMISSIONS = {
           anular:    { label: '✗ Anular factura proveedor', action: true },
         },
       },
+      dashboard: {
+        label: 'Dashboard analítico',
+        children: {
+          ver: { label: 'Ver dashboard de ventas', action: true },
+        },
+      },
     },
   },
 
-  // ── (eliminado junio 2026) Subtree `recibos` era duplicado de
-  // `economico.cuotas_mensuales.*`. El backend (routes/recibos.py) usa las
-  // claves canónicas `marcar_pagado_manual`, `anular_pago`, `modificar_recibo`,
-  // `generar_link_pago` bajo `economico.cuotas_mensuales`. Para gestionar el
-  // permiso de los botones Pagar/Devolver/Modificar del listado de cuotas
-  // mensuales, usa esas claves canónicas.
+  // ── Menú: Informes → Asistencia ───────────────────────────────────────
+  informe_asistencia: {
+    label: 'Informe de Asistencia',
+    children: {
+      // Tabs reales (espejo de VALID_TABS en src/pages/InformeAsistencia.jsx).
+      faltas:        { label: 'Faltas de asistencia',     action: true },
+      control:       { label: 'Control de asistencia',    action: true },
+      distribucion:  { label: 'Distribución de clases',   action: true },
+      revisar:       { label: 'Para revisar (recomendaciones)', action: true },
+      riesgo:        { label: 'Clientes en riesgo (score fuga)', action: true },
+      patrones:      { label: 'Análisis de patrones (clusters)', action: true },
+      retos:         { label: 'Retos', action: true },
+      estado_fisico: { label: 'Estado físico (tests)',    action: true },
+    },
+  },
 
-  // ── Control horario laboral (Fase 7, art. 34.9 ET) ──────────────────────
+  // ── Menú: Informes → Clientes ─────────────────────────────────────────
+  informe_clientes: {
+    label: 'Informe de Clientes',
+    children: {
+      ver:            { label: 'Ver informe agregado de clientes', action: true },
+      exportar_excel: { label: 'Exportar a Excel', action: true },
+    },
+  },
+
+  // ── Menú: Informes → Integridad ───────────────────────────────────────
+  informe_integridad: {
+    label: 'Informe de Integridad (reservas sin cliente)',
+    children: {
+      ver:            { label: 'Ver listado', action: true },
+      exportar_excel: { label: 'Exportar a Excel', action: true },
+    },
+  },
+
+  // ── Menú: Control horario (Fase 7, art. 34.9 ET) ─────────────────────
   // Módulo de fichaje de trabajadores con hash-chain SHA-256, QR rotativo
   // HS256, correcciones con aprobación. Activación per-manager.
   control_horario: {
@@ -578,7 +438,200 @@ export const PERMISSIONS = {
     },
   },
 
-  // ── Despliegue Odoo (manager) ───────────────────────────────────────────
+  // ── Menú: Incidencias (bandeja interna, admin) ────────────────────────
+  // Avisos automáticos creados por el sistema cuando hay anomalías
+  // (pagos parciales, sync errors, descuadres de caja…). El admin las
+  // revisa y marca como leídas.
+  incidencias: {
+    label: 'Incidencias del sistema',
+    children: {
+      ver:          { label: 'Ver bandeja de incidencias', action: true },
+      marcar_leida: { label: 'Marcar incidencia como leída', action: true },
+    },
+  },
+
+  // ── Menú: Configuración (orden = orden de pestañas MANAGER_TABS) ──────
+  configuracion: {
+    label: 'Configuración',
+    children: {
+      // Pestaña: Suscripciones
+      suscripciones:       { label: 'Suscripciones Odoo (CRM / Cuotas / Contabilidad)',
+        children: {
+          ver:      { label: 'Ver estado de módulos', action: true },
+          activar:  { label: '✗ Activar módulo Odoo (irreversible)', action: true },
+        },
+      },
+      // Pestañas: Checklist CRM / Cuotas / Contabilidad
+      checklist:           { label: 'Checklist post-activación',
+        children: {
+          ver: { label: 'Ver checklist', action: true },
+        },
+      },
+      // Pestañas: Cuotas + Formas de pago + Periodicidad (comparten perm).
+      // cuotas_descuentos queda como legacy/compat para perfiles antiguos —
+      // los nuevos usan cuotas, descuentos y modificaciones por separado.
+      cuotas: {
+        label: 'Cuotas (catálogo)',
+        children: {
+          ver:     { label: 'Ver cuotas', action: true },
+          editar:  { label: 'Editar cuotas', action: true },
+          crear:   { label: 'Crear cuota', action: true },
+          borrar:  { label: '✗ Borrar cuota', action: true },
+          adoptar: { label: 'Adoptar cuota manager-wide → trainer', action: true },
+        },
+      },
+      // Pestaña: Descuentos
+      descuentos: {
+        label: 'Descuentos (catálogo)',
+        children: {
+          ver:                  { label: 'Ver descuentos', action: true },
+          editar:               { label: 'Editar descuento', action: true },
+          crear:                { label: 'Crear descuento', action: true },
+          borrar:               { label: '✗ Borrar descuento', action: true },
+          asignar_a_cliente:    { label: 'Asignar descuento a cliente', action: true },
+          borrar_asignacion:    { label: '✗ Quitar asignación de descuento', action: true },
+          adoptar:              { label: 'Adoptar descuento manager-wide → trainer', action: true },
+        },
+      },
+      // Pestaña: Modificaciones
+      modificaciones: {
+        label: 'Modificaciones (catálogo)',
+        children: {
+          ver:    { label: 'Ver modificaciones', action: true },
+          editar: { label: 'Editar modificaciones', action: true },
+          crear:  { label: 'Crear modificación', action: true },
+          borrar: { label: '✗ Borrar modificación', action: true },
+        },
+      },
+      // Pestaña: Categorías clientes
+      categorias_cliente:  {
+        label: 'Categorías de cliente',
+        children: {
+          ver:                { label: 'Ver catálogo', action: true },
+          editar:             { label: 'Editar categoría', action: true },
+          crear:              { label: 'Crear categoría', action: true },
+          borrar:             { label: '✗ Borrar categoría', action: true },
+          asignar_a_cliente:  { label: 'Asignar categoría a cliente', action: true },
+          quitar_de_cliente:  { label: '✗ Quitar categoría de cliente', action: true },
+          ver_asignaciones:   { label: 'Ver asignaciones (cliente↔categoría)', action: true },
+        },
+      },
+      // Pestaña: Notificaciones
+      notificaciones:      { label: 'Notificaciones (OneSignal)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      // Pestaña: Contabilidad
+      contabilidad_tab: {
+        label: 'Contabilidad (toggle per-trainer + visibilidad listados)',
+        children: {
+          ver:    { label: 'Ver config', action: true },
+          editar: { label: 'Editar config', action: true },
+        },
+      },
+      // Pestaña: Forma de facturar
+      modo_facturacion: {
+        label: 'Forma de facturar (mensual / trimestral / directa)',
+        children: {
+          ver:    { label: 'Ver modo', action: true },
+          editar: { label: '✗ Cambiar modo (impacto fiscal)', action: true },
+        },
+      },
+      // Pestañas: Centros + Alta de cliente (comparten perm)
+      centros_trainers: {
+        label: 'Centros / Trainers',
+        children: {
+          ver:    { label: 'Ver centros', action: true },
+          editar: { label: 'Editar centro', action: true },
+          crear:  { label: '✗ Crear centro nuevo', action: true },
+          borrar: { label: '✗ Borrar centro', action: true },
+        },
+      },
+      // Pestaña: Actividades
+      actividades:         { label: 'Actividades (sincronizadas con NoofitPro)',
+        children: {
+          ver:    { label: 'Ver actividades', action: true },
+          editar: { label: 'Crear / editar / activar actividades', action: true },
+        },
+      },
+      // Pestaña: Pasarelas (PayComet)
+      pasarelas:           { label: 'Pasarelas de pago (PayComet)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar credenciales', action: true } } },
+      // Pestaña: Terminal de Caja (catálogo POS)
+      pos:                 { label: 'Terminal de Caja (POS) — catálogo',
+        children: {
+          productos_ver:      { label: 'Ver productos / catálogo', action: true },
+          productos_editar:   { label: 'Crear / editar productos', action: true },
+          productos_archivar: { label: 'Archivar / restaurar productos', action: true },
+          categorias_editar:  { label: 'Gestionar categorías per-manager', action: true },
+          descuentos_editar:  { label: 'Crear / editar descuentos', action: true },
+          stock_ajuste:       { label: 'Ajuste manual de stock (reposición / baja)', action: true },
+          stock_historial:    { label: 'Ver historial de movimientos de stock', action: true },
+        },
+      },
+      // Pestaña: Canales captación
+      canales_captacion:   { label: 'Canales de captación (UTMs)',
+        children: {
+          ver:    { label: 'Ver canales', action: true },
+          editar: { label: 'Crear / editar canal', action: true },
+        },
+      },
+      // Pestaña: Formularios
+      formularios:         { label: 'Formularios de captación (embebibles)',
+        children: {
+          ver:    { label: 'Ver formularios', action: true },
+          editar: { label: 'Crear / editar formulario', action: true },
+          borrar: { label: '✗ Borrar formulario', action: true },
+        },
+      },
+      // Pestaña: Email (transaccional)
+      email:               { label: 'Email (proveedores)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      // Pestaña: Plantillas email
+      email_templates:     { label: 'Plantillas email transaccional', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      // Pestaña: Cuentas Meta
+      meta:                { label: 'Meta (Instagram + Facebook)',
+        children: {
+          ver:         { label: 'Ver cuentas', action: true },
+          conectar:    { label: 'Conectar nueva cuenta', action: true },
+          desconectar: { label: '✗ Desconectar cuenta', action: true },
+        },
+      },
+      // Pestaña: Perfiles
+      perfiles:            { label: 'Perfiles (solo admin)',
+        children: { ver: { label: 'Ver', action: true }, editar: { label: 'Crear/Editar', action: true } } },
+      // Pestaña: Usuarios web
+      usuarios_web:        { label: 'Usuarios web (solo admin)',
+        children: {
+          ver:            { label: 'Ver', action: true },
+          crear:          { label: 'Crear usuario', action: true },
+          editar:         { label: 'Editar usuario', action: true },
+          reset_password: { label: 'Reset contraseña', action: true },
+          borrar:         { label: '✗ Borrar usuario', action: true },
+        },
+      },
+      // ── Sin pestaña propia (botones dentro de otras pestañas) ──────────
+      trainer_creds:       { label: 'Credenciales NoofitPro per-trainer',
+        children: {
+          ver:        { label: 'Ver lista (passwords enmascaradas)', action: true },
+          editar:     { label: 'Crear / editar / borrar', action: true },
+          test_login: { label: 'Probar login NoofitPro', action: true },
+        },
+      },
+      catalogos:           { label: 'Catálogos (motivos baja, etc)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+      cuotas_descuentos:   { label: 'Cuotas y Descuentos (legacy)', children: { ver: { label: 'Ver', action: true }, editar: { label: 'Editar', action: true } } },
+    },
+  },
+
+  // ── Menú (sección Gestor): Config. ERP ────────────────────────────────
+  // Pantalla /erp-configuracion, sólo visible si el manager tiene
+  // contabilidad Odoo desplegada (feature flag 'contabilidad'). Configura
+  // datos fiscales globales del manager (CIF, razón social, IBAN, …) que
+  // se propagan a res.company de Odoo.
+  erp_configuracion: {
+    label: 'Configuración ERP (datos fiscales)',
+    children: {
+      ver:    { label: 'Ver configuración ERP', action: true },
+      editar: { label: '✗ Editar configuración ERP (impacto facturas)', action: true },
+    },
+  },
+
+  // ── Sin menú propio: Despliegue Odoo (manager) ────────────────────────
   // Acciones de provisión Odoo más allá del toggle suscripciones — el wizard
   // de chequeo wcommerce / edición manual de id wcommerce / reintento desde
   // panel admin global.
@@ -594,7 +647,7 @@ export const PERMISSIONS = {
     },
   },
 
-  // ── Auditoría (audit log central) ───────────────────────────────────────
+  // ── Sin menú propio: Auditoría (audit log central) ────────────────────
   auditoria: {
     label: 'Auditoría (audit log)',
     children: {
@@ -602,18 +655,12 @@ export const PERMISSIONS = {
     },
   },
 
-  // ── Configuración ERP (item separado en sidebar managerItems) ───────────
-  // Pantalla /erp-configuracion, sólo visible si el manager tiene
-  // contabilidad Odoo desplegada (feature flag 'contabilidad'). Configura
-  // datos fiscales globales del manager (CIF, razón social, IBAN, …) que
-  // se propagan a res.company de Odoo.
-  erp_configuracion: {
-    label: 'Configuración ERP (datos fiscales)',
-    children: {
-      ver:    { label: 'Ver configuración ERP', action: true },
-      editar: { label: '✗ Editar configuración ERP (impacto facturas)', action: true },
-    },
-  },
+  // ── (eliminado junio 2026) Subtree `recibos` era duplicado de
+  // `economico.cuotas_mensuales.*`. El backend (routes/recibos.py) usa las
+  // claves canónicas `marcar_pagado_manual`, `anular_pago`, `modificar_recibo`,
+  // `generar_link_pago` bajo `economico.cuotas_mensuales`. Para gestionar el
+  // permiso de los botones Pagar/Devolver/Modificar del listado de cuotas
+  // mensuales, usa esas claves canónicas.
 
 }
 

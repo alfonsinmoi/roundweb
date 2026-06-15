@@ -26,6 +26,7 @@ const Dispositivos = lazy(() => import('./pages/Dispositivos'))
 const Listados = lazy(() => import('./pages/Listados'))
 const InformeAsistencia = lazy(() => import('./pages/InformeAsistencia'))
 const InformeClientes = lazy(() => import('./pages/InformeClientes'))
+const InformeEjercicios = lazy(() => import('./pages/InformeEjercicios'))
 const InformeIntegridad = lazy(() => import('./pages/InformeIntegridad'))
 const ClasesModificacion = lazy(() => import('./pages/ClasesModificacion'))
 const AnalisisClusters = lazy(() => import('./pages/AnalisisClusters'))
@@ -130,6 +131,7 @@ function AppRoutes() {
           <Route path="/informe-asistencia"          element={<InformeAsistencia />} />
           <Route path="/informe-asistencia/:tab"     element={<InformeAsistencia />} />
           <Route path="/informe-clientes"            element={<InformeClientes />} />
+          <Route path="/informe-ejercicios"          element={<InformeEjercicios />} />
           <Route path="/informe-integridad"          element={<InformeIntegridad />} />
           <Route path="/analisis-clusters"    element={<AnalisisClusters />} />
           <Route path="/erp-configuracion"   element={<ERPConfiguracion />} />

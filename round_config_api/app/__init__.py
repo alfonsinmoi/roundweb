@@ -39,6 +39,7 @@ from .routes.trainer_creds     import bp as bp_trainer_creds
 from .routes.recibos           import bp as bp_recibos
 from .routes.subscriptions     import bp as bp_subscriptions
 from .routes.forma_pago        import bp as bp_forma_pago
+from .routes.pagadores         import bp as bp_pagadores
 from .routes.modo_facturacion  import bp as bp_modo_facturacion
 from .routes.facturacion_config import bp as bp_facturacion_config
 from .routes.config_menu import bp as bp_config_menu
@@ -61,6 +62,7 @@ from .routes.canales_captacion import bp as bp_canales_captacion
 from .routes.baja_programada   import bp as bp_baja_programada
 from .routes.inactivo_temporal import bp as bp_inactivo_temporal
 from .routes.informe_clientes  import bp as bp_informe_clientes
+from .routes.informe_ejercicios import bp as bp_informe_ejercicios
 from .routes.horario           import bp as bp_horario
 from .routes.horario_fichaje   import bp as bp_horario_fichaje
 from .routes.horario_ausencias import bp as bp_horario_ausencias
@@ -176,6 +178,10 @@ def create_app():
     for prefix in ('/informes', '/api/informes'):
         app.register_blueprint(bp_informe_clientes, name=f'inf_cli{prefix}', url_prefix=prefix)
 
+    # ── Informe de ejercicios realizados (ranking de consumo) ─────────────
+    for prefix in ('/informes', '/api/informes'):
+        app.register_blueprint(bp_informe_ejercicios, name=f'inf_ej{prefix}', url_prefix=prefix)
+
     # ── Redes sociales (cuentas Meta + agenda) ────────────────────────────
     for prefix in ('/social', '/api/social'):
         app.register_blueprint(bp_social, name=f'soc{prefix}', url_prefix=prefix)
@@ -215,6 +221,10 @@ def create_app():
     # ── Forma de pago por cliente (con histórico)
     for prefix in ('/forma-pago', '/api/forma-pago'):
         app.register_blueprint(bp_forma_pago, name=f'fp{prefix}', url_prefix=prefix)
+
+    # ── Pagadores (instrumento de cobro compartido — docs/PLAN_PAGADOR.md)
+    for prefix in ('/pagadores', '/api/pagadores'):
+        app.register_blueprint(bp_pagadores, name=f'pag{prefix}', url_prefix=prefix)
 
     # ── Modo de facturación (config del manager)
     for prefix in ('/modo-facturacion', '/api/config/modo-facturacion'):

@@ -6,6 +6,7 @@ import { Plus, Loader2, Tag, X as XIcon } from 'lucide-react'
 import { Card, Btn, Badge, SectionTitle } from '../UI'
 import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
+import { useCanAny } from '../../hooks/useCan'
 import {
   getRoundIdentity, descuentosList, asignacionesClienteList,
   asignacionCreate, asignacionDelete,
@@ -46,6 +47,15 @@ export default function DescuentosClienteCard({ cliente }) {
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
   const toast = useToast()
+
+  // Permiso para gestionar descuentos de ESTE cliente. Se puede conceder
+  // desde el toggle natural "Asignar / quitar descuento" (bajo Cuotas
+  // asignadas del cliente) o desde los de catálogo. El backend acepta los
+  // mismos (require_any_permission). Manager NoofitPro → control total.
+  const canAsignar = useCanAny(['cuotas_clientes.asignar_descuento',
+                                'configuracion.descuentos.asignar_a_cliente'])
+  const canQuitar  = useCanAny(['cuotas_clientes.asignar_descuento',
+                                'configuracion.descuentos.borrar_asignacion'])
 
   const [catalogo, setCatalogo] = useState([])
   const [asignaciones, setAsignaciones] = useState([])
@@ -167,20 +177,20 @@ export default function DescuentosClienteCard({ cliente }) {
                             style={{ color: 'var(--text-3)', padding: 4, cursor: 'help' }}>
                         🔒
                       </span>
-                    ) : (
+                    ) : canQuitar ? (
                       <button onClick={() => handleQuitar(a)}
                               title="Quitar"
                               style={{ background: 'none', border: 'none',
                                        cursor: 'pointer', color: 'var(--red)', padding: 4 }}>
                         <XIcon size={14} />
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 )})}
               </div>
             )}
 
-            {!adding ? (
+            {canAsignar && (!adding ? (
               <Btn variant="secondary" size="sm" onClick={() => setAdding(true)}
                    style={{ marginTop: 8 }}>
                 <Plus size={12} /> Añadir descuento
@@ -210,7 +220,7 @@ export default function DescuentosClienteCard({ cliente }) {
                   </Btn>
                 </div>
               </div>
-            )}
+            ))}
           </div>
 
           {/* Histórico */}

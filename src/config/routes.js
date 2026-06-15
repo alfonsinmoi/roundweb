@@ -49,6 +49,7 @@ export const navItems = [
     children: [
       { to: '/informe-asistencia', label: 'Asistencia', perm: 'informe_asistencia' },
       { to: '/informe-clientes',   label: 'Clientes',   perm: 'informe_asistencia' },
+      { to: '/informe-ejercicios', label: 'Ejercicios', perm: 'informe_asistencia' },
       { to: '/informe-integridad', label: 'Integridad', perm: 'informe_asistencia' },
     ],
   },

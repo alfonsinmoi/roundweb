@@ -1,12 +1,45 @@
 """CRUD de descuentos (mismo patrón que cuotas)."""
+from functools import wraps
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, _has_permission
 from ..db import get_conn
 from ..odoo_sync import get_sync
 from ..audit_log import log_action, actor_from_request
 from .. import config
 
 bp = Blueprint('descuentos', __name__)
+
+
+def require_any_permission(*paths):
+    """Como `require_permission` pero pasa si el perfil tiene CUALQUIERA de
+    los permisos dados (OR). Útil cuando una misma acción se puede conceder
+    desde dos sitios del árbol de permisos. Caso de uso: asignar/quitar un
+    descuento a un cliente, que el manager concede de forma natural bajo
+    'Cuotas asignadas del cliente' (`cuotas_clientes.asignar_descuento`) pero
+    que históricamente solo miraba el permiso de catálogo
+    (`configuracion.descuentos.asignar_a_cliente`). Aceptar ambos no rompe los
+    perfiles antiguos y hace que el toggle intuitivo por fin funcione.
+
+    Debe ir DESPUÉS de `@auth_required` (que carga `g.perfil`)."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            perfil = getattr(g, 'perfil', None)
+            if not any(_has_permission(perfil, p) for p in paths):
+                try:
+                    log_action(actor_from_request(),
+                               entidad='permission_check',
+                               entidad_id=paths[0],
+                               accion='denied',
+                               resumen=(f'perm_any={list(paths)} '
+                                        f'perfil={perfil.get("nombre") if perfil else "?"}'))
+                except Exception:
+                    pass
+                return jsonify({'ok': False, 'error': 'permission_denied',
+                                'perm': list(paths)}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
 
 FIELDS = ("id, scope, id_manager, id_trainer, plantilla_origen_id, codigo, "
           "descripcion, tipo, valor, unidad, active, odoo_id, "
@@ -505,7 +538,8 @@ def list_asignaciones_cliente(idnoofit):
 
 @bp.route('/<int:desc_id>/asignaciones', methods=['POST'])
 @auth_required
-@require_permission('configuracion.descuentos.asignar_a_cliente')
+@require_any_permission('configuracion.descuentos.asignar_a_cliente',
+                        'cuotas_clientes.asignar_descuento')
 def create_asignacion(desc_id):
     """Asignar el descuento a uno o varios clientes a la vez.
 
@@ -604,7 +638,8 @@ def create_asignacion(desc_id):
 
 @bp.route('/<int:desc_id>/asignaciones/<int:asig_id>', methods=['DELETE'])
 @auth_required
-@require_permission('configuracion.descuentos.borrar_asignacion')
+@require_any_permission('configuracion.descuentos.borrar_asignacion',
+                        'cuotas_clientes.asignar_descuento')
 def delete_asignacion(desc_id, asig_id):
     """Revoca una asignación.
 

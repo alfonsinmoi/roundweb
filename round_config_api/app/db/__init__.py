@@ -1035,6 +1035,56 @@ CREATE TABLE IF NOT EXISTS cliente_cache_sync (
 );
 
 
+-- ─── EJERCICIOS REALIZADOS — cache local de getTrainingsUser ────────────
+-- Cada fila = UN ejercicio ejecutado dentro de una sesión de entrenamiento
+-- NoofitPro (lista hija `informe` de cada training). Alimenta el informe
+-- "Ejercicios" (ranking de consumo con filtros por sexo / edad / día /
+-- franja horaria). La demografía NO se duplica aquí: se cruza en la query
+-- con cliente_cache.raw_data (gender, birthdate).
+-- Sync incremental por cliente vía header `initialId` (= max id de sesión
+-- ya sincronizada), patrón estado_fisico.
+CREATE TABLE IF NOT EXISTS ejercicio_realizado (
+  id_manager     VARCHAR(64) NOT NULL,
+  id_trainer     VARCHAR(64),
+  user_id        INTEGER NOT NULL,
+  informe_id     BIGINT NOT NULL,         -- id del informe NF (único)
+  sesion_id      BIGINT NOT NULL,         -- id del entrenamiento NF
+  sesion_fecha   TIMESTAMPTZ,
+  sesion_nombre  VARCHAR(240),
+  orden          INTEGER,
+  ejercicio_id   INTEGER,                 -- FK lógica al catálogo NF
+  nombre         VARCHAR(240),
+  reps           INTEGER,
+  duracion_seg   INTEGER,
+  calorias       INTEGER,
+  synced_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, informe_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ej_real_fecha
+  ON ejercicio_realizado(id_manager, sesion_fecha DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_ej_real_nombre
+  ON ejercicio_realizado(id_manager, nombre);
+CREATE INDEX IF NOT EXISTS idx_ej_real_user
+  ON ejercicio_realizado(id_manager, user_id);
+
+-- Estado de sincronización por cliente. last_sesion_id = mayor id de
+-- sesión recibido (se manda como initialId en la siguiente llamada para
+-- que NoofitPro devuelva solo los entrenamientos nuevos).
+CREATE TABLE IF NOT EXISTS ejercicio_sync_cliente (
+  id_manager     VARCHAR(64) NOT NULL,
+  id_trainer     VARCHAR(64),
+  user_id        INTEGER NOT NULL,
+  last_sesion_id BIGINT NOT NULL DEFAULT 0,
+  synced_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  n_sesiones     INTEGER NOT NULL DEFAULT 0,
+  n_ejercicios   INTEGER NOT NULL DEFAULT 0,
+  ultima_falla   TEXT,
+  PRIMARY KEY (id_manager, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ej_sync_synced
+  ON ejercicio_sync_cliente(id_manager, synced_at);
+
+
 -- ─── Fase 4: multi-trainer con analytic accounts ────────────────────────
 -- En Odoo cada `res.company` tendrá un `account.analytic.plan` propio
 -- (p. ej. "Trainers Round Málaga") y dentro un `account.analytic.account`
@@ -1787,6 +1837,63 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_fpcli_activa
 
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- ║  PAGADOR — instrumento de cobro compartido (docs/PLAN_PAGADOR.md)        ║
+-- ═══════════════════════════════════════════════════════════════════════════
+-- El pagador CEDE su instrumento (IBAN si SEPA / token si tarjeta) para que se
+-- carguen en su cuenta los recibos de uno o varios clientes (p.ej. un padre por
+-- sus hijos). La factura/recibo/pago siguen siendo del CLIENTE (Odoo intacto);
+-- solo cambia, al generar el adeudo, qué IBAN/mandato/token se debita. Atado a
+-- UN trainer. Default retrocompatible: cliente sin pagador activo = auto-pago.
+CREATE TABLE IF NOT EXISTS pagador (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  id_trainer               VARCHAR(64) NOT NULL,           -- atado a UN trainer
+  nombre                   VARCHAR(160) NOT NULL,
+  nif                      VARCHAR(20),
+  forma_pago               VARCHAR(30) NOT NULL,           -- sepa | tarjeta_token
+  iban                     VARCHAR(40),                    -- instrumento SEPA
+  iban_titular             VARCHAR(160),
+  bic                      VARCHAR(20),
+  mandate_ref              VARCHAR(50),
+  card_token               VARCHAR(100),                   -- instrumento tarjeta
+  card_brand               VARCHAR(20),
+  card_last4               VARCHAR(4),
+  odoo_partner_id          INTEGER,                        -- presencia en Odoo (titular del mandato)
+  odoo_bank_id             INTEGER,
+  odoo_mandate_id          INTEGER,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'activo',  -- activo | inactivo
+  notas                    TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by               VARCHAR(160),
+  updated_by               VARCHAR(160)
+);
+CREATE INDEX IF NOT EXISTS idx_pagador_manager  ON pagador(id_manager);
+CREATE INDEX IF NOT EXISTS idx_pagador_trainer  ON pagador(id_manager, id_trainer);
+
+CREATE TABLE IF NOT EXISTS pagador_cliente (
+  id                       SERIAL PRIMARY KEY,
+  id_manager               VARCHAR(64) NOT NULL,
+  pagador_id               INTEGER NOT NULL REFERENCES pagador(id) ON DELETE CASCADE,
+  cliente_idnoofit         VARCHAR(64) NOT NULL,
+  estado                   VARCHAR(20) NOT NULL DEFAULT 'activo',  -- activo | baja
+  fecha_inicio             DATE NOT NULL DEFAULT CURRENT_DATE,
+  fecha_fin                DATE,
+  motivo                   TEXT,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by               VARCHAR(160),
+  updated_by               VARCHAR(160)
+);
+CREATE INDEX IF NOT EXISTS idx_pagcli_pagador  ON pagador_cliente(pagador_id, estado);
+CREATE INDEX IF NOT EXISTS idx_pagcli_cliente  ON pagador_cliente(id_manager, cliente_idnoofit, estado);
+-- Un cliente solo puede tener UN pagador activo a la vez.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pagcli_activo
+  ON pagador_cliente(id_manager, cliente_idnoofit)
+  WHERE estado = 'activo';
+
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- ║  CONTROL HORARIO LABORAL — Fase 1                                       ║
 -- ║                                                                          ║
 -- ║  Cumple art. 34.9 ET + RD-Ley 8/2019: registro diario individualizado    ║
@@ -2436,6 +2543,8 @@ DROP TRIGGER IF EXISTS trg_trainer_creds_upd   ON trainer_noofit_creds;
 DROP TRIGGER IF EXISTS trg_recibo_upd          ON recibo;
 DROP TRIGGER IF EXISTS trg_recibo_lote_upd     ON recibo_lote_facturacion;
 DROP TRIGGER IF EXISTS trg_fpcli_upd            ON forma_pago_cliente;
+DROP TRIGGER IF EXISTS trg_pagador_upd          ON pagador;
+DROP TRIGGER IF EXISTS trg_pagador_cliente_upd  ON pagador_cliente;
 DROP TRIGGER IF EXISTS trg_trainer_odoo_upd     ON trainer_odoo_config;
 DROP TRIGGER IF EXISTS trg_convenio_upd         ON convenio;
 DROP TRIGGER IF EXISTS trg_trainer_empresa_upd  ON trainer_empresa;
@@ -2506,6 +2615,10 @@ CREATE TRIGGER trg_recibo_upd          BEFORE UPDATE ON recibo
 CREATE TRIGGER trg_recibo_lote_upd     BEFORE UPDATE ON recibo_lote_facturacion
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_fpcli_upd           BEFORE UPDATE ON forma_pago_cliente
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_pagador_upd         BEFORE UPDATE ON pagador
+  FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+CREATE TRIGGER trg_pagador_cliente_upd BEFORE UPDATE ON pagador_cliente
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
 CREATE TRIGGER trg_trainer_odoo_upd    BEFORE UPDATE ON trainer_odoo_config
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
