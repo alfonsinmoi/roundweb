@@ -98,7 +98,7 @@ def _company_id():
     return getattr(appconfig, 'ODOO_COMPANY', 3) or 3
 
 
-def _validar_emision(id_manager, mes):
+def _validar_emision(id_manager, mes, id_trainer=None):
     # Antes de validar, recalculamos los descuentos automáticos del manager
     # (familiares + varias_cuotas) para que la pre-emisión refleje el estado
     # actualizado al instante (cualquier cliente que haya cambiado de cuota,
@@ -109,10 +109,10 @@ def _validar_emision(id_manager, mes):
         recalcular_descuentos_auto(id_manager)
     except Exception as _e:
         log.warning(f'recalcular_descuentos_auto pre-validación: {_e}')
-    return _validar_emision_inner(id_manager, mes)
+    return _validar_emision_inner(id_manager, mes, id_trainer)
 
 
-def _validar_emision_inner(id_manager, mes):
+def _validar_emision_inner(id_manager, mes, id_trainer=None):
     """Devuelve (coherentes, incoherencias). NO escribe nada.
 
     Casos detectados:
@@ -1025,6 +1025,19 @@ def _validar_emision_inner(id_manager, mes):
             '_notas': r.get('notas') or '',
         })
 
+    # ─── Scope por trainer (auditoría #22) ────────────────────────────────
+    # Si se valida operando COMO un trainer concreto, se filtran coherentes e
+    # incoherencias a SUS clientes (por el trainer real del cliente en
+    # cliente_cache). El manager sin scope ve todo. Se filtra ANTES del
+    # resumen para que los totales por trainer cuadren con lo que se emitirá.
+    if id_trainer:
+        _scope = str(id_trainer)
+        coherentes = [c for c in coherentes
+                      if cache_idnoofit_trainer.get(str(c.get('idnoofit') or '')) == _scope]
+        incoherencias = [i for i in incoherencias
+                         if cache_idnoofit_trainer.get(
+                             str((i.get('cliente') or {}).get('idnoofit') or '')) == _scope]
+
     # ─── Resumen agregado de lo que se va a emitir ───────────────────────
     resumen = _resumir_emision(coherentes)
 
@@ -1188,7 +1201,8 @@ def _resumir_emision(coherentes):
 @auth_required
 def validar(mes):
     try:
-        coherentes, incoherencias, resumen = _validar_emision(g.id_manager, mes)
+        _tr = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+        coherentes, incoherencias, resumen = _validar_emision(g.id_manager, mes, _tr)
         # Stats por tipo
         from collections import Counter
         por_tipo = dict(Counter(i['tipo'] for i in incoherencias))
@@ -1220,7 +1234,8 @@ def validar_excel(mes):
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from openpyxl.utils import get_column_letter
 
-        coherentes, incoherencias, resumen = _validar_emision(g.id_manager, mes)
+        _tr = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+        coherentes, incoherencias, resumen = _validar_emision(g.id_manager, mes, _tr)
 
         wb = Workbook(); wb.remove(wb.active)
         border = Border(*[Side(style='thin', color='CCCCCC')] * 4)

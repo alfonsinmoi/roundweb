@@ -331,11 +331,13 @@ def generar_sepa(mes):
       ?preview=1    devuelve JSON con stats sin descargar el XML
     """
     try:
-        # POLÍTICA (mayo 2026): SEPA es un PROCESO sobre TODOS los recibos
-        # del manager por defecto. Solo si el llamador pasa `?id_trainer=X`
-        # (o `body.id_trainer`) restringimos a ese centro concreto. NO usar
-        # `g.id_trainer` (sería trainer impersonado, que es visibilidad, no
-        # regla de proceso).
+        # POLÍTICA (jun 2026 · auditoría #22, ANULA la nota manager-wide de
+        # mayo-2026): la remesa se restringe al trainer si el llamador pasa
+        # `?id_trainer=X` (o `body.id_trainer`) O si la sesión actúa COMO un
+        # trainer concreto (`g.id_trainer` set por impersonación / login de
+        # trainer). El manager sin impersonar (g.id_trainer None y sin param)
+        # sigue manager-wide. Decisión del propietario: operar como un trainer
+        # aísla TODO el flujo de emisión (preemisión + emitir + SEPA).
         body_trainer = None
         try:
             body = request.get_json(silent=True) or {}
@@ -343,6 +345,8 @@ def generar_sepa(mes):
         except Exception:
             pass
         target_trainer = (request.args.get('id_trainer') or '').strip() or body_trainer
+        if not target_trainer and getattr(g, 'id_trainer', None):
+            target_trainer = str(g.id_trainer)
 
         acreedor, err = _datos_acreedor(g.id_manager, target_trainer)
         if not acreedor:

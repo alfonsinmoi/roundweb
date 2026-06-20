@@ -44,6 +44,7 @@
 | 19 | Modificar recibo (no cobrado) — desincronía con factura Odoo posteada | 2026-06-12 | ✅ |
 | 20 | Trimestral legacy — convivencia con dedup + gating de facturar | 2026-06-15 | ✅ |
 | 21 | Notificaciones / Meta (redes) / Email — robustez de envío + TTL `publicando` | 2026-06-15 | ✅ |
+| 22 | Preemisión cruza trainers — scope por `g.id_trainer` en emisión mensual (preemisión/emitir/SEPA/validar) | 2026-06-20 | ✅ |
 
 ---
 
@@ -471,6 +472,53 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 22. Preemisión cruza trainers — fuga cross-trainer en emisión mensual — 2026-06-20 ✅
+**Revisado:** `routes/preemision_v2.py` (generar/listar/borrar), `routes/emision_v2.py`
+(emitir), `routes/sepa.py` (generar_sepa), `routes/preemision_validar.py` (validar/excel).
+
+**Síntoma (reportado):** al hacer una preemisión operando como **Round Málaga (trainer
+17675)** también aparecían/emitían clientes de **Round Añoreta (trainer 17674)**.
+
+**Causa raíz:** TODO el flujo de emisión mensual (v2) era **manager-wide**: `generar` barre
+`round.subscription` de la company entera, y `listar`/`validar`/`emitir`/`sepa` filtraban solo
+por `id_manager`. La cabecera `X-Round-Trainer-Id` que manda el frontend al impersonar/loguear
+trainer se **ignoraba a propósito** (nota mayo-2026 en `sepa.py`: "impersonación = visibilidad,
+no regla de proceso"). El "B8b" previo solo añadió la **columna** `id_trainer` al recibo para
+poder **agrupar** la remesa por acreedor — **nunca** fue un filtro. Git lo confirma: jamás existió
+un `WHERE id_trainer` en la generación.
+
+**Verificación del bug (read-only, `validar` 2026-06):** manager-wide → 38 clientes "tocan
+emitir", **todos de Añoreta (17674)**; operando como Málaga (17675) → esos 38 se colaban. Las
+únicas subs activas que tocaban en junio eran de Añoreta → por eso Málaga las arrastraba.
+
+**Decisión del propietario (jun 2026, ANULA la nota manager-wide de mayo para el caso
+impersonado):** operar COMO un trainer concreto **aísla TODO el flujo de emisión** a sus
+clientes. El manager **sin impersonar** (`g.id_trainer` None) sigue **manager-wide**.
+
+**Fix (2026-06-20 ✅):** scope por `g.id_trainer` (cuando está set) en las 4 rutas:
+- `preemision_v2.generar`: salta clientes cuyo trainer real (`cliente_cache.id_trainer`) ≠
+  `g.id_trainer` (nuevo `skipped_otro_trainer`); también acota la definitivización de borradores
+  manuales.
+- `preemision_v2.listar` / `borrar_recibo`: `AND id_trainer=%s` (un trainer no ve ni borra
+  recibos de otro).
+- `emision_v2.emitir`: solo cobra los recibos del trainer.
+- `sepa.generar_sepa`: `target_trainer = ?id_trainer= explícito **o** g.id_trainer` → la remesa
+  se restringe a ese acreedor (encaja con el caso multi-acreedor ya soportado por
+  `_recibos_sepa_mes`).
+- `preemision_validar`: post-filtra `coherentes` + `incoherencias` por el trainer real del
+  cliente ANTES de calcular el `resumen` (los totales por trainer cuadran).
+
+**Verificado tras deploy:** `listar` 2026-06 → manager 198 / Málaga(17675) 198 / Añoreta(17674)
+0. `validar` 2026-06 → manager 38 (todos 17674) / Málaga 0 / Añoreta 38. Sin regresión del
+manager: el frontend pone `trainerId=null` cuando NO se impersona (`getRoundIdentity`), así que
+el manager directo no manda la cabecera → manager-wide intacto.
+
+**REGLA:** en el flujo de emisión mensual (preemisión/emitir/SEPA/validar), `g.id_trainer` (set
+por impersonación o login de trainer) **restringe el PROCESO a ese trainer**; sin él
+(`g.id_trainer` None) es manager-wide. El `id_trainer` del recibo es el **trainer real del
+cliente** (snapshot de `cliente_cache`), no el emisor. NOTA datos: los recibos de Añoreta de
+junio venían de un import `gestplus_2026`, no del botón de preemisión.
 
 ## 21. Notificaciones / Meta (redes) / Email — robustez de envío — 2026-06-15 ✅
 **Revisado:** `cron_social_publish.py`, `meta_client.py`, `email_sender.py`

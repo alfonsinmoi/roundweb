@@ -55,15 +55,20 @@ def emitir(mes):
     # NOTA: la transición borrador_remesa → pagado/impagado ya la hizo
     # `preemision_v2.generar` (botón "Generar recibos"). Aquí solo recogemos
     # los pagados que aún no tienen account_payment_id.
+    # Scope por trainer (auditoría #22): si operas como un trainer concreto,
+    # solo se cobran SUS recibos; el manager (sin scope) cobra todos.
+    _tr = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+    _q = ("SELECT id, cliente_idnoofit, cliente_nombre, importe_total, "
+          "metodo_pago, fecha_emision FROM recibo "
+          "WHERE id_manager=%s AND periodo=%s "
+          "AND origen IN ('cron_emision','manual_remesa') "
+          "AND estado='pagado' AND account_payment_id IS NULL")
+    _v = [str(g.id_manager), mes]
+    if _tr:
+        _q += " AND id_trainer=%s"
+        _v.append(_tr)
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT id, cliente_idnoofit, cliente_nombre, importe_total,
-                   metodo_pago, fecha_emision
-              FROM recibo
-             WHERE id_manager=%s AND periodo=%s
-               AND origen IN ('cron_emision','manual_remesa')
-               AND estado='pagado' AND account_payment_id IS NULL
-        """, (str(g.id_manager), mes))
+        cur.execute(_q, _v)
         recibos_a_pagar = cur.fetchall()
 
     pagos_creados = 0

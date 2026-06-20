@@ -124,6 +124,14 @@ def generar(mes):
         company_id = _company_id()
         o = _odoo()
 
+        # Scope por trainer (jun 2026 · auditoría #22): si la sesión actúa
+        # COMO un trainer concreto (impersonación del manager o login directo
+        # de trainer → g.id_trainer set), la emisión se restringe a SUS
+        # clientes. El manager sin impersonar (g.id_trainer None) sigue
+        # manager-wide. Esta decisión del propietario ANULA, para el caso
+        # impersonado, la nota "manager-wide siempre" de mayo-2026.
+        _scope_trainer = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+
         # Subs activas
         subs = o._call('round.subscription', 'search_read',
             [('estado', '=', 'activa'), ('company_id', '=', company_id)],
@@ -237,6 +245,7 @@ def generar(mes):
         skipped_temporal = 0
         skipped_inactivo_nf = 0
         skipped_desvinculado = 0
+        skipped_otro_trainer = 0   # scope por trainer (auditoría #22)
         for s in subs:
             if not _toca_emitir(s, mes): continue
             pid = s['partner_id'][0] if s.get('partner_id') else None
@@ -258,6 +267,11 @@ def generar(mes):
             if not cache_idnoofit_enabled[idnoofit]:
                 # enabled=False en NoofitPro = archivado/inactivo.
                 skipped_inactivo_nf += 1
+                continue
+            # Scope por trainer (auditoría #22): si la sesión actúa como un
+            # trainer concreto, NO emitir clientes de otros trainers del manager.
+            if _scope_trainer and cache_idnoofit_trainer.get(idnoofit) != _scope_trainer:
+                skipped_otro_trainer += 1
                 continue
             # Dedup por idnoofit: si ya hay un canónico, añadir al suyo.
             existente = canonico_por_idn.get(idnoofit)
@@ -520,12 +534,16 @@ def generar(mes):
         # Set fecha_emision si no la tenía. Idempotente: si no quedan
         # borradores, no toca nada.
         PAGADOS_AL_EMITIR = {'sepa', 'tarjeta_tok'}
+        # Scope por trainer (auditoría #22): un trainer solo definitiviza SUS
+        # borradores manuales; el manager (sin scope) los de todos.
+        _bq = ("SELECT id, metodo_pago, fecha_emision FROM recibo "
+               "WHERE id_manager=%s AND periodo=%s AND estado='borrador_remesa'")
+        _bv = [str(g.id_manager), mes]
+        if _scope_trainer:
+            _bq += " AND id_trainer=%s"
+            _bv.append(_scope_trainer)
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, metodo_pago, fecha_emision FROM recibo
-                 WHERE id_manager=%s AND periodo=%s
-                   AND estado='borrador_remesa'
-            """, (str(g.id_manager), mes))
+            cur.execute(_bq, _bv)
             borradores = cur.fetchall()
         manuales_definitivizados = 0
         for b in borradores:
@@ -545,7 +563,9 @@ def generar(mes):
                             f'{skipped_ya} ya · {skipped_ya_cubierto} ya_cubierto · '
                             f'{skipped_inactivo_nf} inactivos · '
                             f'{skipped_desvinculado} desvinculados · '
-                            f'{skipped_sin_fp} sin forma_pago'))
+                            f'{skipped_otro_trainer} otro_trainer · '
+                            f'{skipped_sin_fp} sin forma_pago'
+                            + (f' · scope_trainer={_scope_trainer}' if _scope_trainer else '')))
 
         # Breakdown por trainer (cuántos recibos y cuánto importe)
         from collections import defaultdict as _dd
@@ -568,6 +588,8 @@ def generar(mes):
             'skipped_baja_efectiva_dia_1': skipped_baja,
             'skipped_sin_forma_pago': skipped_sin_fp,
             'skipped_sin_subs': skipped_sin_subs,
+            'skipped_otro_trainer': skipped_otro_trainer,
+            'scope_trainer': _scope_trainer,
             'por_trainer': por_trainer_out,
             'detalle': creados[:50],
         })
@@ -584,17 +606,21 @@ def listar(mes):
     Incluye las notas (con desglose de descuentos / modificaciones aplicados)
     y la descripción de cuotas, para que la UI los pueda mostrar.
     """
+    # Scope por trainer (auditoría #22): si operas como trainer, solo ves SUS
+    # recibos; el manager (sin scope) ve todos los del manager.
+    _tr = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+    _q = ("SELECT id, cliente_idnoofit, cliente_nombre, cuota_codigo, "
+          "cuota_descripcion, importe_base, importe_iva, importe_total, "
+          "metodo_pago, estado, fecha_emision, fecha_pago, "
+          "account_payment_id, notas FROM recibo "
+          "WHERE id_manager=%s AND periodo=%s AND origen='cron_emision'")
+    _v = [str(g.id_manager), mes]
+    if _tr:
+        _q += " AND id_trainer=%s"
+        _v.append(_tr)
+    _q += " ORDER BY estado DESC, cliente_nombre"
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT id, cliente_idnoofit, cliente_nombre, cuota_codigo,
-                   cuota_descripcion,
-                   importe_base, importe_iva, importe_total,
-                   metodo_pago, estado, fecha_emision, fecha_pago,
-                   account_payment_id, notas
-              FROM recibo
-             WHERE id_manager=%s AND periodo=%s AND origen='cron_emision'
-             ORDER BY estado DESC, cliente_nombre
-        """, (str(g.id_manager), mes))
+        cur.execute(_q, _v)
         rows = cur.fetchall()
     return jsonify({'ok': True, 'recibos': rows, 'count': len(rows)})
 
@@ -603,11 +629,17 @@ def listar(mes):
 @auth_required
 def borrar_recibo(mes, rid):
     """Borra un recibo borrador del mes (solo si no tiene account_payment_id)."""
+    # Scope por trainer (auditoría #22): un trainer no puede borrar el recibo
+    # de otro trainer del mismo manager.
+    _tr = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+    _sq = ("SELECT estado, account_payment_id FROM recibo "
+           "WHERE id_manager=%s AND id=%s AND periodo=%s AND origen='cron_emision'")
+    _sv = [str(g.id_manager), rid, mes]
+    if _tr:
+        _sq += " AND id_trainer=%s"
+        _sv.append(_tr)
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT estado, account_payment_id FROM recibo
-             WHERE id_manager=%s AND id=%s AND periodo=%s AND origen='cron_emision'
-        """, (str(g.id_manager), rid, mes))
+        cur.execute(_sq, _sv)
         r = cur.fetchone()
         if not r: return jsonify({'ok': False, 'error': 'not_found'}), 404
         if r['account_payment_id']:
