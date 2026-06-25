@@ -502,6 +502,12 @@ cliente si **no tiene cobertura que llegue a M** (`MAX(fecha_hasta) < primer dí
   no re-emitir junio; pero ya NO cubre julio → en julio toca).
 - **Sin doble cobro**: los cubiertos se siguen saltando (`ya_cubierto_post_mes`) y el dedup por
   `periodo` (`ya_existen`) impide repetir el mismo mes.
+- **Gating por impago (confirmado correcto):** si el cliente tiene un recibo no cobrado
+  (`emitido`/`impagado`) cuya cobertura tapa el mes, NO se le emite el siguiente — se gestiona
+  como impago. Override manual del gestor: poner ese recibo a **0€** → un recibo `importe_total=0`
+  **NO cuenta como cobertura**, así que la emisión se reactiva. Funciona en recibos BD; los
+  legacy con factura Odoo posteada no se pueden poner a 0 (importe bloqueado, #19) → son impagos
+  a gestionar.
 
 **Verificado (validar 2026-07):** `sub_no_toca_este_mes` pasa de 82 → **0** en Añoreta; de esos
 82, 48 quedan como `ya_cubierto_post_mes` (cobertura sí llega a julio) y 34 pasan a coherentes

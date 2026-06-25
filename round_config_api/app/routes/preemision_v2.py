@@ -180,6 +180,11 @@ def generar(mes):
         # siguiente recibo. Boundary `>=` (no `>`): un recibo que cubre p.ej.
         # hasta 30/06 cubre TODO junio → no re-emitir junio; pero ya NO cubre
         # julio (30/06 < 01/07) → en julio toca.
+        # `importe_total > 0`: un recibo a 0€ NO cuenta como cobertura. Es el
+        # mecanismo manual del gestor: para forzar la re-emisión de un cliente
+        # con un recibo impagado bloqueante, se modifica ese recibo a 0€ y deja
+        # de tapar el mes (funciona en recibos BD; los legacy con factura Odoo
+        # posteada no se pueden poner a 0 — son impagos a gestionar).
         target_y_tmp, target_m_tmp = map(int, mes.split('-'))
         primer_dia_emision = dt.date(target_y_tmp, target_m_tmp, 1)
         with get_conn() as conn, conn.cursor() as cur:
@@ -189,6 +194,7 @@ def generar(mes):
                    AND estado IN ('pagado','emitido','facturado')
                    AND fecha_hasta IS NOT NULL
                    AND fecha_hasta >= %s
+                   AND importe_total > 0
             """, (str(g.id_manager), primer_dia_emision))
             ya_cubiertos_post_mes = {r['cliente_idnoofit'] for r in cur.fetchall()}
 
