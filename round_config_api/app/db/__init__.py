@@ -1739,6 +1739,7 @@ CREATE TABLE IF NOT EXISTS recibo (
   estado                   VARCHAR(20) NOT NULL,              -- emitido|pagado|impagado|devuelto|facturado|cancelado
   fecha_emision            DATE NOT NULL,
   fecha_pago               TIMESTAMPTZ,
+  importe_cobrado          NUMERIC(10,2),                     -- cobro real (parcial/a cuenta); NULL = no cobrado aún
   fecha_devolucion         TIMESTAMPTZ,
   fecha_facturacion        TIMESTAMPTZ,
   -- Vínculos Odoo
@@ -2672,6 +2673,12 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='sync_intentos') THEN
       ALTER TABLE recibo ADD COLUMN sync_intentos INTEGER DEFAULT 0;
+    END IF;
+    -- Importe realmente cobrado (puede diferir del importe_total en cobros
+    -- parciales / a cuenta). Antes solo vivía en memoria al marcar pagado y se
+    -- perdía; ahora se persiste para que el cobro quede registrado.
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='recibo' AND column_name='importe_cobrado') THEN
+      ALTER TABLE recibo ADD COLUMN importe_cobrado NUMERIC(10,2);
     END IF;
   END IF;
 END $$;

@@ -39,16 +39,21 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   const set = (k, v) => setF(p => ({ ...p, [k]: v }))
 
   const isBd = r._source === 'bd'
-  // ¿El recibo ya tiene factura Odoo posteada? Si la tiene, los importes NO
-  // son editables aquí aunque el estado sea "no cobrado" (impagado/devuelto):
-  // la factura fiscal es inmutable y editarla en BD la desincronizaría. Espejo
-  // del backend (auditoría #19): para cambiar importes → anular + recrear.
+  // ¿El recibo ya tiene factura Odoo posteada? Si la tiene, los importes no
+  // son editables para un usuario normal (la factura fiscal es inmutable y
+  // editarla en BD la desincronizaría — auditoría #19).
   const tieneMoveOdoo = !!(r.account_move_id || r.account_move_ref)
-  // Estados con importes editables (espejo del backend). 'emitido' incluido
-  // (recibo no cobrado): sin él, modificar un emitido daba estado_no_editable
-  // y no dejaba tocar ni las notas.
-  const editableFull = ['borrador_remesa', 'pendiente', 'emitido', 'impagado', 'devuelto']
-    .includes(r.estado_bd || r.estado) && !tieneMoveOdoo
+  // Admin = usuario_web is_admin o manager/trainer NoofitPro (perfil=None).
+  const esAdmin = !user?.perfil || !!user?.perfil?.is_admin
+  // Estados con importes editables. 'emitido' incluido (recibo no cobrado).
+  const estadoEditable = ['borrador_remesa', 'pendiente', 'emitido', 'impagado', 'devuelto']
+    .includes(r.estado_bd || r.estado)
+  // Auditoría #23 — el ADMIN puede editar importes AUNQUE haya factura Odoo
+  // posteada: el backend propaga el cambio a la factura (button_draft → editar
+  // → action_post). Riesgo fiscal/SII asumido. Usuario normal: solo notas/desc.
+  const editableFull = estadoEditable && (!tieneMoveOdoo || esAdmin)
+  // Aviso rojo cuando el admin va a tocar una factura ya posteada.
+  const avisoFacturaAdmin = editableFull && tieneMoveOdoo && esAdmin
 
   if (!canModificar) return null
   if (!isBd) return null
@@ -126,6 +131,13 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
                 ? '⚠ Solo descripciones/notas editables — este recibo ya tiene factura en Odoo (#'
                   + (r.account_move_ref || r.account_move_id) + '). Para cambiar importes: anula y recrea.'
                 : '⚠ Solo descripciones/notas editables — el recibo está cobrado/facturado y los importes ya están en contabilidad.'}
+            </div>
+          )}
+          {avisoFacturaAdmin && (
+            <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 4, fontWeight: 600 }}>
+              ⚠ Este recibo tiene factura Odoo POSTEADA (#{r.account_move_ref || r.account_move_id}).
+              Si cambias el importe, al guardar se RE-EMITIRÁ la factura en Odoo con el nuevo valor
+              (impacto fiscal/SII). Úsalo solo para corregir errores.
             </div>
           )}
         </div>

@@ -341,7 +341,9 @@ function RecibosTable({ recibos, sort, toggleSort, onReload }) {
             <ThSort col="invoice_date_due" sort={sort} toggle={toggleSort}>Cobro</ThSort>
             <ThSort col="payment_state" sort={sort} toggle={toggleSort}>Estado</ThSort>
             <Th>Notas</Th>
-            <Th>Acciones</Th>
+            <Th style={{ position: 'sticky', right: 0, zIndex: 3,
+                          background: 'var(--bg-2)',
+                          boxShadow: '-8px 0 8px -6px rgba(0,0,0,0.28)' }}>Acciones</Th>
           </tr>
         </thead>
         <tbody>
@@ -414,9 +416,11 @@ function Row({ r, onReload }) {
       <Td mono>{isPosted ? (r.invoice_date_due || '—') : '—'}</Td>
       <Td><Badge color={stateColor}>{stateLabel}</Badge></Td>
       <NotaCell texto={r.narration} />
-      <Td style={{ whiteSpace: 'nowrap' }}>
+      <Td style={{ whiteSpace: 'nowrap', position: 'sticky', right: 0, zIndex: 2,
+                    background: 'var(--bg-1)', padding: '8px 6px',
+                    boxShadow: '-8px 0 8px -6px rgba(0,0,0,0.28)' }}>
         <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center',
-                       flexWrap: 'wrap' }}>
+                       flexWrap: 'nowrap' }}>
           {isPagable && <PagarReciboBtn r={r} onReload={onReload} />}
           {isCobrado && isBd && <DevolverReciboBtn r={r} onReload={onReload} />}
           {isModificable && <ModificarReciboBtn r={r} onReload={onReload} />}
@@ -443,7 +447,7 @@ function NotaCell({ texto }) {
   }
   if (expanded) {
     return (
-      <Td wrap style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 320 }}>
+      <Td wrap style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 200 }}>
         <button type="button" onClick={() => setExpanded(false)}
                 title="Click para contraer" style={btnStyle}>
           <StickyNote size={11} style={{ flexShrink: 0, color: 'var(--blue)',
@@ -454,7 +458,7 @@ function NotaCell({ texto }) {
     )
   }
   return (
-    <Td title={clean} style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 220 }}>
+    <Td title={clean} style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 140 }}>
       <button type="button" onClick={() => setExpanded(true)}
               title={clean} style={btnStyle}>
         <StickyNote size={11} style={{ flexShrink: 0, color: 'var(--blue)' }}
@@ -486,10 +490,11 @@ function ThSort({ col, sort, toggle, children }) {
   )
 }
 
-function Th({ children }) {
+function Th({ children, style }) {
   return <th style={{
     padding: '8px 8px', fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
     textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap',
+    ...(style || {}),
   }}>{children}</th>
 }
 

@@ -1,4 +1,5 @@
 """CRUD de descuentos (mismo patrón que cuotas)."""
+import logging
 from functools import wraps
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission, _has_permission
@@ -8,6 +9,7 @@ from ..audit_log import log_action, actor_from_request
 from .. import config
 
 bp = Blueprint('descuentos', __name__)
+log = logging.getLogger(__name__)
 
 
 def require_any_permission(*paths):
@@ -669,13 +671,22 @@ def delete_asignacion(desc_id, asig_id):
                     (asig_id, g.id_manager))
         n = cur.rowcount
 
-    # Sync Odoo: quitar el descuento de las suscripciones del cliente
+    # Sync Odoo: quitar el descuento de las suscripciones del cliente.
+    # FAIL-SOFT: el DELETE en BD (arriba) ya commiteó y es la fuente de verdad.
+    # Si la sincronización con Odoo falla (Odoo caído, descuento no presente en
+    # la sub, etc.) NO debe romper la petición — antes lanzaba 500 y el frontend
+    # mostraba "Error" pese a que el descuento SÍ se había quitado, dando la
+    # sensación de "no se puede quitar el descuento".
     if r and n > 0:
-        with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT odoo_id FROM descuento WHERE id=%s", (desc_id,))
-            desc_r = cur.fetchone()
-        if desc_r and desc_r.get('odoo_id'):
-            get_sync(g.id_manager).asignacion_revoke(desc_r['odoo_id'], r['cliente_idnoofit'])
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT odoo_id FROM descuento WHERE id=%s", (desc_id,))
+                desc_r = cur.fetchone()
+            if desc_r and desc_r.get('odoo_id'):
+                get_sync(g.id_manager).asignacion_revoke(desc_r['odoo_id'], r['cliente_idnoofit'])
+        except Exception as e:
+            log.warning(f'delete_asignacion {asig_id}: sync Odoo (revoke) falló '
+                        f'(no fatal, descuento ya quitado en BD): {e}')
 
     if n > 0:
         log_action(actor_from_request(), 'descuento_asignacion', 'desasignar',

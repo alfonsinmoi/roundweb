@@ -226,6 +226,78 @@ def create_recibo():
     return jsonify({'ok': True, 'id': rid})
 
 
+def _propagar_importe_move_posteado(r, d):
+    """Auditoría #23 — ADMIN OVERRIDE (decisión propietario jun 2026).
+    Propaga un cambio de importe del recibo a su factura Odoo POSTEADA:
+    `button_draft` → editar la única línea → `action_post`. El propietario
+    asume el riesgo fiscal/SII de modificar una factura ya contabilizada.
+
+    DEFENSIVO: solo facturas `out_invoice` de UNA línea; verifica que el total
+    resultante cuadra (±0.05€) y que la factura vuelve a 'posted'; si algo no
+    encaja intenta RESTAURAR el posteo y aborta SIN tocar la BD. Devuelve
+    (ok: bool, error: str|None). Mantiene el mismo número de factura (Odoo no
+    lo regenera al re-postear)."""
+    move_id = r.get('account_move_id')
+    if not move_id:
+        return False, 'el recibo no tiene factura Odoo'
+    try:
+        nuevo_total = (float(d['importe_total']) if d.get('importe_total') is not None
+                       else float(r.get('importe_total') or 0))
+        nueva_base = float(d['importe_base']) if d.get('importe_base') is not None else None
+        iva_pct = float(d['iva_pct'] if d.get('iva_pct') is not None
+                        else (r.get('iva_pct') or 21))
+    except (TypeError, ValueError):
+        return False, 'importe inválido'
+    if nueva_base is None:
+        nueva_base = round(nuevo_total / (1 + iva_pct / 100.0), 2)
+    try:
+        from ..odoo_alta import OdooAlta
+        o = OdooAlta(); o._connect()
+        mv = o._call('account.move', 'read', [move_id],
+                     ['state', 'invoice_line_ids', 'move_type', 'payment_state'])
+        if not mv:
+            return False, f'la factura Odoo #{move_id} no existe'
+        mv = mv[0]
+        if mv.get('move_type') != 'out_invoice':
+            return False, f'tipo de factura no soportado ({mv.get("move_type")})'
+        if mv.get('payment_state') in ('paid', 'in_payment', 'partial'):
+            return False, ('la factura ya tiene cobros conciliados; no se puede '
+                           'reabrir para cambiar el importe (anula el pago primero)')
+        lines = mv.get('invoice_line_ids') or []
+        if len(lines) != 1:
+            return False, (f'la factura Odoo #{move_id} tiene {len(lines)} líneas; '
+                           'edítala directamente en Odoo (solo se soporta 1 línea)')
+        lid = lines[0]
+        lr = o._call('account.move.line', 'read', [lid], ['quantity'])
+        qty = float((lr[0].get('quantity') if lr else 1) or 1) or 1
+        price_unit = round(nueva_base / qty, 2)
+        estaba_posteada = mv.get('state') == 'posted'
+        try:
+            if estaba_posteada:
+                o._call('account.move', 'button_draft', [move_id])
+            o._call('account.move.line', 'write', [lid], {'price_unit': price_unit})
+            o._call('account.move', 'action_post', [move_id])
+        except Exception as e:
+            # Restaurar posteo si quedó en borrador por un fallo a mitad.
+            try:
+                st = o._call('account.move', 'read', [move_id], ['state'])
+                if st and st[0].get('state') == 'draft':
+                    o._call('account.move', 'action_post', [move_id])
+            except Exception:
+                pass
+            return False, f'fallo al re-emitir la factura en Odoo: {e}'
+        mv2 = o._call('account.move', 'read', [move_id], ['amount_total', 'state'])
+        if not mv2 or mv2[0].get('state') != 'posted':
+            return False, 'la factura no quedó posteada tras el cambio'
+        tot = float(mv2[0].get('amount_total') or 0)
+        if abs(tot - nuevo_total) > 0.05:
+            return False, (f'el total Odoo tras el cambio ({tot:.2f}€) no cuadra con el '
+                           f'solicitado ({nuevo_total:.2f}€) — revisa el IVA de la línea')
+        return True, None
+    except Exception as e:
+        return False, f'error propagando a Odoo: {e}'
+
+
 @bp.route('/<int:rid>', methods=['PATCH'])
 @auth_required
 @require_permission('economico.cuotas_mensuales.modificar_recibo')
@@ -298,11 +370,17 @@ def update_recibo(rid):
         elif editable_full and tiene_move:
             # Auditoría #19 — el recibo NO cobrado pero YA tiene factura Odoo
             # posteada (account_move_id; típico de impagado/devuelto). La
-            # factura fiscal es INMUTABLE: editar importes aquí los cambiaría en
-            # BD pero NO en Odoo (update_recibo nunca tocó Odoo) → desincronía
-            # BD↔factura. Por eso aquí solo notas/descripción; para cambiar
-            # importes hay que ANULAR (rectificativa) + RECREAR el recibo.
-            if importe_en_d:
+            # factura fiscal es INMUTABLE para usuarios normales: editar importes
+            # los cambiaría en BD pero NO en Odoo → desincronía.
+            #
+            # Auditoría #23 — EXCEPCIÓN ADMIN (decisión propietario jun 2026):
+            # un admin (usuario_web is_admin o manager/trainer NoofitPro
+            # perfil=None) SÍ puede editar importes; el cambio se PROPAGA a la
+            # factura Odoo posteada (button_draft → editar línea → action_post).
+            # Riesgo fiscal/SII asumido por el propietario.
+            perfil = getattr(g, 'perfil', None)
+            es_admin = (perfil is None) or bool(perfil.get('is_admin'))
+            if importe_en_d and not es_admin:
                 return jsonify({
                     'ok': False, 'error': 'recibo_con_factura_odoo',
                     'detalle': (f'Recibo {estado} con factura Odoo #{r["account_move_id"]}: '
@@ -311,7 +389,36 @@ def update_recibo(rid):
                                 'importes: anula y recrea el recibo.'),
                     'campos_bloqueados': importe_en_d,
                 }), 409
-            # allowed se queda en los campos base (cliente/cuota/desc/notas).
+            if importe_en_d and es_admin:
+                if 'metodo_pago' in d and d['metodo_pago'] not in METODOS_VALIDOS:
+                    return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
+                ok_prop, err_prop = _propagar_importe_move_posteado(r, d)
+                if not ok_prop:
+                    return jsonify({'ok': False, 'error': 'odoo_propagacion_falla',
+                                    'detalle': (f'No se pudo propagar el cambio a la factura '
+                                                f'Odoo #{r["account_move_id"]}: {err_prop}. '
+                                                'No se ha modificado nada.')}), 409
+                allowed += importe_fields
+                # Traza en el propio recibo + incidencia de auditoría (factura
+                # fiscal modificada → revisar SII).
+                d['notas'] = ((d.get('notas') if 'notas' in d else r.get('notas')) or '') + (
+                    f"\n[ADMIN editó importe {dt.date.today().isoformat()}] factura Odoo "
+                    f"#{r['account_move_id']} re-emitida con el nuevo importe ({actor_label})")
+                if 'notas' not in allowed:
+                    allowed.append('notas')
+                try:
+                    from ..incidencias import crear_incidencia_admin
+                    crear_incidencia_admin(
+                        id_manager=str(g.id_manager), tipo='factura_importe_editado',
+                        severidad='warning', entidad='recibo', entidad_id=rid,
+                        titulo=(f'Importe de recibo {rid} (factura Odoo '
+                                f'#{r["account_move_id"]}) editado por admin'),
+                        mensaje=(f'{actor_label} cambió el importe de una factura ya '
+                                 'posteada; se re-emitió en Odoo. Revisar declaración SII.'))
+                except Exception as _e:
+                    log.warning(f'update_recibo {rid}: incidencia importe editado: {_e}')
+            # allowed se queda en los campos base (cliente/cuota/desc/notas) si
+            # no hubo importes; con importes y admin, ya se añadieron arriba.
         elif estado in ('pagado', 'facturado'):
             campos_importe_en_d = [f for f in importe_fields if f in d]
             # Excepción ADMIN — corregir SOLO la forma de pago (error de
@@ -604,8 +711,10 @@ def marcar_pagado(rid):
                                         '`permitir_sobrepago: true` al body.')}), 400
 
         # Construir SET dinámico (UPDATE protegido por estado actual leído arriba)
-        sets = ["estado='pagado'", "fecha_pago=%s", "updated_by=%s"]
-        vals = [fecha, actor_label]
+        # `importe_cobrado` persiste el cobro real (antes solo vivía en memoria
+        # y se perdía → el operador veía que "el campo cobro no se guardaba").
+        sets = ["estado='pagado'", "fecha_pago=%s", "importe_cobrado=%s", "updated_by=%s"]
+        vals = [fecha, cobrado, actor_label]
         if metodo and metodo in METODOS_VALIDOS:
             sets.append("metodo_pago=%s"); vals.append(metodo)
         if observacion:

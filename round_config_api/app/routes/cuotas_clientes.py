@@ -134,6 +134,8 @@ def _bd_recibo_to_unified(r):
         'invoice_date': _iso(r.get('fecha_emision')),
         'invoice_date_due': _iso(r.get('fecha_hasta')) or _iso(r.get('fecha_emision')),
         'amount_total': importe,
+        'importe_cobrado': (float(r['importe_cobrado'])
+                            if r.get('importe_cobrado') is not None else None),
         'state': 'posted',
         'payment_state': _BD_ESTADO_PAYMENT_STATE.get(estado_bd, 'not_paid'),
         'partner_id': {'id': None, 'name': r.get('cliente_nombre') or ''},

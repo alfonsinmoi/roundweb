@@ -33,6 +33,7 @@ import TrazabilidadModal from '../../components/TrazabilidadModal'
 import { useAltaModo } from '../../components/QrAltaCliente'
 import DevolverReciboBtn from '../../components/recibos/DevolverReciboBtn'
 import CorregirFormaPagoBtn from '../../components/recibos/CorregirFormaPagoBtn'
+import ModificarReciboBtn from '../../components/recibos/ModificarReciboBtn'
 import { usuarioWebFindByEmail } from '../../utils/authUsuarioApi'
 import { recibosImpagadosCliente } from '../../utils/configApi'
 import InformesEstadoFisicoButton from '../../components/InformesEstadoFisicoButton'
@@ -2823,6 +2824,13 @@ function ReciboRow({ r, mostrarCliente, onReload }) {
         <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           {isImpagado && (
             <PagarBtn r={r} onReload={onReload} />
+          )}
+          {/* Modificar — recibos BD no cobrados (impagado/devuelto/pendiente/
+              borrador). El propio botón se oculta si no es BD o sin permiso, y
+              limita los campos según tenga o no factura Odoo. */}
+          {isBd && (isImpagado ||
+                    ['pendiente', 'borrador_remesa'].includes((r.estado_bd || '').toLowerCase())) && (
+            <ModificarReciboBtn r={r} onReload={onReload} />
           )}
           {isPosted && r.payment_state === 'paid' && isBd && (
             <DevolverReciboBtn r={r} onReload={onReload} />
