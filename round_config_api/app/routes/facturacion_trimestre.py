@@ -178,7 +178,12 @@ def facturar(trim):
         [('company_id', '=', company_id), ('type', '=', 'sale')], limit=1)
     sale_id = sale_ids[0] if sale_ids else None
 
-    # Cargar recibos
+    # Cargar recibos. REGLA (jun 2026): SOLO se factura lo COBRADO ('pagado').
+    # Las cuotas impagadas/devueltas NO se facturan (evita facturas fiscales de
+    # cuotas no cobradas); siguen como cuota BD simple y se facturarán cuando se
+    # formalice el pago (en la siguiente pasada trimestral ya entran como
+    # 'pagado'). Guard duro: aunque el frontend mande ids de impagados, aquí se
+    # ignoran.
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, cliente_idnoofit, cliente_nombre, cuota_codigo,
@@ -186,13 +191,14 @@ def facturar(trim):
                    estado, account_move_id, account_payment_id
               FROM recibo
              WHERE id_manager=%s AND id = ANY(%s)
-               AND estado IN ('pagado','impagado','devuelto')
+               AND estado = 'pagado'
                AND account_move_id IS NULL
         """, (str(g.id_manager), recibo_ids))
         recibos = cur.fetchall()
 
     if not recibos:
-        return jsonify({'ok': False, 'error': 'no_facturables (todos ya tienen asiento)'}), 400
+        return jsonify({'ok': False,
+                        'error': 'no_facturables (solo se facturan cuotas pagadas sin asiento)'}), 400
 
     # Agrupar
     if agrupar:
@@ -273,15 +279,13 @@ def facturar(trim):
             # Vincular recibos
             inv_data = o._call('account.move', 'read', [inv_id], ['name'])[0]
             with get_conn() as conn, conn.cursor() as cur:
-                # Marca el asiento en TODOS; estado='facturado' solo si estaba
-                # 'pagado' (los impagados/devueltos conservan su estado para no
-                # romper el seguimiento de impago/recobro, pero ya con asiento).
+                # Solo llegan recibos 'pagado' (guard arriba) → todos pasan a
+                # 'facturado' con su asiento Odoo.
                 cur.execute("""
                     UPDATE recibo
                        SET account_move_id=%s, account_move_ref=%s,
                            fecha_facturacion=NOW(),
-                           estado = CASE WHEN estado='pagado' THEN 'facturado'
-                                         ELSE estado END
+                           estado='facturado'
                      WHERE id_manager=%s AND id = ANY(%s)
                 """, (inv_id, inv_data['name'], str(g.id_manager),
                       [r['id'] for r in lista_recibos]))
