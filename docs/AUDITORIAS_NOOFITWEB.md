@@ -45,6 +45,7 @@
 | 20 | Trimestral legacy — convivencia con dedup + gating de facturar | 2026-06-15 | ✅ |
 | 21 | Notificaciones / Meta (redes) / Email — robustez de envío + TTL `publicando` | 2026-06-15 | ✅ |
 | 22 | Preemisión cruza trainers — scope por `g.id_trainer` en emisión mensual (preemisión/emitir/SEPA/validar) | 2026-06-20 | ✅ |
+| 23 | Facturación solo de cuotas PAGADAS (no facturar impagados/devueltos) | 2026-06-25 | ✅ |
 
 ---
 
@@ -472,6 +473,33 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 23. Facturación solo de cuotas PAGADAS — 2026-06-25 ✅
+**Revisado:** `routes/facturacion_trimestre.py` (`facturar`), `routes/recibos.py`
+(`update_recibo`), `components/recibos/ModificarReciboBtn.jsx`.
+
+**REGLA (invariante, decisión propietario):** una cuota **IMPAGADA no genera factura
+fiscal**. La `account.move` (factura) se crea **solo cuando se formaliza el pago** — así no
+hay facturas fiscales de cuotas no cobradas y la modificación de un impagado es simple (solo
+la cuota BD, sin candado Odoo).
+
+- `facturacion_trimestre.facturar`: el filtro pasó de `estado IN ('pagado','impagado',
+  'devuelto')` a **`estado = 'pagado'`** (guard duro: aunque el frontend mande ids de
+  impagados/devueltos, se ignoran). Un impagado cobrado más tarde entra como `pagado` en la
+  siguiente pasada trimestral y se factura entonces.
+- **Consecuencia:** un impagado nuevo nunca tiene `account_move_id` → es cuota BD simple →
+  `editableFull` en "Modificar recibo" sin restricción. **No** se mutan facturas posteadas
+  desde la web.
+
+**Contexto / corrección de rumbo:** una iteración previa (#4 de un lote de bugs) había
+desbloqueado la edición de importes de facturas **posteadas** propagando el cambio a Odoo
+(`button_draft → editar → action_post`). Al adoptar esta regla, esa propagación arriesgada
+(impacto SII) quedó **innecesaria y se revirtió**: editar importes de un recibo YA facturado
+sigue bloqueado (409 `recibo_con_factura_odoo`); para cambiarlo → anular + recrear.
+
+**Legacy:** los recibos impagados ya facturados por el **import GestPlus** (`INV/2026/*`,
+`origen='gestplus_2026'`) se dejan como están (decisión propietario); su importe no es
+editable desde la web.
 
 ## 22. Preemisión cruza trainers — fuga cross-trainer en emisión mensual — 2026-06-20 ✅
 **Revisado:** `routes/preemision_v2.py` (generar/listar/borrar), `routes/emision_v2.py`
