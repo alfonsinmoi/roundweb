@@ -68,13 +68,18 @@ def _calc_fecha_hasta(fecha_emision_iso, periodicidad):
 
 
 def _toca_emitir(sub, mes_str):
-    """Decide si una subscription debe emitir recibo en `mes_str` (YYYY-MM).
+    """¿La subscription PUEDE emitir recibo en `mes_str` (YYYY-MM)?
 
-    Lógica (según definición del usuario):
-    - mensual: emite cada mes desde fecha_inicio
-    - trimestral: emite cada 3 meses (mes 0, 3, 6, 9 desde inicio)
-    - semestral: cada 6 meses
-    - anual: cada 12 meses
+    Jun 2026 — corrección de modelo: la decisión de "cuándo vuelve a tocar" NO
+    se calcula con el ciclo `n % step` desde `fecha_inicio`. Ese ancla era un
+    artefacto del import masivo (todos con fecha_inicio=2026-06-02) y saltaba
+    meses que sí tocaban (p.ej. un trimestral cuya cobertura vencía el 30/06 no
+    se cobraba en julio). El gate REAL es la COBERTURA: se emite cuando la
+    `fecha_hasta` del último recibo ya ha vencido — lo decide
+    `ya_cubiertos_post_mes` en generar(). Aquí solo se comprueba que la sub haya
+    empezado (no emitir antes de fecha_inicio). La periodicidad se conserva para
+    el PRECIO y para cuánto cubre cada recibo (_calc_fecha_hasta), no para
+    decidir el mes.
     """
     fi = sub.get('fecha_inicio')
     if not fi: return False
@@ -83,11 +88,7 @@ def _toca_emitir(sub, mes_str):
     fi_mes = fi.year * 12 + fi.month
     target_y, target_m = map(int, mes_str.split('-'))
     target_mes = target_y * 12 + target_m
-    if target_mes < fi_mes: return False
-    n = target_mes - fi_mes
-    per = sub.get('periodicidad', 'mensual')
-    step = {'mensual': 1, 'trimestral': 3, 'semestral': 6, 'anual': 12}.get(per, 1)
-    return n % step == 0
+    return target_mes >= fi_mes
 
 
 def _precio_para(cuota, periodicidad):
@@ -170,24 +171,25 @@ def generar(mes):
             """, (str(g.id_manager), mes))
             ya_existen = {r['cliente_idnoofit']: r['id'] for r in cur.fetchall()}
 
-        # Idempotencia 2: recibos PAGADOS cuya `fecha_hasta` se extiende más
-        # allá del último día del mes de emisión (típico de pagos trimestrales,
-        # semestrales o anuales). Si el cliente ya pagó hasta una fecha
-        # posterior al mes que estamos emitiendo, NO se le emite otro.
+        # COBERTURA (jun 2026): el gate real de "toca emitir" es la fecha_hasta
+        # del último recibo, NO el ciclo desde fecha_inicio (que era un
+        # artefacto del import masivo). Un cliente está cubierto para este mes
+        # si tiene un recibo pagado/emitido/facturado cuya cobertura llega
+        # hasta el mes (fecha_hasta >= primer día del mes) → no se le emite.
+        # Cuando la cobertura vence (fecha_hasta < primer día), toca el
+        # siguiente recibo. Boundary `>=` (no `>`): un recibo que cubre p.ej.
+        # hasta 30/06 cubre TODO junio → no re-emitir junio; pero ya NO cubre
+        # julio (30/06 < 01/07) → en julio toca.
         target_y_tmp, target_m_tmp = map(int, mes.split('-'))
-        if target_m_tmp == 12:
-            ultimo_dia_mes_emision = dt.date(target_y_tmp, 12, 31)
-        else:
-            ultimo_dia_mes_emision = (
-                dt.date(target_y_tmp, target_m_tmp + 1, 1) - dt.timedelta(days=1))
+        primer_dia_emision = dt.date(target_y_tmp, target_m_tmp, 1)
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute("""
                 SELECT DISTINCT cliente_idnoofit FROM recibo
                  WHERE id_manager=%s
                    AND estado IN ('pagado','emitido','facturado')
                    AND fecha_hasta IS NOT NULL
-                   AND fecha_hasta > %s
-            """, (str(g.id_manager), ultimo_dia_mes_emision))
+                   AND fecha_hasta >= %s
+            """, (str(g.id_manager), primer_dia_emision))
             ya_cubiertos_post_mes = {r['cliente_idnoofit'] for r in cur.fetchall()}
 
         # Clientes con baja efectiva el día 1 del mes que se emite. No

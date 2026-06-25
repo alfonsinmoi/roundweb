@@ -46,6 +46,7 @@
 | 21 | Notificaciones / Meta (redes) / Email — robustez de envío + TTL `publicando` | 2026-06-15 | ✅ |
 | 22 | Preemisión cruza trainers — scope por `g.id_trainer` en emisión mensual (preemisión/emitir/SEPA/validar) | 2026-06-20 | ✅ |
 | 23 | Facturación solo de cuotas PAGADAS (no facturar impagados/devueltos) | 2026-06-25 | ✅ |
+| 24 | Emisión por COBERTURA (fecha_hasta), no por ciclo desde fecha_inicio | 2026-06-25 | ✅ |
 
 ---
 
@@ -473,6 +474,43 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 24. Emisión por COBERTURA (fecha_hasta), no por ciclo de fecha_inicio — 2026-06-25 ✅
+**Revisado:** `preemision_v2._toca_emitir` + `generar` (`ya_cubiertos_post_mes`),
+`preemision_validar._toca_emitir_local` + chequeo de cobertura.
+
+**Bug (under-billing real):** la decisión de "¿toca cobrar este mes?" usaba el ciclo
+`n % step == 0` contado desde **`fecha_inicio`**. Para los clientes migrados de GestPlus
+`fecha_inicio` es el **día del import masivo** (todos `2026-06-02`), no su alta real, así que
+el ciclo arrancaba mal y **saltaba meses que sí tocaban**. Ejemplo verificado: MONTSE JIMENA
+OLMEDO (1821203), trimestral, último recibo cubre hasta **30/06/2026** → en julio toca cobrar,
+pero `n=(jul−jun)=1`, `1%3≠0` → "no toca" → no se emitía. 82 clientes de Añoreta afectados en
+julio (~7.300€/trimestre que se dejaban de cobrar). La emisión REAL (`preemision_v2`) usaba la
+misma lógica errónea, no solo el validador.
+
+**REGLA (invariante, modelo correcto):** el disparador de cobro es el **fin de cobertura
+(`fecha_hasta`) del último recibo**, NO el ciclo desde `fecha_inicio`. Se emite el mes M a un
+cliente si **no tiene cobertura que llegue a M** (`MAX(fecha_hasta) < primer día de M`). La
+**periodicidad** solo determina el **precio** y **cuánto cubre** cada recibo (`_calc_fecha_hasta`
+= emisión + N meses − 1 día), no qué mes se cobra.
+
+**Fix (2026-06-25 ✅):**
+- `_toca_emitir` / `_toca_emitir_local`: se elimina el gate `n % step`; queda solo "ha empezado"
+  (`target_mes >= fecha_inicio_mes`).
+- Chequeo de cobertura (`ya_cubiertos_post_mes`): boundary de `fecha_hasta > último día` a
+  **`fecha_hasta >= primer día del mes`** (un recibo que cubre hasta 30/06 cubre TODO junio →
+  no re-emitir junio; pero ya NO cubre julio → en julio toca).
+- **Sin doble cobro**: los cubiertos se siguen saltando (`ya_cubierto_post_mes`) y el dedup por
+  `periodo` (`ya_existen`) impide repetir el mismo mes.
+
+**Verificado (validar 2026-07):** `sub_no_toca_este_mes` pasa de 82 → **0** en Añoreta; de esos
+82, 48 quedan como `ya_cubierto_post_mes` (cobertura sí llega a julio) y 34 pasan a coherentes
+(cobertura vencida 30/06 → se cobran). MONTSE confirmada como cobrable en julio.
+
+**DEPENDENCIA de datos (vigilar):** el modelo confía en que `fecha_hasta` esté bien puesta. Un
+recibo trimestral/anual con `fecha_hasta` NULL o stale haría que el cliente parezca "sin
+cobertura" y se le cobre cada mes. El validador/Excel (revisión previa) es la red de seguridad
+antes de emitir. (Mensual = `fecha_hasta` NULL por diseño → se cobra cada mes, dedup por periodo.)
 
 ## 23. Facturación solo de cuotas PAGADAS — 2026-06-25 ✅
 **Revisado:** `routes/facturacion_trimestre.py` (`facturar`), `routes/recibos.py`
