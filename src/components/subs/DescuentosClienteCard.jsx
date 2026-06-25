@@ -2,7 +2,7 @@
 // Muestra los descuentos asignados al cliente (activos arriba, histórico
 // debajo) y permite asignar nuevos del catálogo.
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Loader2, Tag, X as XIcon } from 'lucide-react'
+import { Plus, Loader2, Tag, Trash2 } from 'lucide-react'
 import { Card, Btn, Badge, SectionTitle } from '../UI'
 import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
@@ -39,7 +39,13 @@ function descLabel(a) {
 // La fuente de verdad es la columna `origen` (manual / auto_varias_cuotas /
 // auto_familiares). Si no llega (filas viejas), caemos a deducir por tipo.
 function esAuto(a) {
-  if (a.origen && a.origen !== 'manual') return true
+  // `origen` es la FUENTE DE VERDAD: solo es automático si lo asignó el cron
+  // (origen 'auto_*'). Un descuento manual (origen='manual') NO es automático
+  // aunque su TIPO sea combo/varias/familiares → debe poder quitarse. (Antes
+  // se deducía por tipo siempre, lo que bloqueaba con 🔒 descuentos manuales
+  // de esos tipos y los hacía imborrables desde la ficha.)
+  if (a.origen) return a.origen.startsWith('auto_')
+  // Solo si NO llega `origen` (filas viejas) caemos a deducir por tipo.
   return a.tipo === 'varias_cuotas' || a.tipo === 'precio_combo' || a.tipo === 'familiares'
 }
 
@@ -179,10 +185,13 @@ export default function DescuentosClienteCard({ cliente }) {
                       </span>
                     ) : canQuitar ? (
                       <button onClick={() => handleQuitar(a)}
-                              title="Quitar"
-                              style={{ background: 'none', border: 'none',
-                                       cursor: 'pointer', color: 'var(--red)', padding: 4 }}>
-                        <XIcon size={14} />
+                              title="Eliminar este descuento del cliente"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
+                                       background: 'none', cursor: 'pointer', color: 'var(--red)',
+                                       border: '1px solid var(--red)', borderRadius: 6,
+                                       padding: '3px 8px', fontSize: 11, fontWeight: 600,
+                                       flexShrink: 0 }}>
+                        <Trash2 size={13} /> Quitar
                       </button>
                     ) : null}
                   </div>
