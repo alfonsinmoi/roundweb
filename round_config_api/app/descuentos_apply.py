@@ -144,7 +144,8 @@ def _solo_trainer_propio(descuentos, id_trainer_cliente):
 def aplicar_descuentos_varias_cuotas_auto(id_manager, idnoofit, cuota_codigo,
                                           precio_actual, cuotas_activas_codigos,
                                           descuentos_varias=None,
-                                          id_trainer_cliente=None):
+                                          id_trainer_cliente=None,
+                                          periodicidad='mensual'):
     """Aplica AUTOMÁTICAMENTE descuentos tipo='varias_cuotas' al precio.
 
     Reglas:
@@ -179,7 +180,12 @@ def aplicar_descuentos_varias_cuotas_auto(id_manager, idnoofit, cuota_codigo,
         cs = d.get('combo_secundarias') or []
         for s in cs:
             if s.get('cuota_codigo') == cuota_codigo:
-                nuevo = round(float(s.get('precio') or 0), 2)
+                # Precio final del combo para la periodicidad del recibo (#29);
+                # fallback a mensual / precio único legacy.
+                p_per = _valor_por_periodicidad(s, periodicidad, 'precio')
+                if p_per is None:
+                    break
+                nuevo = round(float(p_per), 2)
                 # Solo aplicar si baja el precio (el descuento no debe encarecer)
                 if nuevo < precio:
                     info.append({
@@ -227,7 +233,7 @@ def get_descuentos_familiares_activos(id_manager):
 
 def calcular_precio_con_descuentos(id_manager, idnoofit, cuota_codigo,
                                    precio_normal, cuotas_activas_codigos=None,
-                                   id_trainer_cliente=None):
+                                   id_trainer_cliente=None, periodicidad='mensual'):
     """Aplica los descuentos activos del cliente sobre `precio_normal` para
     la cuota `cuota_codigo`.
 
@@ -302,7 +308,9 @@ def calcular_precio_con_descuentos(id_manager, idnoofit, cuota_codigo,
                     cs = []
             entry = next((s for s in cs if s.get('cuota_codigo') == cuota_codigo), None)
             if entry:
-                v = float(entry.get('valor') or 0)
+                # Valor del descuento para la periodicidad del recibo (#29);
+                # fallback a mensual / valor único legacy dentro del helper.
+                v = _valor_por_periodicidad(entry, periodicidad, 'valor') or 0.0
                 unidad = entry.get('unidad') or 'porcentaje'
                 if v > 0:
                     if unidad == 'importe':
@@ -345,10 +353,32 @@ def es_descuento_acumulacion(tipo):
     return tipo in ('varias_cuotas', 'precio_combo', 'familiares')
 
 
+def _valor_por_periodicidad(entry, periodicidad, clave_legacy):
+    """Devuelve el valor de una entrada de combo_secundarias para la
+    periodicidad dada (auditoría #29). Soporta:
+      - estructura nueva: entry['valores'|'precios'] = {mensual, trimestral,
+        semestral, anual}
+      - estructura vieja (compat): entry[clave_legacy] (un solo valor) → se usa
+        para cualquier periodicidad.
+    `clave_legacy` = 'valor' (familiares) o 'precio' (varias)."""
+    dic_key = 'valores' if clave_legacy == 'valor' else 'precios'
+    dic = entry.get(dic_key) or {}
+    v = dic.get(periodicidad)
+    if v in (None, ''):
+        v = dic.get('mensual')          # fallback a mensual dentro del dict nuevo
+    if v in (None, ''):
+        v = entry.get(clave_legacy)     # fallback legacy (valor único)
+    try:
+        return float(v) if v not in (None, '') else None
+    except (TypeError, ValueError):
+        return None
+
+
 def aplicar_descuentos_familiares(id_manager, idnoofit, cuota_codigo,
                                   precio_actual, cuotas_por_miembro,
                                   descuentos_familiares=None,
-                                  id_trainer_cliente=None):
+                                  id_trainer_cliente=None,
+                                  periodicidad='mensual'):
     """Aplica descuentos de tipo 'familiares' al precio de una cuota.
 
     El descuento se aplica AUTOMÁTICAMENTE si:
@@ -383,8 +413,11 @@ def aplicar_descuentos_familiares(id_manager, idnoofit, cuota_codigo,
         for s in cs:
             if not isinstance(s, dict): continue
             if (s.get('cuota_codigo') or '') == cuota_codigo:
+                # Valor del descuento para la periodicidad del recibo (#29);
+                # fallback a mensual / valor único legacy.
+                v = _valor_por_periodicidad(s, periodicidad, 'valor')
                 match = {
-                    'valor': float(s.get('valor') or 0),
+                    'valor': float(v or 0),
                     'unidad': s.get('unidad') or d.get('unidad') or 'porcentaje',
                 }
                 break

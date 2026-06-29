@@ -479,6 +479,59 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
 
+## 29. Descuentos familiares / varias cuotas POR PERIODICIDAD — 2026-06-30 ✅
+**Revisado:** `descuentos_apply.py` (aplicar_descuentos_familiares / varias_cuotas_auto /
+calcular_precio_con_descuentos), `preemision_v2.generar`, `preemision_validar` (2 puntos),
+`DescuentosTab.jsx` (editor familiares / familiar_trabajador / varias_cuotas).
+
+**Petición (propietario):** "en los descuentos familiares y varias cuotas, que el precio que se le
+resta a cada cuota venga el mensual, trimestral y anual para indicar cómo quedaría cada uno. Al
+emitir que busque la periodicidad para saber qué descuento aplicar." Confirmado: **4 periodicidades**
+(mensual / trimestral / semestral / anual); **Familiares = descuento por periodicidad**,
+**Varias = precio final por periodicidad**.
+
+**Antes:** cada entrada de `combo_secundarias` guardaba UN único valor (`{cuota_codigo, valor,
+unidad}` familiares; `{cuota_codigo, precio}` varias) y se aplicaba igual a cualquier periodicidad.
+Un descuento pensado para la cuota mensual se aplicaba mal a la trimestral/semestral/anual.
+
+**Estructura nueva (retrocompatible):**
+- familiares / familiar_trabajador: `{cuota_codigo, unidad, valores:{mensual,trimestral,semestral,anual}}`.
+- varias_cuotas: `{cuota_codigo, precios:{mensual,trimestral,semestral,anual}}`.
+- `valores`/`precios` solo incluyen las periodicidades con valor; las vacías se omiten.
+
+**Backend (✅):**
+- Helper `_valor_por_periodicidad(entry, periodicidad, clave_legacy)`: lee `entry['valores'|'precios']
+  [periodicidad]` → fallback a `[mensual]` del propio dict → fallback legacy `entry[clave_legacy]`
+  (valor único viejo) → `None` si nada. Retrocompat total: descuentos viejos siguen aplicando su
+  valor único en todas las periodicidades.
+- `aplicar_descuentos_familiares`, `aplicar_descuentos_varias_cuotas_auto` y
+  `calcular_precio_con_descuentos` aceptan `periodicidad='mensual'` y resuelven el valor con el helper.
+  (En varias, si la periodicidad no tiene precio definido ni fallback → no aplica, `break`.)
+- **`familiar_trabajador` (MANUAL) incluido:** la UI comparte rejilla con familiares, así que ahora
+  guarda `valores:{}` por entrada (sin `valor`). El bloque `familiar_trabajador` de
+  `calcular_precio_con_descuentos` se migró a `_valor_por_periodicidad` — si se hubiera dejado leyendo
+  `entry.get('valor')` el descuento habría caído a 0 (regresión). Default `'mensual'` mantiene compat.
+- Callers (preemisión real `preemision_v2` + validador `preemision_validar`, 2 puntos) pasan
+  `periodicidad = s.get('periodicidad','mensual')` (la del propio sub) a las 3 llamadas de descuento.
+  Periodicidades no listadas (p.ej. `bimensual`) caen a mensual.
+
+**Frontend (✅):** editor de descuentos (`DescuentosTab.jsx`) — familiares / familiar_trabajador /
+varias dejan de tener un único input y muestran una **tarjeta por actividad** con una **fila por
+periodicidad cuya cuota tiene tarifa > 0**: etiqueta · `tarifa Xe` · input (familiares = descuento
+%/€ con unidad a nivel de actividad; varias = precio final) · **precio resultante** de esa
+periodicidad. Carga normaliza lo viejo (`{valor}`/`{precio}` → fila Mensual). `onSubmit` guarda
+`valores:{}` / `precios:{}` limpiando vacías + mantiene mirror legacy (`valor`=mensual, `unidad`,
+`cuota_aplicada_codigo`) para consumidores antiguos.
+
+**Verificado:** `_valor_por_periodicidad` — nuevo trim=25→25; mensual=10→10; semestral/anual sin def
+→ fallback mensual 10; **estructura nueva sin `valor` legacy NO da 0 falso** (familiar_trab no
+regresa); legacy `valor`=7,5 → 7,5 en cualquier periodicidad; entrada vacía → None. Build frontend OK,
+backend `active`, frontend `200`.
+
+**REGLA:** el descuento (familiares/varias/familiar_trab) se resuelve por la **periodicidad del sub
+que se emite**; si esa periodicidad no está definida, cae a mensual y, en último término, al valor
+único legacy. Nunca se aplica un valor de otra periodicidad.
+
 ## 28. Scope de descuentos por trainer en la emisión — 2026-06-28 ✅
 **Revisado:** `descuentos_apply.py` (get_descuentos_*/aplicar_*), `preemision_v2.generar`,
 `preemision_validar` (2 puntos de cálculo de precio).

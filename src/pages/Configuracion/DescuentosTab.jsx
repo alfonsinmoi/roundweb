@@ -25,6 +25,16 @@ function aplicarDescuento(precioBase, valor, unidad) {
   return Math.max(0, Math.round(res * 100) / 100)
 }
 
+// Periodicidades de cuota soportadas (orden de visualización) y su etiqueta.
+// Cada cuota tiene precio_mensual/_trimestral/_semestral/_anual; el descuento
+// se define POR PERIODICIDAD (mensual, trimestral, semestral, anual).
+const PERIODICIDADES = [
+  { key: 'mensual',     label: 'Mensual' },
+  { key: 'trimestral',  label: 'Trimestral' },
+  { key: 'semestral',   label: 'Semestral' },
+  { key: 'anual',       label: 'Anual' },
+]
+
 // Estilo inline para fórmulas embedded en el texto de ayuda.
 const inlineCodeStyle = {
   background: 'var(--bg-2)', padding: '1px 6px', borderRadius: 4,
@@ -329,12 +339,18 @@ function AsignarModal({ desc, identity, onClose }) {
                 {cuotasDesc.length > 0 && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
                     {cuotasDesc.map(c => {
+                      // Estructura nueva: valores por periodicidad. Mostramos la
+                      // fila mensual como resumen (con fallback al legacy c.valor).
+                      const valorMensual = (c.valores && typeof c.valores === 'object')
+                        ? c.valores.mensual
+                        : c.valor
                       // Buscar cuota en catálogo para mostrar precio resultante
                       const cuota = cuotasCat.find(x => x.codigo === c.cuota_codigo)
                       const precioBase = cuota?.precio_mensual ?? cuota?.precio_trimestral ?? null
-                      const precioFinal = precioBase != null
-                        ? aplicarDescuento(precioBase, c.valor, c.unidad)
+                      const precioFinal = (precioBase != null && valorMensual != null)
+                        ? aplicarDescuento(precioBase, valorMensual, c.unidad)
                         : null
+                      const tieneValorMensual = valorMensual != null && valorMensual !== ''
                       return (
                         <div key={c.cuota_codigo} style={{
                           fontSize: 12, padding: '8px 12px', borderRadius: 8,
@@ -343,13 +359,18 @@ function AsignarModal({ desc, identity, onClose }) {
                           display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
                         }}>
                           <strong style={{ color: 'var(--text-0)' }}>{c.cuota_codigo}</strong>
-                          {precioBase != null && (
+                          {!tieneValorMensual && (
+                            <span style={{ color: 'var(--text-3)' }}>
+                              <em>(descuento por periodicidad)</em>
+                            </span>
+                          )}
+                          {tieneValorMensual && precioBase != null && precioFinal != null && (
                             <>
                               <span style={{ color: 'var(--text-3)' }}>
                                 {precioBase.toFixed(2)}€/mes
                               </span>
                               <span style={{ color: 'var(--amber)', fontWeight: 600 }}>
-                                {c.unidad === 'porcentaje' ? `−${c.valor}%` : `−${c.valor}€`}
+                                {c.unidad === 'porcentaje' ? `−${valorMensual}%` : `−${valorMensual}€`}
                               </span>
                               <span style={{ color: 'var(--text-3)' }}>→</span>
                               <strong style={{ color: 'var(--green)', fontSize: 13 }}>
@@ -360,9 +381,9 @@ function AsignarModal({ desc, identity, onClose }) {
                               </span>
                             </>
                           )}
-                          {precioBase == null && (
+                          {tieneValorMensual && precioBase == null && (
                             <span style={{ color: 'var(--text-3)' }}>
-                              {c.unidad === 'porcentaje' ? `−${c.valor}%` : `−${c.valor}€`}
+                              {c.unidad === 'porcentaje' ? `−${valorMensual}%` : `−${valorMensual}€`}
                               {' '}
                               <em>(precio base no disponible)</em>
                             </span>
@@ -838,23 +859,69 @@ function DescForm({ desc, identity, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [cuotas, setCuotas] = useState([])
 
-  // combo_secundarias depende del tipo:
-  //   - varias_cuotas: [{cuota_codigo, precio}]
-  //   - familiares:    [{cuota_codigo, valor, unidad}]
-  const initialCombo = Array.isArray(desc.combo_secundarias)
-    ? desc.combo_secundarias
-    : []
+  // combo_secundarias depende del tipo (estructura NUEVA, por periodicidad):
+  //   - varias_cuotas:               [{cuota_codigo, precios:{mensual,…}}]
+  //   - familiares/familiar_trabaj.: [{cuota_codigo, unidad, valores:{mensual,…}}]
+  // Normalizamos al cargar para que descuentos viejos (que traían un único
+  // {valor,unidad} o {precio}) se vean en la fila «Mensual» (retrocompat).
+  const rawCombo = Array.isArray(desc.combo_secundarias) ? desc.combo_secundarias : []
+
+  // Familiares / familiar_trabajador → {cuota_codigo, unidad, valores:{…}}
+  const normFamiliares = (entry) => {
+    if (!entry?.cuota_codigo) return null
+    const unidad = entry.unidad || 'porcentaje'
+    if (entry.valores && typeof entry.valores === 'object') {
+      const valores = {}
+      for (const { key } of PERIODICIDADES) {
+        const v = entry.valores[key]
+        if (v !== '' && v != null && !isNaN(Number(v))) valores[key] = Number(v)
+      }
+      return { cuota_codigo: entry.cuota_codigo, unidad, valores }
+    }
+    // Legacy {valor, unidad} → fila mensual
+    const valores = {}
+    if (entry.valor !== '' && entry.valor != null && !isNaN(Number(entry.valor))) {
+      valores.mensual = Number(entry.valor)
+    }
+    return { cuota_codigo: entry.cuota_codigo, unidad, valores }
+  }
+
+  // Varias cuotas → {cuota_codigo, precios:{…}}
+  const normVarias = (entry) => {
+    if (!entry?.cuota_codigo) return null
+    if (entry.precios && typeof entry.precios === 'object') {
+      const precios = {}
+      for (const { key } of PERIODICIDADES) {
+        const v = entry.precios[key]
+        if (v !== '' && v != null && !isNaN(Number(v))) precios[key] = Number(v)
+      }
+      return { cuota_codigo: entry.cuota_codigo, precios }
+    }
+    // Legacy {precio} → fila mensual
+    const precios = {}
+    if (entry.precio !== '' && entry.precio != null && !isNaN(Number(entry.precio))) {
+      precios.mensual = Number(entry.precio)
+    }
+    return { cuota_codigo: entry.cuota_codigo, precios }
+  }
+
+  const initialCombo = rawCombo.map(normVarias).filter(Boolean)
+
   // Fallback compat: si es familiares pero combo_secundarias está vacío y el
   // descuento tenía cuota_aplicada_codigo+valor+unidad raíz, construimos una
   // entrada inicial a partir de esos campos legacy.
   const initialFamiliares = (() => {
-    if (desc.tipo !== 'familiares') return initialCombo
-    if (initialCombo.length > 0) return initialCombo
+    if (desc.tipo !== 'familiares' && desc.tipo !== 'familiar_trabajador') {
+      return rawCombo.map(normFamiliares).filter(Boolean)
+    }
+    if (rawCombo.length > 0) return rawCombo.map(normFamiliares).filter(Boolean)
     if (desc.cuota_aplicada_codigo) {
+      const valores = {}
+      if (Number(desc.valor || 0)) valores.mensual = Number(desc.valor || 0)
       return [{
         cuota_codigo: desc.cuota_aplicada_codigo,
-        valor: Number(desc.valor || 0),
         unidad: desc.unidad || 'porcentaje',
+        valores,
       }]
     }
     return []
@@ -869,7 +936,8 @@ function DescForm({ desc, identity, onClose, onSaved }) {
     active: desc.active ?? true,
     cuota_requerida_codigo: desc.cuota_requerida_codigo || '',
     cuota_aplicada_codigo: desc.cuota_aplicada_codigo || '',
-    combo_secundarias: desc.tipo === 'familiares' ? initialFamiliares : initialCombo,
+    combo_secundarias: (desc.tipo === 'familiares' || desc.tipo === 'familiar_trabajador')
+      ? initialFamiliares : initialCombo,
     // Filtro por actividad (solo tipo 'importe'/restar): ids de actividad
     // NoofitPro. Vacío = aplica a cualquier cuota.
     actividades_idnoofit: Array.isArray(desc.actividades_idnoofit)
@@ -903,23 +971,28 @@ function DescForm({ desc, identity, onClose, onSaved }) {
     return m
   }, [data.combo_secundarias])
 
-  function toggleCuotaSecundaria(codigo, defaultPrecio) {
+  // varias_cuotas: precio FINAL por periodicidad. Al marcar la actividad se
+  // crea la entrada con precios:{} vacío.
+  function toggleCuotaSecundaria(codigo) {
     setData(d => {
       const lista = Array.isArray(d.combo_secundarias) ? d.combo_secundarias : []
       const idx = lista.findIndex(x => x.cuota_codigo === codigo)
       if (idx >= 0) {
         return { ...d, combo_secundarias: lista.filter((_, i) => i !== idx) }
       }
-      return { ...d, combo_secundarias: [...lista, { cuota_codigo: codigo, precio: defaultPrecio }] }
+      return { ...d, combo_secundarias: [...lista, { cuota_codigo: codigo, precios: {} }] }
     })
   }
-  function setPrecioSecundaria(codigo, precio) {
+  // Edita el precio final de UNA periodicidad de una actividad (varias_cuotas).
+  function setPrecioSecundaria(codigo, periodicidad, precio) {
     setData(d => {
       const lista = Array.isArray(d.combo_secundarias) ? d.combo_secundarias : []
       return {
         ...d,
         combo_secundarias: lista.map(x =>
-          x.cuota_codigo === codigo ? { ...x, precio } : x
+          x.cuota_codigo === codigo
+            ? { ...x, precios: { ...(x.precios || {}), [periodicidad]: precio } }
+            : x
         ),
       }
     })
@@ -940,11 +1013,22 @@ function DescForm({ desc, identity, onClose, onSaved }) {
         toast.error('Marca al menos una cuota secundaria'); return
       }
       for (const c of sec) {
-        if (c.precio === '' || c.precio == null || isNaN(Number(c.precio))) {
-          toast.error(`Precio inválido para ${c.cuota_codigo}`); return
-        }
         if (c.cuota_codigo === data.cuota_requerida_codigo) {
           toast.error('La cuota secundaria no puede ser la misma que la principal'); return
+        }
+        // Debe tener al menos un precio final válido en alguna periodicidad.
+        const precios = c.precios || {}
+        const conValor = PERIODICIDADES.filter(({ key }) => {
+          const v = precios[key]
+          return v !== '' && v != null && !isNaN(Number(v))
+        })
+        if (conValor.length === 0) {
+          toast.error(`Indica el precio en al menos una periodicidad para ${c.cuota_codigo}`); return
+        }
+        for (const { key } of conValor) {
+          if (Number(precios[key]) < 0) {
+            toast.error(`Precio inválido para ${c.cuota_codigo} (${key})`); return
+          }
         }
       }
     }
@@ -957,8 +1041,14 @@ function DescForm({ desc, identity, onClose, onSaved }) {
         if (!c.unidad || !['porcentaje', 'importe'].includes(c.unidad)) {
           toast.error(`Unidad inválida para ${c.cuota_codigo}`); return
         }
-        if (!c.valor || Number(c.valor) <= 0) {
-          toast.error(`Valor inválido para ${c.cuota_codigo}`); return
+        // Debe tener al menos un valor de descuento > 0 en alguna periodicidad.
+        const valores = c.valores || {}
+        const conValor = PERIODICIDADES.filter(({ key }) => {
+          const v = valores[key]
+          return v !== '' && v != null && !isNaN(Number(v)) && Number(v) > 0
+        })
+        if (conValor.length === 0) {
+          toast.error(`Indica el descuento en al menos una periodicidad para ${c.cuota_codigo}`); return
         }
       }
     }
@@ -973,22 +1063,38 @@ function DescForm({ desc, identity, onClose, onSaved }) {
       }
       if (isVarias) {
         payload.cuota_requerida_codigo = data.cuota_requerida_codigo
+        // Estructura nueva: precio FINAL por periodicidad (omite vacías).
         payload.combo_secundarias = (data.combo_secundarias || [])
           .filter(c => c?.cuota_codigo)
-          .map(c => ({ cuota_codigo: c.cuota_codigo, precio: Number(c.precio) }))
+          .map(c => {
+            const precios = {}
+            for (const { key } of PERIODICIDADES) {
+              const v = (c.precios || {})[key]
+              if (v !== '' && v != null && !isNaN(Number(v))) precios[key] = Number(v)
+            }
+            return { cuota_codigo: c.cuota_codigo, precios }
+          })
       } else if (isFamiliares || isFamiliarTrab) {
+        // Estructura nueva: descuento por periodicidad (omite vacías). `unidad`
+        // (%/€) es a nivel de actividad, compartida por todas sus periodicidades.
         const lista = (data.combo_secundarias || [])
           .filter(c => c?.cuota_codigo)
-          .map(c => ({
-            cuota_codigo: c.cuota_codigo,
-            valor: Number(c.valor),
-            unidad: c.unidad || 'porcentaje',
-          }))
+          .map(c => {
+            const valores = {}
+            for (const { key } of PERIODICIDADES) {
+              const v = (c.valores || {})[key]
+              if (v !== '' && v != null && !isNaN(Number(v)) && Number(v) > 0) {
+                valores[key] = Number(v)
+              }
+            }
+            return { cuota_codigo: c.cuota_codigo, unidad: c.unidad || 'porcentaje', valores }
+          })
         payload.combo_secundarias = lista
-        // Mantener "raíz" para compat: primera entrada como cuota_aplicada / valor / unidad
+        // Mantener "raíz" legacy: primera actividad → cuota_aplicada / unidad +
+        // valor = su descuento MENSUAL (o 0 si no lo tiene definido).
         if (lista.length > 0) {
           payload.cuota_aplicada_codigo = lista[0].cuota_codigo
-          payload.valor = lista[0].valor
+          payload.valor = Number(lista[0].valores?.mensual || 0)
           payload.unidad = lista[0].unidad
         }
         payload.cuota_requerida_codigo = null
@@ -1242,7 +1348,9 @@ function DescForm({ desc, identity, onClose, onSaved }) {
             const byCode = Object.fromEntries(
               lista.filter(x => x?.cuota_codigo).map(x => [x.cuota_codigo, x])
             )
-            const toggleCuota = (codigo, defaultPrecio) => {
+            // Marca/desmarca una actividad. Al marcar, crea entrada con
+            // valores:{} vacío y unidad por defecto 'porcentaje'.
+            const toggleCuota = (codigo) => {
               setData(d => {
                 const arr = Array.isArray(d.combo_secundarias) ? d.combo_secundarias : []
                 const idx = arr.findIndex(x => x.cuota_codigo === codigo)
@@ -1250,15 +1358,27 @@ function DescForm({ desc, identity, onClose, onSaved }) {
                   return { ...d, combo_secundarias: arr.filter((_, i) => i !== idx) }
                 }
                 return { ...d, combo_secundarias: [...arr, {
-                  cuota_codigo: codigo, valor: 0, unidad: 'porcentaje',
+                  cuota_codigo: codigo, unidad: 'porcentaje', valores: {},
                 }]}
               })
             }
-            const setEntry = (codigo, key, val) => {
+            // Cambia la unidad (%/€) a nivel de actividad (compartida).
+            const setUnidad = (codigo, unidad) => {
               setData(d => ({
                 ...d,
                 combo_secundarias: (d.combo_secundarias || []).map(x =>
-                  x.cuota_codigo === codigo ? { ...x, [key]: val } : x
+                  x.cuota_codigo === codigo ? { ...x, unidad } : x
+                ),
+              }))
+            }
+            // Edita el valor de descuento de UNA periodicidad de la actividad.
+            const setValor = (codigo, periodicidad, val) => {
+              setData(d => ({
+                ...d,
+                combo_secundarias: (d.combo_secundarias || []).map(x =>
+                  x.cuota_codigo === codigo
+                    ? { ...x, valores: { ...(x.valores || {}), [periodicidad]: val } }
+                    : x
                 ),
               }))
             }
@@ -1271,17 +1391,17 @@ function DescForm({ desc, identity, onClose, onSaved }) {
                   {isFamiliarTrab ? (
                     <>
                       <strong>Descuento por familiar de trabajador</strong>. Marca
-                      cada actividad y define su descuento (%, €); verás el precio
-                      resultante. Cada actividad tiene su propio descuento. Es
-                      manual: lo asignas a cada cliente (con su trabajador y relación).
+                      cada actividad y define su descuento (%, €) <strong>por
+                      periodicidad</strong>; verás el precio resultante de cada una.
+                      Es manual: lo asignas a cada cliente (con su trabajador y relación).
                     </>
                   ) : (
                     <>
                       <strong>Descuento por familiares (automático)</strong>. Marca
-                      cada actividad y define su descuento (%, €). Se aplica
-                      automáticamente a los miembros de un grupo familiar cuando hay
-                      <strong> ≥ 2 miembros</strong> con esa cuota activa. Cada
-                      actividad tiene su propio descuento independiente.
+                      cada actividad y define su descuento (%, €) <strong>por
+                      periodicidad</strong>. Se aplica automáticamente a los miembros
+                      de un grupo familiar cuando hay <strong> ≥ 2 miembros</strong>
+                      con esa cuota activa.
                     </>
                   )}
                 </p>
@@ -1295,64 +1415,91 @@ function DescForm({ desc, identity, onClose, onSaved }) {
                     No hay cuotas configuradas.
                   </p>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6,
-                                maxHeight: 280, overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8,
+                                maxHeight: 420, overflowY: 'auto' }}>
                     {cuotas.map(c => {
                       const sel = !!byCode[c.codigo]
                       const entry = byCode[c.codigo]
-                      const tarifa = c.precio_mensual ?? 0
+                      const unidad = sel ? (entry.unidad || 'porcentaje') : 'porcentaje'
+                      // Solo periodicidades con tarifa > 0 en esta cuota.
+                      const pers = PERIODICIDADES.filter(p => Number(c['precio_' + p.key]) > 0)
                       return (
                         <div key={c.id || c.codigo}
-                             style={{ display: 'grid',
-                                      gridTemplateColumns: '24px 1fr 90px 100px 150px',
-                                      alignItems: 'center', gap: 8,
-                                      padding: '8px 10px', borderRadius: 8,
+                             style={{ padding: '10px 12px', borderRadius: 8,
                                       background: sel ? 'var(--green-bg)' : 'var(--bg-2)',
                                       border: `1px solid ${sel ? 'var(--green)' : 'var(--line)'}` }}>
-                          <input type="checkbox" checked={sel}
-                                 onChange={() => toggleCuota(c.codigo, tarifa)} />
-                          <div style={{ minWidth: 0 }}>
-                            <p style={{ fontSize: 13, fontWeight: 600,
-                                        color: 'var(--text-0)', margin: 0 }}>
-                              {c.codigo}
-                            </p>
-                            {c.descripcion && (
-                              <p style={{ fontSize: 11, color: 'var(--text-3)', margin: 0 }}>
-                                {c.descripcion}
+                          {/* Cabecera: checkbox + código/descr + select unidad */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <input type="checkbox" checked={sel}
+                                   onChange={() => toggleCuota(c.codigo)} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <p style={{ fontSize: 13, fontWeight: 600,
+                                          color: 'var(--text-0)', margin: 0 }}>
+                                {c.codigo}
                               </p>
-                            )}
+                              {c.descripcion && (
+                                <p style={{ fontSize: 11, color: 'var(--text-3)', margin: 0 }}>
+                                  {c.descripcion}
+                                </p>
+                              )}
+                            </div>
+                            <select disabled={!sel} value={unidad}
+                                    onChange={e => setUnidad(c.codigo, e.target.value)}
+                                    style={{ ...inputStyle, width: 80, padding: '6px 8px',
+                                             opacity: sel ? 1 : 0.4 }}>
+                              <option value="porcentaje">%</option>
+                              <option value="importe">€</option>
+                            </select>
                           </div>
-                          <select disabled={!sel}
-                                  value={sel ? (entry.unidad || 'porcentaje') : 'porcentaje'}
-                                  onChange={e => setEntry(c.codigo, 'unidad', e.target.value)}
-                                  style={{ ...inputStyle, padding: '6px 8px',
-                                           opacity: sel ? 1 : 0.4 }}>
-                            <option value="porcentaje">%</option>
-                            <option value="importe">€</option>
-                          </select>
-                          <input type="number" step="0.01" min={0}
-                                 disabled={!sel}
-                                 value={sel ? (entry.valor ?? '') : ''}
-                                 onChange={e => setEntry(c.codigo, 'valor', parseFloat(e.target.value) || 0)}
-                                 placeholder={sel && entry.unidad === 'importe' ? '10.00' : '20'}
-                                 style={{ ...inputStyle, padding: '6px 8px',
-                                          textAlign: 'right',
-                                          opacity: sel ? 1 : 0.4 }} />
-                          <span style={{ fontSize: 11, textAlign: 'right', lineHeight: 1.35 }}>
-                            <span style={{ color: 'var(--text-3)' }}>tarifa {tarifa}€</span>
-                            {sel && Number(entry.valor) > 0 && tarifa > 0 && (() => {
-                              const fin = aplicarDescuento(tarifa, entry.valor, entry.unidad || 'porcentaje')
-                              return (
-                                <>
-                                  <br />
-                                  <span style={{ color: 'var(--green)', fontWeight: 700 }}>
-                                    → {fin.toFixed(2)}€
-                                  </span>
-                                  <span style={{ color: 'var(--text-3)' }}> (−{(tarifa - fin).toFixed(2)}€)</span>
-                                </>
-                              )
-                            })()}
-                          </span>
+                          {/* Una fila por periodicidad con tarifa > 0 */}
+                          {pers.length === 0 ? (
+                            <p style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic',
+                                        margin: '8px 0 0' }}>
+                              Esta cuota no tiene ninguna tarifa configurada.
+                            </p>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                                          marginTop: 8 }}>
+                              {pers.map(p => {
+                                const tarifa = Number(c['precio_' + p.key])
+                                const val = sel ? ((entry.valores || {})[p.key] ?? '') : ''
+                                const fin = (sel && Number(val) > 0)
+                                  ? aplicarDescuento(tarifa, val, unidad) : null
+                                return (
+                                  <div key={p.key}
+                                       style={{ display: 'grid',
+                                                gridTemplateColumns: '90px 90px 100px 1fr',
+                                                alignItems: 'center', gap: 8 }}>
+                                    <span style={{ fontSize: 12, fontWeight: 600,
+                                                   color: 'var(--text-1)' }}>{p.label}</span>
+                                    <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                                      tarifa {tarifa}€
+                                    </span>
+                                    <input type="number" step="0.01" min={0}
+                                           disabled={!sel}
+                                           value={val}
+                                           onChange={e => setValor(c.codigo, p.key, parseFloat(e.target.value) || 0)}
+                                           placeholder={unidad === 'importe' ? '10.00' : '20'}
+                                           style={{ ...inputStyle, padding: '6px 8px',
+                                                    textAlign: 'right',
+                                                    opacity: sel ? 1 : 0.4 }} />
+                                    <span style={{ fontSize: 11, textAlign: 'right' }}>
+                                      {fin != null ? (
+                                        <>
+                                          <span style={{ color: 'var(--green)', fontWeight: 700 }}>
+                                            → {fin.toFixed(2)}€
+                                          </span>
+                                          <span style={{ color: 'var(--text-3)' }}> (−{(tarifa - fin).toFixed(2)}€)</span>
+                                        </>
+                                      ) : (
+                                        <span style={{ color: 'var(--text-3)' }}>—</span>
+                                      )}
+                                    </span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
                         </div>
                       )
                     })}
@@ -1400,45 +1547,78 @@ function DescForm({ desc, identity, onClose, onSaved }) {
                   No hay otras cuotas configuradas.
                 </p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {candidatasSec.map(c => {
                     const sel = !!comboMap[c.codigo]
-                    const tarifa = c.precio_mensual ?? 0
                     const entry = comboMap[c.codigo]
+                    // Solo periodicidades con tarifa > 0 en esta cuota.
+                    const pers = PERIODICIDADES.filter(p => Number(c['precio_' + p.key]) > 0)
                     return (
                       <div key={c.id || c.codigo}
-                           style={{ display: 'grid',
-                                    gridTemplateColumns: '24px 1fr 110px 24px 110px',
-                                    alignItems: 'center', gap: 8,
-                                    padding: '8px 10px', borderRadius: 8,
+                           style={{ padding: '10px 12px', borderRadius: 8,
                                     background: sel ? 'var(--green-bg)' : 'var(--bg-2)',
                                     border: `1px solid ${sel ? 'var(--green)' : 'var(--line)'}` }}>
-                        <input type="checkbox" checked={sel}
-                               onChange={() => toggleCuotaSecundaria(c.codigo, tarifa)} />
-                        <div style={{ minWidth: 0 }}>
-                          <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)', margin: 0 }}>
-                            {c.codigo}
-                          </p>
-                          {c.descripcion && (
-                            <p style={{ fontSize: 11, color: 'var(--text-3)', margin: 0 }}>
-                              {c.descripcion}
+                        {/* Cabecera: checkbox + código/descr */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <input type="checkbox" checked={sel}
+                                 onChange={() => toggleCuotaSecundaria(c.codigo)} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)', margin: 0 }}>
+                              {c.codigo}
                             </p>
-                          )}
+                            {c.descripcion && (
+                              <p style={{ fontSize: 11, color: 'var(--text-3)', margin: 0 }}>
+                                {c.descripcion}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'right' }}>
-                          tarifa<br />
-                          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>
-                            {tarifa}€
-                          </span>
-                        </div>
-                        <span style={{ color: 'var(--text-3)', textAlign: 'center' }}>→</span>
-                        <input type="number" step="0.01" min={0}
-                               disabled={!sel}
-                               value={sel ? (entry.precio ?? '') : ''}
-                               onChange={e => setPrecioSecundaria(c.codigo, e.target.value)}
-                               placeholder={`${tarifa}`}
-                               style={{ ...inputStyle, padding: '6px 8px', textAlign: 'right',
-                                        opacity: sel ? 1 : 0.4 }} />
+                        {/* Una fila por periodicidad con tarifa > 0: precio final */}
+                        {pers.length === 0 ? (
+                          <p style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic',
+                                      margin: '8px 0 0' }}>
+                            Esta cuota no tiene ninguna tarifa configurada.
+                          </p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4,
+                                        marginTop: 8 }}>
+                            {pers.map(p => {
+                              const tarifa = Number(c['precio_' + p.key])
+                              const precio = sel ? ((entry.precios || {})[p.key] ?? '') : ''
+                              const fin = (precio !== '' && precio != null && !isNaN(Number(precio)))
+                                ? Number(precio) : null
+                              return (
+                                <div key={p.key}
+                                     style={{ display: 'grid',
+                                              gridTemplateColumns: '90px 90px 24px 110px 1fr',
+                                              alignItems: 'center', gap: 8 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 600,
+                                                 color: 'var(--text-1)' }}>{p.label}</span>
+                                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                                    tarifa {tarifa}€
+                                  </span>
+                                  <span style={{ color: 'var(--text-3)', textAlign: 'center' }}>→</span>
+                                  <input type="number" step="0.01" min={0}
+                                         disabled={!sel}
+                                         value={precio}
+                                         onChange={e => setPrecioSecundaria(c.codigo, p.key, e.target.value)}
+                                         placeholder={`${tarifa}`}
+                                         style={{ ...inputStyle, padding: '6px 8px', textAlign: 'right',
+                                                  opacity: sel ? 1 : 0.4 }} />
+                                  <span style={{ fontSize: 11, textAlign: 'right' }}>
+                                    {fin != null ? (
+                                      <span style={{ color: 'var(--green)', fontWeight: 700 }}>
+                                        {fin.toFixed(2)}€
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: 'var(--text-3)' }}>—</span>
+                                    )}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
                     )
                   })}

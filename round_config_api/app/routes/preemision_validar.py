@@ -495,14 +495,16 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
         # 1) Descuentos asignados al cliente (porcentaje/importe únicamente
         #    — varias_cuotas se aplica automático en el paso 2a desde may 2026)
         _tr = cache_idnoofit_trainer.get(idnoofit)   # scope por trainer (#28)
+        _per = s.get('periodicidad', 'mensual')      # descuento por periodicidad (#29)
         p_tras_desc, _info_d = calcular_precio_con_descuentos(
             id_manager, idnoofit, cuota.get('codigo'), p_normal,
-            cuotas_activas_codigos=cuotas_activas_codigos, id_trainer_cliente=_tr)
+            cuotas_activas_codigos=cuotas_activas_codigos, id_trainer_cliente=_tr,
+            periodicidad=_per)
         # 2a) Descuento AUTOMÁTICO "dos cuotas" (sin asignación previa)
         p_tras_varias, _info_v = aplicar_descuentos_varias_cuotas_auto(
             id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
             cuotas_activas_codigos=cuotas_activas_codigos,
-            descuentos_varias=descuentos_varias, id_trainer_cliente=_tr)
+            descuentos_varias=descuentos_varias, id_trainer_cliente=_tr, periodicidad=_per)
         # 2b) Descuento automático por familia (≥2 miembros con la cuota)
         miembros_fam = familia_por_cliente.get(idnoofit) or []
         cuotas_por_familiar = {
@@ -512,7 +514,7 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
         p_tras_fam, _info_f = aplicar_descuentos_familiares(
             id_manager, idnoofit, cuota.get('codigo'), p_tras_varias,
             cuotas_por_familiar, descuentos_familiares=descuentos_familiares,
-            id_trainer_cliente=_tr)
+            id_trainer_cliente=_tr, periodicidad=_per)
         # 3) Modificaciones por cuota — match por código
         p_final, _info_m, _ids = aplicar_modif_a_cuota(modifs_mes, cuota['id'],
             p_tras_fam, cuota_codigo=cuota.get('codigo'))
@@ -771,20 +773,22 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
                 if not cuota: continue
                 p_normal = float(cuota.get(f'precio_{s.get("periodicidad","mensual")}') or 0)
                 _tr = cache_idnoofit_trainer.get(idnoofit)   # scope por trainer (#28)
+                _per = s.get('periodicidad', 'mensual')      # descuento por periodicidad (#29)
                 # 1) Descuentos asignados (porcentaje/importe)
                 p_tras_desc, info_desc = calcular_precio_con_descuentos(
                     id_manager, idnoofit, cuota.get('codigo'), p_normal,
-                    cuotas_activas_codigos=cuotas_activas_cli, id_trainer_cliente=_tr)
+                    cuotas_activas_codigos=cuotas_activas_cli, id_trainer_cliente=_tr,
+                    periodicidad=_per)
                 # 2a) Descuento AUTOMÁTICO "dos cuotas" (sin asignación)
                 p_tras_varias, info_varias = aplicar_descuentos_varias_cuotas_auto(
                     id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
                     cuotas_activas_codigos=cuotas_activas_cli,
-                    descuentos_varias=descuentos_varias, id_trainer_cliente=_tr)
+                    descuentos_varias=descuentos_varias, id_trainer_cliente=_tr, periodicidad=_per)
                 # 2b) Descuento automático por familia
                 p_tras_fam, info_fam = aplicar_descuentos_familiares(
                     id_manager, idnoofit, cuota.get('codigo'), p_tras_varias,
                     cuotas_por_familiar, descuentos_familiares=descuentos_familiares,
-                    id_trainer_cliente=_tr)
+                    id_trainer_cliente=_tr, periodicidad=_per)
                 # 3) Modificaciones por cuota — match por código (los IDs
                 #    locales no coinciden con los de Odoo)
                 p_final, info_mod, _ids = aplicar_modif_a_cuota(
