@@ -1024,7 +1024,12 @@ function DescForm({ desc, identity, onClose, onSaved }) {
          style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: 'var(--bg-1)', borderRadius: 'var(--radius-lg)', width: '100%',
-                    maxWidth: isVarias ? 620 : 480, boxShadow: 'var(--shadow-lg)',
+                    // Los tipos que muestran la rejilla de actividades (varias /
+                    // familiares / familiar de trabajador) necesitan más ancho:
+                    // si no, la columna del nombre se aprieta y el código se
+                    // parte letra a letra (p.ej. "RT 4D" → "RT"/"4D").
+                    maxWidth: (isVarias || isFamiliares || isFamiliarTrab) ? 780 : 480,
+                    boxShadow: 'var(--shadow-lg)',
                     maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
         <header style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)',
                          display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
