@@ -43,6 +43,8 @@ TIPO_LABELS = {
         'Cuota no toca este mes (trimestral/anual fuera de ciclo)',
     'baja_programada_efectiva':
         'Baja programada en vigor (cliente dado de baja este mes)',
+    'inactivo_temporal':
+        'En pausa / baja temporal (no se cobra durante la pausa)',
     'fp_sin_sub':
         'Forma de pago activa pero sin suscripción Odoo',
     'cliente_inactivo_nf':
@@ -85,6 +87,93 @@ TIPO_LABELS = {
 def _label_tipo(t):
     """Devuelve la etiqueta amigable, cayendo al código si no está mapeado."""
     return TIPO_LABELS.get(t, t)
+
+
+# Periodicidades válidas para los dropdowns del Excel y para la validación
+# del endpoint de aplicar correcciones. Coincide con config.PERIODICIDADES.
+PERIODICIDADES_VALIDAS = ['mensual', 'bimensual', 'trimestral', 'semestral', 'anual']
+
+
+def _ultimo_recibo_pagado_por_cliente(id_manager):
+    """Devuelve {cliente_idnoofit: {'id', 'fecha_desde', 'fecha_hasta'}}
+    con el último recibo `pagado` de cada cliente del manager. Un solo
+    query (DISTINCT ON) para no degradar la generación del Excel."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (cliente_idnoofit)
+                       cliente_idnoofit, id, fecha_desde, fecha_hasta,
+                       importe_total, cuota_codigo, cuota_descripcion
+                FROM recibo
+                WHERE id_manager = %s AND estado = 'pagado'
+                ORDER BY cliente_idnoofit,
+                         COALESCE(fecha_desde, '1970-01-01'::date) DESC,
+                         id DESC
+            """, (str(id_manager),))
+            out = {}
+            # get_conn() usa row_factory=dict_row → cada fila es dict.
+            for row in cur.fetchall():
+                cid = row['cliente_idnoofit']
+                # Concepto: descripción si existe, si no el código de cuota.
+                concepto = (row.get('cuota_descripcion')
+                            or row.get('cuota_codigo') or '')
+                out[str(cid)] = {
+                    'id':            row['id'],
+                    'fecha_desde':   row['fecha_desde'],
+                    'fecha_hasta':   row['fecha_hasta'],
+                    'importe_total': row.get('importe_total'),
+                    'concepto':      concepto,
+                }
+            log.info(f'_ultimo_recibo_pagado_por_cliente: {len(out)} clientes')
+            return out
+    except Exception:
+        log.exception('_ultimo_recibo_pagado_por_cliente')
+        return {}
+
+
+def _categorias_nombres(id_manager):
+    """Lista de nombres de categorías activas del manager (para dropdown)."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT nombre FROM categoria
+                WHERE id_manager = %s AND activa = TRUE
+                ORDER BY nombre
+            """, (str(id_manager),))
+            out = [r['nombre'] for r in cur.fetchall()]
+            log.info(f'_categorias_nombres: {len(out)} categorías')
+            return out
+    except Exception:
+        log.exception('_categorias_nombres')
+        return []
+
+
+def _cuotas_codigos(id_manager, id_trainer=None):
+    """Códigos de cuota visibles para el manager / trainer (para dropdown).
+    Incluye plantillas del manager + cuotas específicas del trainer si
+    se especifica."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            if id_trainer:
+                cur.execute("""
+                    SELECT DISTINCT codigo FROM cuota
+                    WHERE id_manager = %s
+                      AND (scope = 'plantilla_manager'
+                           OR (scope = 'trainer' AND id_trainer = %s))
+                    ORDER BY codigo
+                """, (str(id_manager), str(id_trainer)))
+            else:
+                cur.execute("""
+                    SELECT DISTINCT codigo FROM cuota
+                    WHERE id_manager = %s
+                    ORDER BY codigo
+                """, (str(id_manager),))
+            out = [r['codigo'] for r in cur.fetchall()]
+            log.info(f'_cuotas_codigos: {len(out)} cuotas')
+            return out
+    except Exception:
+        log.exception('_cuotas_codigos')
+        return []
 
 
 def _odoo():
@@ -185,6 +274,22 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
         """, (str(id_manager), primer_dia_mes))
         bajas_pendientes_mes = {str(r['cliente_idnoofit']): r for r in cur.fetchall()}
 
+    # Inactividad TEMPORAL (pausa) cuya ventana SOLAPA el mes a emitir → no se
+    # emite cuota (regla "no cobrar ningún mes que la pausa toque"). Espejo del
+    # guard de preemision_v2.generar (auditoría #26): el validador NO lo tenía,
+    # así que un cliente en pausa aparecía falsamente como "a emitir" aunque la
+    # emisión real lo salta. Overlap: inicio <= último día Y fin >= primer día.
+    import calendar as _cal_v
+    ultimo_dia_mes_v = dt.date(target_y, target_m, _cal_v.monthrange(target_y, target_m)[1])
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT cliente_idnoofit, fecha_inicio, fecha_fin, motivo
+              FROM cliente_inactivo_temporal
+             WHERE id_manager=%s AND estado <> 'cancelada'
+               AND fecha_inicio <= %s AND fecha_fin >= %s
+        """, (str(id_manager), ultimo_dia_mes_v, primer_dia_mes))
+        inactivos_temporal_mes = {str(r['cliente_idnoofit']): r for r in cur.fetchall()}
+
     # Idempotencia: clientes que ya tienen un recibo del MISMO mes en BD
     # (de cualquier origen y estado no anulado). La emisión los salta — la
     # validación los marca como aviso para no aparecer falsamente como OK.
@@ -200,6 +305,10 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
     # Filtro `_toca_emitir`: mensual emite cada mes, trimestral cada 3, etc.
     # Mirror exacto de preemision_v2._toca_emitir para evitar diferir.
     def _toca_emitir_local(sub, mes_str):
+        # Jun 2026 — espejo de preemision_v2._toca_emitir: el gate real es la
+        # COBERTURA (fecha_hasta), no el ciclo n%step desde fecha_inicio (que
+        # era un artefacto del import masivo). Aquí solo "ha empezado"; los
+        # cubiertos los marca ya_cubierto_post_mes por su fecha_hasta.
         fi = sub.get('fecha_inicio')
         if not fi: return False
         if isinstance(fi, str):
@@ -207,11 +316,7 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
         fi_mes = fi.year * 12 + fi.month
         ty, tm = map(int, mes_str.split('-'))
         target_mes = ty * 12 + tm
-        if target_mes < fi_mes: return False
-        n = target_mes - fi_mes
-        per = sub.get('periodicidad', 'mensual')
-        step = {'mensual': 1, 'trimestral': 3, 'semestral': 6, 'anual': 12}.get(per, 1)
-        return n % step == 0
+        return target_mes >= fi_mes
 
     # Categorías de cliente (para detectar Trabajador/Invitado/Wellhub con sub)
     cat_by_idnoofit = {}
@@ -305,10 +410,14 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
         log.info(f'preemision_validar: detectados {len(duplicados_partners)} partners '
                  f'Odoo duplicados con mismo id_noofit (consolidados al canónico)')
 
-    # Clientes con un recibo PAGADO/emitido cuya `fecha_hasta` se extiende
-    # MÁS ALLÁ del último día del mes que vamos a emitir. Si está cubierto
-    # no se debe emitir otro (típico de trimestral/anual ya cobrado).
+    # Clientes con un recibo PAGADO/emitido cuya cobertura (`fecha_hasta`)
+    # LLEGA hasta este mes (fecha_hasta >= primer día del mes). Si está
+    # cubierto no se emite otro. Jun 2026: boundary `>=` (no `>` sobre el
+    # último día) para que la decisión sea por fin de cobertura, no por ciclo
+    # de fecha_inicio. Un recibo que cubre hasta 30/06 cubre todo junio (no
+    # re-emitir) pero NO julio (30/06 < 01/07 → en julio toca).
     target_y, target_m = map(int, mes.split('-'))
+    primer_dia_cobertura = dt.date(target_y, target_m, 1)
     if target_m == 12:
         ultimo_dia_mes = dt.date(target_y, 12, 31)
     else:
@@ -322,9 +431,10 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
              WHERE id_manager = %s
                AND estado IN ('pagado','emitido','facturado')
                AND fecha_hasta IS NOT NULL
-               AND fecha_hasta > %s
+               AND fecha_hasta >= %s
+               AND importe_total > 0
              GROUP BY cliente_idnoofit
-        """, (str(id_manager), ultimo_dia_mes))
+        """, (str(id_manager), primer_dia_cobertura))
         for r in cur.fetchall():
             ya_cubiertos_post_mes[r['cliente_idnoofit']] = r['hasta']
 
@@ -482,6 +592,19 @@ def _validar_emision_inner(id_manager, mes, id_trainer=None):
                             + (f'. Motivo: {baja.get("motivo")}' if baja.get("motivo") else '')),
                 'propuesta': ('No se le emite recibo. Si la baja es errónea, '
                               'cancélala desde la ficha del cliente.'),
+            })
+
+        # inactivo_temporal: pausa cuya ventana toca el mes → no se cobra (espejo
+        # del guard de preemision_v2; auditoría #26).
+        pausa = inactivos_temporal_mes.get(idnoofit)
+        if pausa:
+            problemas.append({
+                'tipo': 'inactivo_temporal',
+                'detalle': (f'En pausa temporal '
+                            f'({pausa["fecha_inicio"].isoformat()} → {pausa["fecha_fin"].isoformat()}'
+                            + (f', {pausa.get("motivo")}' if pausa.get("motivo") else '') + '). '
+                            'No se emite recibo de los meses que toca la pausa.'),
+                'propuesta': 'Sin acción — no se cobra durante la baja temporal.',
             })
 
         # cliente_inactivo_nf: enabled=False en NoofitPro (archivado).
@@ -1469,14 +1592,50 @@ def validar_excel(mes):
             heads = [('Motivo', 50), ('Código técnico', 22),
                      ('Cliente', 30), ('idnoofit', 11), ('Email', 26),
                      ('Detalle', 50), ('Propuesta de solución', 60)]
-            fill_h = PatternFill('solid', fgColor='F87171')
-            for col, (h, w) in enumerate(heads, 1):
-                c = ws.cell(1, col, h); c.fill = fill_h; c.font = font_h
-                c.alignment = Alignment(horizontal='center')
+            heads_inc_correc = [
+                ('Último recibo pagado',    20),
+                ('Importe último pagado',   16),
+                ('Concepto último pagado',  30),
+                ('Fecha inicio pago',       14),
+                ('Fecha fin pago',          14),
+                ('Nueva categoría',         18),
+                ('Nueva cuota',             18),
+                ('Nueva periodicidad',      18),
+            ]
+            n_inc = len(heads)
+            all_heads_inc = heads + heads_inc_correc
+            fill_h          = PatternFill('solid', fgColor='F87171')
+            fill_hist_inc   = PatternFill('solid', fgColor='0EA5E9')
+            fill_corr_inc   = PatternFill('solid', fgColor='EC4899')
+            for col, (h, w) in enumerate(all_heads_inc, 1):
+                c = ws.cell(1, col, h); c.font = font_h
+                c.alignment = Alignment(horizontal='center', wrap_text=True)
                 c.border = border
                 ws.column_dimensions[get_column_letter(col)].width = w
-            ws.row_dimensions[1].height = 22
+                if col <= n_inc:
+                    c.fill = fill_h
+                elif col <= n_inc + 5:
+                    c.fill = fill_hist_inc
+                else:
+                    c.fill = fill_corr_inc
+            ws.row_dimensions[1].height = 26
             ws.freeze_panes = 'A2'
+
+            # Necesitamos los mismos catálogos que en OK para el histórico
+            # y los dropdowns. Si la hoja OK no se generó, los cargamos aquí.
+            ult_map_inc = _ultimo_recibo_pagado_por_cliente(g.id_manager)
+            cats_inc    = _categorias_nombres(g.id_manager)
+            cuotas_inc  = _cuotas_codigos(g.id_manager, _tr)
+
+            col_h_id      = n_inc + 1
+            col_h_importe = n_inc + 2
+            col_h_concep  = n_inc + 3
+            col_h_desde   = n_inc + 4
+            col_h_hasta   = n_inc + 5
+            col_c_cat     = n_inc + 6
+            col_c_cuota   = n_inc + 7
+            col_c_per     = n_inc + 8
+
             for i, inc in enumerate(incoherencias, 2):
                 cli = inc['cliente']
                 vals = [_label_tipo(inc['tipo']), inc['tipo'],
@@ -1484,6 +1643,57 @@ def validar_excel(mes):
                         inc['detalle'], inc['propuesta']]
                 for j, v in enumerate(vals, 1):
                     ws.cell(i, j, v).border = border
+                # Histórico de pago (lectura)
+                ult = ult_map_inc.get(str(cli.get('idnoofit') or ''))
+                if ult:
+                    ws.cell(i, col_h_id, ult.get('id') or '').border = border
+                    imp = ult.get('importe_total')
+                    if imp is not None:
+                        cell = ws.cell(i, col_h_importe, float(imp))
+                        cell.number_format = '#,##0.00 €'
+                        cell.border = border
+                    else:
+                        ws.cell(i, col_h_importe, '').border = border
+                    ws.cell(i, col_h_concep, ult.get('concepto') or '').border = border
+                    fd = ult.get('fecha_desde'); fh = ult.get('fecha_hasta')
+                    ws.cell(i, col_h_desde, fd.isoformat() if fd else '').border = border
+                    ws.cell(i, col_h_hasta, fh.isoformat() if fh else '').border = border
+                else:
+                    for col_h in (col_h_id, col_h_importe, col_h_concep,
+                                  col_h_desde, col_h_hasta):
+                        ws.cell(i, col_h, '').border = border
+                # Correcciones (editable)
+                for col_corr in (col_c_cat, col_c_cuota, col_c_per):
+                    cell = ws.cell(i, col_corr, '')
+                    cell.border = border
+                    cell.fill = PatternFill('solid', fgColor='FCE7F3')
+
+            # DataValidation para las 3 columnas editables de INCOHERENCIAS
+            from openpyxl.worksheet.datavalidation import DataValidation
+            def _dv_for_inc(values):
+                if not values:
+                    return None
+                joined = ','.join(v.replace(',', ' ') for v in values)
+                if len(joined) > 250:
+                    return None
+                dv = DataValidation(type='list', formula1=f'"{joined}"',
+                                    allow_blank=True, showDropDown=False)
+                dv.error = 'Valor no permitido'
+                dv.errorTitle = 'Selecciona uno de la lista'
+                return dv
+            n_inc_rows = len(incoherencias)
+            if n_inc_rows > 0:
+                for dv_vals, dv_col in (
+                    (cats_inc,   col_c_cat),
+                    (cuotas_inc, col_c_cuota),
+                    (PERIODICIDADES_VALIDAS, col_c_per),
+                ):
+                    dv = _dv_for_inc(dv_vals)
+                    if dv is not None:
+                        ws.add_data_validation(dv)
+                        dv.add(f'{get_column_letter(dv_col)}2:'
+                               f'{get_column_letter(dv_col)}{n_inc_rows + 1}')
+
             ws.auto_filter.ref = ws.dimensions
 
         # ─── OK (recibos a emitir, con columnas dinámicas) ──────────────
@@ -1520,6 +1730,19 @@ def validar_excel(mes):
             ('Nota modificación', 40),
             ('IMPORTE TOTAL €', 16),
         ]
+        # Bloque "Histórico de pago" + "Correcciones a aplicar".
+        # Las 3 últimas columnas las EDITA el usuario (vacías por defecto)
+        # con dropdowns; el endpoint /aplicar-correcciones-excel las lee.
+        heads_correccion = [
+            ('Último recibo pagado',    20),
+            ('Importe último pagado',   16),
+            ('Concepto último pagado',  30),
+            ('Fecha inicio pago',       14),
+            ('Fecha fin pago',          14),
+            ('Nueva categoría',         18),
+            ('Nueva cuota',             18),
+            ('Nueva periodicidad',      18),
+        ]
         # Construir lista completa de columnas
         all_heads = list(heads_fijas)
         for cod in codigos_cuota_orden:
@@ -1527,11 +1750,22 @@ def validar_excel(mes):
         for cod in codigos_desc_orden:
             all_heads.append((f'Desc: {cod}', 14))
         all_heads.extend(heads_modif)
+        all_heads.extend(heads_correccion)
 
-        fill_fijas = PatternFill('solid', fgColor='2DD4A8')
-        fill_cuotas = PatternFill('solid', fgColor='059669')
-        fill_desc   = PatternFill('solid', fgColor='F59E0B')
-        fill_modif  = PatternFill('solid', fgColor='7C3AED')
+        fill_fijas      = PatternFill('solid', fgColor='2DD4A8')
+        fill_cuotas     = PatternFill('solid', fgColor='059669')
+        fill_desc       = PatternFill('solid', fgColor='F59E0B')
+        fill_modif      = PatternFill('solid', fgColor='7C3AED')
+        fill_historico  = PatternFill('solid', fgColor='0EA5E9')   # azul: lectura
+        fill_correccion = PatternFill('solid', fgColor='EC4899')   # rosa: editable
+
+        # Límites por bloque (1-based, inclusivo en el extremo derecho)
+        lim_fijas      = len(heads_fijas)
+        lim_cuotas     = lim_fijas + len(codigos_cuota_orden)
+        lim_desc       = lim_cuotas + len(codigos_desc_orden)
+        lim_modif      = lim_desc + len(heads_modif)            # +3 modif
+        lim_historico  = lim_modif + 5                          # +5 lectura
+        lim_correccion = lim_historico + 3                      # +3 editable
 
         for col, (h, w) in enumerate(all_heads, 1):
             c = ws.cell(1, col, h); c.font = font_h
@@ -1539,20 +1773,41 @@ def validar_excel(mes):
             c.border = border
             ws.column_dimensions[get_column_letter(col)].width = w
             # Color por bloque
-            if col <= len(heads_fijas):
+            if col <= lim_fijas:
                 c.fill = fill_fijas
-            elif col <= len(heads_fijas) + len(codigos_cuota_orden):
+            elif col <= lim_cuotas:
                 c.fill = fill_cuotas
-            elif col <= len(heads_fijas) + len(codigos_cuota_orden) + len(codigos_desc_orden):
+            elif col <= lim_desc:
                 c.fill = fill_desc
-            else:
+            elif col <= lim_modif:
                 c.fill = fill_modif
+            elif col <= lim_historico:
+                c.fill = fill_historico
+            else:
+                c.fill = fill_correccion
         ws.row_dimensions[1].height = 30
         ws.freeze_panes = ws.cell(2, len(heads_fijas) + 1).coordinate
 
-        col_modif_eur  = len(heads_fijas) + len(codigos_cuota_orden) + len(codigos_desc_orden) + 1
+        col_modif_eur  = lim_desc + 1
         col_modif_nota = col_modif_eur + 1
-        col_total     = col_modif_eur + 2
+        col_total      = col_modif_eur + 2
+        # Columnas histórico (lectura)
+        col_hist_id      = col_total + 1
+        col_hist_importe = col_total + 2
+        col_hist_concep  = col_total + 3
+        col_hist_desde   = col_total + 4
+        col_hist_hasta   = col_total + 5
+        # Columnas corrección (editables)
+        col_corr_cat   = col_total + 6
+        col_corr_cuota = col_total + 7
+        col_corr_per   = col_total + 8
+        col_ultima     = col_corr_per
+
+        # Datos auxiliares para histórico de pago y dropdowns de corrección.
+        # Un solo query por tabla — no degradamos la generación del Excel.
+        ultimo_recibo_map = _ultimo_recibo_pagado_por_cliente(g.id_manager)
+        categorias_lista  = _categorias_nombres(g.id_manager)
+        cuotas_lista      = _cuotas_codigos(g.id_manager, _tr)
 
         # Fill amber para destacar recibos manuales (borrador_remesa) que no
         # vienen del flujo auto-generado de Odoo.
@@ -1648,6 +1903,34 @@ def validar_excel(mes):
             tot.font = Font(bold=True)
             tot.border = border
 
+            # Bloque 5: histórico de pago (lectura) — último recibo pagado.
+            ult = ultimo_recibo_map.get(str(c.get('idnoofit') or ''))
+            if ult:
+                ws.cell(i, col_hist_id, ult.get('id') or '').border = border
+                imp = ult.get('importe_total')
+                if imp is not None:
+                    cell = ws.cell(i, col_hist_importe, float(imp))
+                    cell.number_format = '#,##0.00 €'
+                    cell.border = border
+                else:
+                    ws.cell(i, col_hist_importe, '').border = border
+                ws.cell(i, col_hist_concep, ult.get('concepto') or '').border = border
+                fd = ult.get('fecha_desde'); fh = ult.get('fecha_hasta')
+                ws.cell(i, col_hist_desde, fd.isoformat() if fd else '').border = border
+                ws.cell(i, col_hist_hasta, fh.isoformat() if fh else '').border = border
+            else:
+                for col_h in (col_hist_id, col_hist_importe, col_hist_concep,
+                              col_hist_desde, col_hist_hasta):
+                    ws.cell(i, col_h, '').border = border
+
+            # Bloque 6: correcciones a aplicar (editable, vacío por defecto).
+            # El usuario rellena en Excel y luego sube vía endpoint
+            # /aplicar-correcciones-excel. DataValidation se añade tras el loop.
+            for col_corr in (col_corr_cat, col_corr_cuota, col_corr_per):
+                cell = ws.cell(i, col_corr, '')
+                cell.border = border
+                cell.fill = PatternFill('solid', fgColor='FCE7F3')   # rosa claro
+
             # Si es manual, pintar toda la fila en amber para que destaque
             # visualmente entre los auto-generados.
             if es_manual:
@@ -1660,6 +1943,43 @@ def validar_excel(mes):
                     extra = f'[MANUAL] {c["_notas"]}'
                     ws.cell(i, col_modif_nota,
                             f'{existing} · {extra}' if existing else extra)
+
+        # Dropdowns (DataValidation) en las 3 columnas editables.
+        # openpyxl exige que la lista quepa en 255 caracteres (comma-string)
+        # o referenciarla desde un rango con celdas. Usamos string si cabe;
+        # si no, fallback a sin validación (el endpoint sigue validando).
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        def _dv_for(values):
+            if not values:
+                return None
+            joined = ','.join(v.replace(',', ' ') for v in values)
+            if len(joined) > 250:
+                return None  # supera el límite Excel/openpyxl
+            dv = DataValidation(type='list', formula1=f'"{joined}"',
+                                allow_blank=True, showDropDown=False)
+            dv.error = 'Valor no permitido'
+            dv.errorTitle = 'Selecciona uno de la lista'
+            return dv
+
+        n_rows_data = len(coherentes)
+        if n_rows_data > 0:
+            rng_cat   = f'{get_column_letter(col_corr_cat)}2:{get_column_letter(col_corr_cat)}{n_rows_data + 1}'
+            rng_cuo   = f'{get_column_letter(col_corr_cuota)}2:{get_column_letter(col_corr_cuota)}{n_rows_data + 1}'
+            rng_per   = f'{get_column_letter(col_corr_per)}2:{get_column_letter(col_corr_per)}{n_rows_data + 1}'
+
+            dv_cat = _dv_for(categorias_lista)
+            if dv_cat is not None:
+                ws.add_data_validation(dv_cat)
+                dv_cat.add(rng_cat)
+            dv_cuo = _dv_for(cuotas_lista)
+            if dv_cuo is not None:
+                ws.add_data_validation(dv_cuo)
+                dv_cuo.add(rng_cuo)
+            dv_per = _dv_for(PERIODICIDADES_VALIDAS)
+            if dv_per is not None:
+                ws.add_data_validation(dv_per)
+                dv_per.add(rng_per)
 
         # Fila TOTAL
         total_row = len(coherentes) + 2
@@ -1691,7 +2011,7 @@ def validar_excel(mes):
                     f'=SUM({col_letter}2:{col_letter}{total_row - 1})')
         t.number_format = '#,##0.00 €'; t.font = Font(bold=True); t.fill = fill_total
 
-        ws.auto_filter.ref = f'A1:{get_column_letter(col_total)}{total_row - 1}'
+        ws.auto_filter.ref = f'A1:{get_column_letter(col_ultima)}{total_row - 1}'
 
         buf = BytesIO()
         wb.save(buf); buf.seek(0)

@@ -48,6 +48,7 @@
 | 23 | Facturación solo de cuotas PAGADAS (no facturar impagados/devueltos) | 2026-06-25 | ✅ |
 | 24 | Emisión por COBERTURA (fecha_hasta), no por ciclo desde fecha_inicio | 2026-06-25 | ✅ |
 | 25 | Modificar recibo NO cobrado = solo cuota BD (editable aunque tenga factura Odoo legacy) | 2026-06-28 | ✅ |
+| 26 | Validador de preemisión no respetaba baja temporal (mostraba en pausa como "a emitir") | 2026-06-28 | ✅ |
 
 ---
 
@@ -475,6 +476,27 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 26. Validador de preemisión no respetaba la baja temporal — 2026-06-28 ✅
+**Revisado:** `routes/preemision_validar.py` vs `routes/preemision_v2.py` (guards de pausa).
+
+**Bug (display, no de cobro real):** un cliente con **inactividad temporal** (pausa) cuya ventana
+toca el mes aparecía como **coherente "a emitir"** en la validación/Excel. La **emisión real**
+(`preemision_v2.generar`) SÍ tiene el guard `inactivos_temporal` y los salta — pero el
+**validador** (`preemision_validar`) NO lo tenía, así que la previsualización engañaba (parecía
+que se les iba a cobrar). Ejemplo: Ana Belén Molina Aguilar (1821247, Añoreta), pausa
+2026-07-01→2026-08-31, salía a emitir en julio. NO se le emitía recibo de verdad (no existe), era
+solo el preview.
+
+**REGLA:** **no se cobra ningún mes que toque una baja temporal** (`cliente_inactivo_temporal`
+con `estado<>'cancelada'` y ventana que solapa el mes). El validador y la emisión deben aplicar
+el MISMO guard (espejo) — cualquier filtro de la emisión real debe replicarse en el validador
+para que el Excel no mienta.
+
+**Fix (2026-06-28 ✅):** se añade al validador el guard de `inactivo_temporal` (mismo overlap
+`fecha_inicio <= último día Y fecha_fin >= primer día`) → nueva incoherencia informativa
+`inactivo_temporal` que saca al cliente de "a emitir". Verificado: julio Añoreta → 33 clientes en
+pausa marcados (antes salían a cobrar); Ana Belén ahora `inactivo_temporal`.
 
 ## 25. Modificar recibo NO cobrado = solo cuota BD (legacy Odoo no bloquea) — 2026-06-28 ✅
 **Revisado:** `routes/recibos.py` (`update_recibo`), `components/recibos/ModificarReciboBtn.jsx`.
