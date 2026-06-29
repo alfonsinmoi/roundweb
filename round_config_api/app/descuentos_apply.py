@@ -378,25 +378,34 @@ def aplicar_descuentos_familiares(id_manager, idnoofit, cuota_codigo,
     if miembros_con_cuota < 2:
         return float(precio_actual or 0), []
 
-    info = []
-    precio = float(precio_actual or 0)
+    # Blindaje (auditoría #27): se aplica SOLO UN descuento familiar por
+    # actividad — el MEJOR para el cliente (menor precio resultante). Antes se
+    # acumulaban TODOS los descuentos tipo='familiares' que tocaran la misma
+    # cuota; si el catálogo tenía un duplicado (mismo concepto creado dos veces,
+    # p.ej. uno manager-wide + otro per-trainer), el descuento se aplicaba 2+
+    # veces (RAQUEL/NACHO: −15€ en vez de −7,5€). Un descuento familiar por
+    # actividad es lo correcto.
+    base = float(precio_actual or 0)
+    mejor = None  # (precio_resultante, info_dict)
     for a in aplicables:
-        original = precio
         unidad = a['unidad']
         v = a['valor']
         if v <= 0: continue
         if unidad == 'porcentaje':
-            precio = round(precio * (1 - v / 100.0), 2)
+            p = round(base * (1 - v / 100.0), 2)
         elif unidad == 'importe':
-            precio = max(0.0, round(precio - v, 2))
+            p = max(0.0, round(base - v, 2))
         else:
             continue
-        info.append({
-            'descuento_codigo': a['desc']['codigo'],
-            'tipo': 'familiares',
-            'unidad': unidad, 'valor': v,
-            'miembros_cuota': miembros_con_cuota,
-            'precio_antes': original,
-            'precio_despues': precio,
-        })
-    return precio, info
+        if mejor is None or p < mejor[0]:
+            mejor = (p, {
+                'descuento_codigo': a['desc']['codigo'],
+                'tipo': 'familiares',
+                'unidad': unidad, 'valor': v,
+                'miembros_cuota': miembros_con_cuota,
+                'precio_antes': base,
+                'precio_despues': p,
+            })
+    if mejor is None:
+        return base, []
+    return mejor[0], [mejor[1]]

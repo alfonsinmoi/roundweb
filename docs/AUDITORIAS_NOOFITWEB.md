@@ -49,6 +49,7 @@
 | 24 | Emisión por COBERTURA (fecha_hasta), no por ciclo desde fecha_inicio | 2026-06-25 | ✅ |
 | 25 | Modificar recibo NO cobrado = solo cuota BD (editable aunque tenga factura Odoo legacy) | 2026-06-28 | ✅ |
 | 26 | Validador de preemisión no respetaba baja temporal (mostraba en pausa como "a emitir") | 2026-06-28 | ✅ |
+| 27 | Descuento familiar duplicado se aplicaba 2× — un solo descuento familiar por actividad | 2026-06-28 | 🟠 |
 
 ---
 
@@ -476,6 +477,30 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 27. Descuento familiar duplicado se aplicaba dos veces — 2026-06-28 🟠
+**Revisado:** `descuentos_apply.aplicar_descuentos_familiares`, catálogo `descuento` tipo='familiares'.
+
+**Bug (sobre-descuento):** `aplicar_descuentos_familiares` recorría TODOS los descuentos
+tipo='familiares' del manager que tocaran una cuota y aplicaba **cada uno acumulativamente**. El
+manager 17675 tiene el descuento familiar "1 o mas familiares" **duplicado** en el catálogo: #9
+(manager-wide, `RT 2 dias`=7,5€) y #12 (trainer Añoreta, `I MYGYM`=6€ + `RT 2 dias`=7,5€). Para
+una familia de Añoreta con "RT 2 dias", se aplicaba el 7,5€ **dos veces** (−15€ en vez de −7,5€).
+Ej: RAQUEL QUINTANA 157,5→150→**142,5**; NACHO PORTA 60→52,5→**45**. Afectaba a la emisión real.
+(Nota: NO era que a RAQUEL no se le hiciera descuento —sí se le hace—; es trimestral y solo se
+emite en su ciclo, por eso no aparecía cada mes como NACHO mensual.)
+
+**Fix CÓDIGO (2026-06-28 ✅):** `aplicar_descuentos_familiares` aplica **SOLO UN** descuento
+familiar por actividad — el **mejor para el cliente** (menor precio resultante). Verificado:
+RAQUEL 157,5→150 (1 descuento), NACHO 60→52,5 (1 descuento).
+
+**Pendiente DATOS (🟠, decisión del propietario):** consolidar el catálogo — hay dos
+"1 o mas familiares" (#9 manager-wide / #12 Añoreta). El #12 es el completo (RT 2 dias + I MYGYM);
+el #9 es duplicado parcial. Falta decidir cuál desactivar (afecta a 50+67 asignaciones). El
+blindaje de código ya evita el doble cobro mientras tanto.
+
+**REGLA:** un descuento familiar por actividad; nunca acumular dos descuentos del mismo tipo
+sobre la misma cuota. Evitar duplicar conceptos en el catálogo (mismo "código" dos veces).
 
 ## 26. Validador de preemisión no respetaba la baja temporal — 2026-06-28 ✅
 **Revisado:** `routes/preemision_validar.py` vs `routes/preemision_v2.py` (guards de pausa).
