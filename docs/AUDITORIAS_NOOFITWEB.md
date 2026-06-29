@@ -47,6 +47,7 @@
 | 22 | Preemisión cruza trainers — scope por `g.id_trainer` en emisión mensual (preemisión/emitir/SEPA/validar) | 2026-06-20 | ✅ |
 | 23 | Facturación solo de cuotas PAGADAS (no facturar impagados/devueltos) | 2026-06-25 | ✅ |
 | 24 | Emisión por COBERTURA (fecha_hasta), no por ciclo desde fecha_inicio | 2026-06-25 | ✅ |
+| 25 | Modificar recibo NO cobrado = solo cuota BD (editable aunque tenga factura Odoo legacy) | 2026-06-28 | ✅ |
 
 ---
 
@@ -474,6 +475,30 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 25. Modificar recibo NO cobrado = solo cuota BD (legacy Odoo no bloquea) — 2026-06-28 ✅
+**Revisado:** `routes/recibos.py` (`update_recibo`), `components/recibos/ModificarReciboBtn.jsx`.
+
+**REGLA (propietario):** un recibo **NO cobrado** (`borrador_remesa`/`pendiente`/`emitido`/
+`impagado`/`devuelto`) es **editable siempre**; la modificación afecta **solo a la tabla
+`recibo`** (la cuota) — `update_recibo` NUNCA toca Odoo. Coherente con #23/#24: un recibo no
+pagado NO debe tener factura en Odoo hasta el cobro, así que se edita **aunque arrastre una
+factura Odoo *legacy*** del import GestPlus (el cambio no la toca; al cobrarse se facturará con
+el importe correcto). Solo `pagado`/`facturado` quedan inmovilizados (importes ya en contabilidad).
+
+**Contexto (corrección de rumbo):** la auditoría #19 bloqueaba con 409 `recibo_con_factura_odoo`
+cualquier edición de importe si había `account_move_id`. Tenía sentido cuando se facturaban
+impagados; con "solo se factura lo pagado" (#23) los impagados nuevos ya no tienen factura y los
+únicos con factura son legacy del import → el bloqueo impedía corregir la cuota. Se elimina el 409
+para estados no cobrados; la edición es puramente BD (se descarta el intento #4 de propagar a la
+factura posteada vía unpost/repost).
+
+**Verificado:** PATCH de importe sobre recibo impagado con factura legacy → `ok` (antes 409); un
+recibo `pagado` sigue bloqueado.
+
+**Pendiente (legacy):** los recibos no cobrados con factura Odoo legacy del import siguen con esa
+factura posteada (al cobrarse, `marcar_pagado` reconcilia contra ella). Limpieza de esas facturas
+"impagadas posteadas" pendiente de decisión (rectificativa) — ya flagueado.
 
 ## 24. Emisión por COBERTURA (fecha_hasta), no por ciclo de fecha_inicio — 2026-06-25 ✅
 **Revisado:** `preemision_v2._toca_emitir` + `generar` (`ya_cubiertos_post_mes`),

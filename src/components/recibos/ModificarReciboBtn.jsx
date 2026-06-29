@@ -39,17 +39,16 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   const set = (k, v) => setF(p => ({ ...p, [k]: v }))
 
   const isBd = r._source === 'bd'
-  // ¿El recibo ya tiene factura Odoo posteada? Si la tiene, los importes NO
-  // son editables aquí: la factura fiscal es inmutable y editarla en BD la
-  // desincronizaría (auditoría #19). Para cambiar importes → anular + recrear.
-  // NOTA (jun 2026): con la regla "solo se factura lo PAGADO", los impagados
-  // NUEVOS ya no tienen factura → editableFull=true y se editan como cuota
-  // simple. Solo los legacy ya facturados caen aquí bloqueados.
   const tieneMoveOdoo = !!(r.account_move_id || r.account_move_ref)
-  // Estados con importes editables (espejo del backend). 'emitido' incluido
-  // (recibo no cobrado): sin él, modificar un emitido no dejaba tocar ni notas.
+  // Auditoría #25 — un recibo NO cobrado se edita siempre (solo la cuota BD).
+  // Regla: un recibo no pagado no debe tener factura en Odoo hasta que se
+  // cobre; la modificación afecta solo a la tabla de cuotas (no toca Odoo),
+  // así que es editable AUNQUE tenga una factura Odoo legacy enlazada (import
+  // GestPlus). Solo `pagado`/`facturado` quedan inmovilizados (espejo backend).
   const editableFull = ['borrador_remesa', 'pendiente', 'emitido', 'impagado', 'devuelto']
-    .includes(r.estado_bd || r.estado) && !tieneMoveOdoo
+    .includes(r.estado_bd || r.estado)
+  // Aviso informativo (no bloquea) si el no-cobrado arrastra factura Odoo legacy.
+  const avisoLegacyOdoo = editableFull && tieneMoveOdoo
 
   if (!canModificar) return null
   if (!isBd) return null
@@ -123,10 +122,14 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </strong>
           {!editableFull && (
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-              {tieneMoveOdoo
-                ? '⚠ Solo descripciones/notas editables — este recibo ya tiene factura en Odoo (#'
-                  + (r.account_move_ref || r.account_move_id) + '). Para cambiar importes: anula y recrea.'
-                : '⚠ Solo descripciones/notas editables — el recibo está cobrado/facturado y los importes ya están en contabilidad.'}
+              ⚠ Solo descripciones/notas editables — el recibo está cobrado/facturado y los
+              importes ya están en contabilidad.
+            </div>
+          )}
+          {avisoLegacyOdoo && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+              ℹ Recibo aún no cobrado. La modificación afecta solo a la cuota (no toca Odoo);
+              la factura se generará con el importe correcto cuando se cobre.
             </div>
           )}
         </div>
