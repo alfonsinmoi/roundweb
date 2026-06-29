@@ -50,6 +50,7 @@
 | 25 | Modificar recibo NO cobrado = solo cuota BD (editable aunque tenga factura Odoo legacy) | 2026-06-28 | ✅ |
 | 26 | Validador de preemisión no respetaba baja temporal (mostraba en pausa como "a emitir") | 2026-06-28 | ✅ |
 | 27 | Descuento familiar duplicado se aplicaba 2× — un solo descuento familiar por actividad | 2026-06-28 | 🟠 |
+| 28 | Scope de descuentos por trainer en emisión (AUTO solo propio trainer; MANUAL no cruza) | 2026-06-28 | ✅ |
 
 ---
 
@@ -477,6 +478,36 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - **Arquitectura DB-per-manager** (decisión, ver arriba).
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
+
+## 28. Scope de descuentos por trainer en la emisión — 2026-06-28 ✅
+**Revisado:** `descuentos_apply.py` (get_descuentos_*/aplicar_*), `preemision_v2.generar`,
+`preemision_validar` (2 puntos de cálculo de precio).
+
+**Bug (fuga cross-trainer):** ninguna función de aplicación de descuentos filtraba por trainer
+(`get_descuentos_familiares_activos`/`varias_cuotas_activos`/`get_descuentos_activos` solo
+`WHERE id_manager`). En la emisión de un trainer se aplicaban descuentos manager-wide + del propio
+trainer + **de OTROS trainers**. Datos 17675: cada tipo está duplicado (manager-wide + Añoreta);
+un cliente de Málaga podía recibir un descuento de Añoreta.
+
+**REGLA (decisión propietario):**
+- **AUTO** (familiares, varias_cuotas): aplican **solo los del PROPIO trainer del cliente**
+  (`id_trainer == trainer del cliente`); NI manager-wide NI de otro trainer.
+- **MANUAL** (asignados a mano, `descuento_asignacion`): aplican los manager-wide y los del propio
+  trainer (asignación explícita); **NUNCA los de otro trainer**. (No se rompen las 170 asignaciones
+  manager-wide asignadas a mano existentes.)
+
+**Fix (2026-06-28 ✅):** `get_descuentos_activos`/`calcular_precio_con_descuentos` aceptan
+`id_trainer_cliente` y filtran MANUAL `(id_trainer IS NULL OR = trainer)`; `aplicar_descuentos_
+familiares`/`varias_cuotas_auto` filtran AUTO con `_solo_trainer_propio` (estricto = trainer).
+Las funciones `get_*_activos` ahora devuelven `id_trainer`. Callers (preemisión real + validador,
+2 puntos) pasan `cache_idnoofit_trainer.get(idnoofit)`. Default None = sin filtro (compat).
+
+**Verificado:** familiar de Añoreta → cliente Añoreta 157,5→150; cliente Málaga 157,5→157,5 (no
+aplica). validar julio sin crash.
+
+**Relación con #27:** el blindaje #27 (un solo familiar por actividad) sigue como red de seguridad;
+con el scope por trainer, para Añoreta solo entra su #12 (el manager-wide #9 queda excluido).
+Pendiente datos: consolidar el catálogo duplicado (#9 vs #12) — decisión del propietario.
 
 ## 27. Descuento familiar duplicado se aplicaba dos veces — 2026-06-28 🟠
 **Revisado:** `descuentos_apply.aplicar_descuentos_familiares`, catálogo `descuento` tipo='familiares'.

@@ -23,19 +23,29 @@ from .db import get_conn
 log = logging.getLogger(__name__)
 
 
-def get_descuentos_activos(id_manager, idnoofit):
-    """Devuelve descuentos activos asignados al cliente."""
+def get_descuentos_activos(id_manager, idnoofit, id_trainer_cliente=None):
+    """Devuelve descuentos activos asignados al cliente.
+
+    Scope por trainer (auditoría #28): un descuento MANUAL asignado a un cliente
+    aplica si es manager-wide (id_trainer NULL) o del propio trainer del cliente,
+    NUNCA si es de OTRO trainer (asignación errónea cross-trainer). Si
+    `id_trainer_cliente` es None no se filtra (compat)."""
+    sql = """
+        SELECT a.id AS asig_id, a.descuento_id, a.estado AS asig_estado,
+               d.codigo, d.tipo, d.valor, d.active, d.unidad, d.id_trainer,
+               d.cuota_requerida_codigo, d.cuota_aplicada_codigo,
+               d.precio_final, d.combo_secundarias, d.actividades_idnoofit
+          FROM descuento_asignacion a
+          JOIN descuento d ON d.id = a.descuento_id
+         WHERE a.id_manager=%s AND a.cliente_idnoofit=%s
+           AND a.estado='activa' AND d.active=TRUE
+    """
+    params = [str(id_manager), str(idnoofit)]
+    if id_trainer_cliente is not None:
+        sql += " AND (d.id_trainer IS NULL OR d.id_trainer::text = %s)"
+        params.append(str(id_trainer_cliente))
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            SELECT a.id AS asig_id, a.descuento_id, a.estado AS asig_estado,
-                   d.codigo, d.tipo, d.valor, d.active, d.unidad,
-                   d.cuota_requerida_codigo, d.cuota_aplicada_codigo,
-                   d.precio_final, d.combo_secundarias, d.actividades_idnoofit
-              FROM descuento_asignacion a
-              JOIN descuento d ON d.id = a.descuento_id
-             WHERE a.id_manager=%s AND a.cliente_idnoofit=%s
-               AND a.estado='activa' AND d.active=TRUE
-        """, (str(id_manager), str(idnoofit)))
+        cur.execute(sql, params)
         return cur.fetchall()
 
 
@@ -101,7 +111,7 @@ def get_descuentos_varias_cuotas_activos(id_manager):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, codigo, descripcion, cuota_requerida_codigo,
-                   combo_secundarias
+                   combo_secundarias, id_trainer
               FROM descuento
              WHERE id_manager=%s AND tipo='varias_cuotas' AND active=TRUE
         """, (str(id_manager),))
@@ -119,9 +129,22 @@ def get_descuentos_varias_cuotas_activos(id_manager):
         return rows
 
 
+def _solo_trainer_propio(descuentos, id_trainer_cliente):
+    """Filtra una lista de descuentos AUTO al trainer del cliente (auditoría #28):
+    solo aplican los del PROPIO trainer (id_trainer == trainer del cliente);
+    NI manager-wide (NULL) NI de otro trainer. Si id_trainer_cliente es None,
+    no filtra (compat)."""
+    if id_trainer_cliente is None:
+        return descuentos
+    ct = str(id_trainer_cliente)
+    return [d for d in (descuentos or [])
+            if str(d.get('id_trainer') or '') == ct]
+
+
 def aplicar_descuentos_varias_cuotas_auto(id_manager, idnoofit, cuota_codigo,
                                           precio_actual, cuotas_activas_codigos,
-                                          descuentos_varias=None):
+                                          descuentos_varias=None,
+                                          id_trainer_cliente=None):
     """Aplica AUTOMÁTICAMENTE descuentos tipo='varias_cuotas' al precio.
 
     Reglas:
@@ -144,6 +167,7 @@ def aplicar_descuentos_varias_cuotas_auto(id_manager, idnoofit, cuota_codigo,
     """
     if descuentos_varias is None:
         descuentos_varias = get_descuentos_varias_cuotas_activos(id_manager)
+    descuentos_varias = _solo_trainer_propio(descuentos_varias, id_trainer_cliente)
     cuotas_activas = set(cuotas_activas_codigos or [])
     info = []
     precio = float(precio_actual or 0)
@@ -182,7 +206,7 @@ def get_descuentos_familiares_activos(id_manager):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT id, codigo, descripcion, valor, unidad,
-                   cuota_aplicada_codigo, combo_secundarias
+                   cuota_aplicada_codigo, combo_secundarias, id_trainer
               FROM descuento
              WHERE id_manager=%s AND tipo='familiares' AND active=TRUE
         """, (str(id_manager),))
@@ -202,7 +226,8 @@ def get_descuentos_familiares_activos(id_manager):
 
 
 def calcular_precio_con_descuentos(id_manager, idnoofit, cuota_codigo,
-                                   precio_normal, cuotas_activas_codigos=None):
+                                   precio_normal, cuotas_activas_codigos=None,
+                                   id_trainer_cliente=None):
     """Aplica los descuentos activos del cliente sobre `precio_normal` para
     la cuota `cuota_codigo`.
 
@@ -219,7 +244,7 @@ def calcular_precio_con_descuentos(id_manager, idnoofit, cuota_codigo,
         (precio_final: float, info: list[{tipo, codigo, ajuste, precio_resultante}])
     """
     cuotas_activas = set(cuotas_activas_codigos or [])
-    descuentos = get_descuentos_activos(id_manager, idnoofit) or []
+    descuentos = get_descuentos_activos(id_manager, idnoofit, id_trainer_cliente) or []
     info = []
     precio = float(precio_normal or 0)
 
@@ -322,7 +347,8 @@ def es_descuento_acumulacion(tipo):
 
 def aplicar_descuentos_familiares(id_manager, idnoofit, cuota_codigo,
                                   precio_actual, cuotas_por_miembro,
-                                  descuentos_familiares=None):
+                                  descuentos_familiares=None,
+                                  id_trainer_cliente=None):
     """Aplica descuentos de tipo 'familiares' al precio de una cuota.
 
     El descuento se aplica AUTOMÁTICAMENTE si:
@@ -342,6 +368,9 @@ def aplicar_descuentos_familiares(id_manager, idnoofit, cuota_codigo,
     """
     if descuentos_familiares is None:
         descuentos_familiares = get_descuentos_familiares_activos(id_manager)
+    # Scope por trainer (auditoría #28): solo el descuento familiar del PROPIO
+    # trainer del cliente (ni manager-wide ni de otro trainer).
+    descuentos_familiares = _solo_trainer_propio(descuentos_familiares, id_trainer_cliente)
 
     # Recorrer todos los descuentos tipo='familiares' del manager y, para cada
     # uno, buscar en `combo_secundarias` la entrada de la cuota actual.

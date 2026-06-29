@@ -417,22 +417,29 @@ def generar(mes):
                 # 1) Descuentos del catálogo asignados al cliente
                 #    (porcentaje/importe — varias_cuotas YA no entra aquí
                 #    desde mayo 2026, se aplica en el paso 2b automático)
+                # Scope por trainer (auditoría #28): los descuentos aplicados
+                # se restringen al trainer del cliente (AUTO solo propio trainer;
+                # MANUAL excluye otro trainer).
+                _tr_cli = cache_idnoofit_trainer.get(idnoofit)
                 p_tras_desc, info_desc = calcular_precio_con_descuentos(
                     g.id_manager, idnoofit, cuota.get('codigo'), p_normal,
-                    cuotas_activas_codigos=cuotas_activas_cli)
+                    cuotas_activas_codigos=cuotas_activas_cli,
+                    id_trainer_cliente=_tr_cli)
                 # 2a) Descuento AUTOMÁTICO por "dos cuotas" (varias_cuotas):
                 #     se aplica si el cliente tiene la cuota requerida + la
                 #     secundaria activa, SIN necesitar asignación manual.
                 p_tras_varias, info_varias = aplicar_descuentos_varias_cuotas_auto(
                     g.id_manager, idnoofit, cuota.get('codigo'), p_tras_desc,
                     cuotas_activas_codigos=cuotas_activas_cli,
-                    descuentos_varias=descuentos_varias)
+                    descuentos_varias=descuentos_varias,
+                    id_trainer_cliente=_tr_cli)
                 # 2b) Descuento AUTOMÁTICO por familia (≥2 miembros con la
                 #     cuota indicada — no requiere asignación).
                 p_tras_fam, info_fam = aplicar_descuentos_familiares(
                     g.id_manager, idnoofit, cuota.get('codigo'), p_tras_varias,
                     cuotas_por_familiar,
-                    descuentos_familiares=descuentos_familiares)
+                    descuentos_familiares=descuentos_familiares,
+                    id_trainer_cliente=_tr_cli)
                 # 3) Modificaciones puntuales para esta cuota concreta —
                 # match por código (los IDs locales no coinciden con Odoo).
                 p_final, info_mod, ids_mod = aplicar_modif_a_cuota(
