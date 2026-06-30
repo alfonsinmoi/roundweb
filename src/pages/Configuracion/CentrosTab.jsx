@@ -550,7 +550,7 @@ function CredsSection({ identity, trainer, cred, editing, onStartEdit, onCancel,
         Necesarias para que los usuarios web vinculados a <strong>{trainer.nombre || trainer.name} {trainer.apellidos || trainer.surname}</strong> puedan
         cargar los clientes y clases del centro. La contraseña se guarda cifrada solo en el VPS.
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
         <Field label="Email NoofitPro" required>
           <input type="email" value={editing.noofit_email}
                  onChange={e => onChange({ ...editing, noofit_email: e.target.value })}

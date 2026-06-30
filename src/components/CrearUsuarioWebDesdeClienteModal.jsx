@@ -137,7 +137,7 @@ export default function CrearUsuarioWebDesdeClienteModal({ cliente, onClose, onS
               <input type="email" value={email} onChange={e => setEmail(e.target.value)}
                      style={inputStyle} />
             </Field>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <Field label="Nombre *">
                 <input value={nombre} onChange={e => setNombre(e.target.value)} style={inputStyle} />
               </Field>

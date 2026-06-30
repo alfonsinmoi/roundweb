@@ -222,7 +222,7 @@ export default function GenerarReciboModal({ cliente, onClose, onSaved }) {
               </select>
             </Field>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <Field label="Periodicidad">
                 <select value={periodicidad} onChange={e => setPeriodicidad(e.target.value)} style={inputStyle}>
                   {PERIODICIDADES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
@@ -235,7 +235,7 @@ export default function GenerarReciboModal({ cliente, onClose, onSaved }) {
               </Field>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
               <Field label="Importe total (€) *">
                 <input type="number" min="0" step="0.01" value={importe}
                        onChange={e => setImporte(e.target.value)} style={inputStyle} />
@@ -253,7 +253,7 @@ export default function GenerarReciboModal({ cliente, onClose, onSaved }) {
               </select>
             </Field>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <Field label="Fecha emisión">
                 <input type="date" value={fechaEmision}
                        onChange={e => setFechaEmision(e.target.value)}

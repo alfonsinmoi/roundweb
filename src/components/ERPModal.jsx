@@ -336,7 +336,7 @@ export default function ERPModal({ cliente, erpConfig, onClose, onSaved, recapta
           </div>
 
           <div style={{ display: 'grid',
-                         gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))',
+                         gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
                          gap: '18px 24px' }}>
             {campos.sort((a, b) => a.orden - b.orden).map(campo => {
               const key = campo.nombreCampo

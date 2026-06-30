@@ -165,7 +165,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </Fld>
 
           {/* Cuota */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
             <Fld label="Código cuota">
               <input value={f.cuota_codigo || ''}
                      onChange={e => set('cuota_codigo', e.target.value)}
@@ -179,7 +179,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </div>
 
           {/* Periodo / fechas — solo si editable_full */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
             <Fld label="Periodo (AAAA-MM)">
               <input value={f.periodo || ''} disabled={!editableFull}
                      onChange={e => set('periodo', e.target.value)}
@@ -213,7 +213,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </div>
 
           {/* Método + periodicidad */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <Fld label="Método de pago">
               <select value={f.metodo_pago || ''} disabled={!editableFull}
                       onChange={e => set('metodo_pago', e.target.value)}
@@ -239,7 +239,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </div>
 
           {/* Importes */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
             <Fld label="Base imponible (€)">
               <input type="number" step="0.01" value={f.importe_base ?? ''}
                      disabled={!editableFull}

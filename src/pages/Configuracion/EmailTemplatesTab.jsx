@@ -256,7 +256,7 @@ function EditorModal({ tpl, meta, identity, onClose, onSaved }) {
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <Field label="Evento" required>
             <select value={form.evento} onChange={e => set({ evento: e.target.value })}
                     disabled={!!tpl.id} style={inputStyle}>

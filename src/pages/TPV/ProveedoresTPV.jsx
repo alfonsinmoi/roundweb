@@ -118,7 +118,7 @@ export default function ProveedoresTPV() {
       </div>
 
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
                      gap: 10, marginBottom: 16 }}>
         <Stat label="Facturas activas" v={totales.n} />
         <Stat label="Base imponible" v={`${totales.base.toFixed(2)} €`} />
@@ -184,6 +184,7 @@ export default function ProveedoresTPV() {
             </p>
           </div>
         ) : (
+          <div className="table-scroll">
           <table style={{ width: '100%', fontSize: 12 }}>
             <thead><tr style={{ color: 'var(--text-3)', textAlign: 'left' }}>
               <th style={th}>Fecha</th>
@@ -281,6 +282,7 @@ export default function ProveedoresTPV() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </Card>
 
@@ -456,7 +458,7 @@ function FacturaModal({ identity, initial, onClose, onSaved }) {
                      style={{ ...inp2, fontFamily: 'var(--font-mono)' }} />
             </Fld>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
             <Fld label="Email proveedor">
               <input value={f.proveedor_email}
                      onChange={e => set('proveedor_email', e.target.value)}
@@ -491,7 +493,7 @@ function FacturaModal({ identity, initial, onClose, onSaved }) {
           </Fld>
 
           {/* Importes */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
             <Fld label="Base imponible (€) *">
               <input type="number" step="0.01" value={f.base}
                      onChange={e => set('base', e.target.value)}

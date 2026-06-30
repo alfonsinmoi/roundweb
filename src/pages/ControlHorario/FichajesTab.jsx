@@ -80,7 +80,7 @@ export default function FichajesTab({ identity }) {
   return (
     <div>
       <Card style={{ padding: 14, marginBottom: 14 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, alignItems: 'end' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, alignItems: 'end' }}>
           <div>
             <label style={labelStyle}>Trabajador</label>
             <select value={filters.trabajador_id}

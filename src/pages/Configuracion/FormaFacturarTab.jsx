@@ -93,7 +93,7 @@ export default function FormaFacturarTab() {
             ? <Badge color="green">ACTIVO</Badge>
             : <Badge color="amber">No activo — configúralo y actívalo abajo (con fecha de corte)</Badge>}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 14 }}>
           {SISTEMAS.map(s => {
             const Icon = s.icon, sel = sistema === s.id
             return (

@@ -270,7 +270,7 @@ function FormEditor({ identity, form, onClose, onSaved }) {
 
         {/* Config visual */}
         <h3 style={{ fontSize: 14, color: 'var(--text-1)', margin: '20px 0 8px' }}>Apariencia y textos</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div><label style={lbl}>Título</label><input style={inp} value={cfg.titulo || ''} onChange={e => setCfgK('titulo', e.target.value)} /></div>
           <div><label style={lbl}>Subtítulo</label><input style={inp} value={cfg.subtitulo || ''} onChange={e => setCfgK('subtitulo', e.target.value)} /></div>
           <div><label style={lbl}>Texto del botón</label><input style={inp} value={cfg.boton_texto || ''} onChange={e => setCfgK('boton_texto', e.target.value)} placeholder={tipo === 'prueba' ? 'Reservar mi clase' : 'Enviar'} /></div>

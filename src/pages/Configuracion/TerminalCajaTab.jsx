@@ -643,7 +643,7 @@ function StockModal({ identity, producto, onClose, onSaved }) {
           <strong>Stock actual: {Number(producto.stock_actual).toFixed(0)} ud.</strong>
         </div>
         <Field label="Tipo de movimiento">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 6 }}>
             {[['reposicion','+ Reposición'],['baja','− Baja'],['ajuste','Ajuste libre']].map(([id, lbl]) =>
               <button key={id} onClick={() => setTipo(id)} style={{
                 padding: '8px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600,
@@ -816,7 +816,7 @@ function CategoriaModal({ identity, initial, onClose, onSaved }) {
           <input value={f.nombre} onChange={e => set('nombre', e.target.value)}
                  placeholder="ej. Pre-entreno" style={inputStyle} />
         </Field>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
           <Field label="Icono (emoji)">
             <input value={f.icono} onChange={e => set('icono', e.target.value)}
                    maxLength={3} style={{ ...inputStyle, textAlign: 'center', fontSize: 18 }} />

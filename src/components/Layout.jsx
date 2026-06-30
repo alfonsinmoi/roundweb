@@ -87,7 +87,7 @@ export default function Layout() {
           // scrolling underneath is fully hidden behind it.
           padding: '0 clamp(20px, 4vw, 48px) clamp(20px, 4vw, 48px)',
         }} key={pathname + ':' + (selectedTrainerId || 'all')}>
-          <div className="anim-enter" style={{ maxWidth: 1500, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
+          <div className="anim-enter" style={{ maxWidth: 1760, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
             <Breadcrumbs />
             <ErrorBoundary key={pathname + ':' + (selectedTrainerId || 'all')}>
               <Outlet />

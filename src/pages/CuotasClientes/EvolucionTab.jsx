@@ -288,7 +288,7 @@ export default function EvolucionTab({ identity }) {
         </Card>
 
         {/* Grid de gráficas pie/donut + tabla pivot */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
           <DimensionCard title="Por actividad"      icon={Activity}  data={porActividad}    meses={meses} />
           <DimensionCard title="Por clase"          icon={Tag}       data={porClase}        meses={meses} />
           <DimensionCard title="Por forma de pago"  icon={CreditCard} data={porFormaPago}    meses={meses} />

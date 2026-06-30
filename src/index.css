@@ -268,3 +268,7 @@ input[type="date"], input[type="datetime-local"], input[type="time"] {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* Wrapper de scroll horizontal para tablas/grids anchos en móvil */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.table-scroll > table { min-width: max-content; }

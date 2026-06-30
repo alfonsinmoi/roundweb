@@ -49,7 +49,7 @@ export default function Listados() {
 
   return (
     <div className="max-w-6xl space-y-5">
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }} role="group" aria-label="Tipo de listado">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }} role="group" aria-label="Tipo de listado">
         {reports.map(r => {
           const Icon = r.icon
           const active = reporte === r.id

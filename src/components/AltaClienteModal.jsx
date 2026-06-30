@@ -539,7 +539,7 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
 
         {!esEntradaPuntual && (<>
         {/* 3-4. Fecha alta + periodicidad */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
           <Section icon={Calendar} title="3. Fecha de alta" required>
             <input type="date" value={fechaAlta}
                    onChange={e => setFechaAlta(e.target.value)} style={inputStyle} />
@@ -578,7 +578,7 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
         </Section>
 
         {/* 6-7. Texto recibo + importe */}
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
           <Section icon={Receipt} title="6. Texto del recibo" required>
             <input type="text" value={textoRecibo}
                    onChange={e => setTextoRecibo(e.target.value)}
@@ -603,7 +603,7 @@ export default function AltaClienteModal({ cliente, onClose, onSaved, recaptacio
         )}
 
         {/* 8-9. Fecha fin + forma pago alta */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
           <Section icon={Calendar} title="8. Fecha fin primer pago" required
                    hint="Hasta cuándo cubre el primer recibo.">
             <input type="date" value={fechaFinPrimero}

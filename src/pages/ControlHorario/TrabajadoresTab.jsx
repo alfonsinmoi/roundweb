@@ -286,7 +286,7 @@ function AltaModal({ pendiente, trainers, onClose, onSaved, identity }) {
         }}>
           <Input label="Nombre completo" value={form.nombre_completo}
                  onChange={e => set('nombre_completo', e.target.value)} />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <Input label="NIF / NIE / Pasaporte *" value={form.nif}
                    onChange={e => set('nif', e.target.value.toUpperCase())} required />
             <Input label="Jornada (h/semana) *" type="number" step="0.5"
@@ -303,7 +303,7 @@ function AltaModal({ pendiente, trainers, onClose, onSaved, identity }) {
               </option>
             ))}
           </Select>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <Select label="Tipo de contrato"
                     value={form.tipo_contrato}
                     onChange={e => set('tipo_contrato', e.target.value)}>
@@ -423,7 +423,7 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
                    onChange={e => set('nombre_completo', e.target.value)} />
             <Input label="Email" type="email" value={form.email}
                    onChange={e => set('email', e.target.value)} />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <Input label="NIF / NIE / Pasaporte *" value={form.nif}
                      onChange={e => set('nif', e.target.value.toUpperCase())} required />
               <Input label="Jornada (h/semana) *" type="number" step="0.5"
@@ -440,7 +440,7 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
                 </option>
               ))}
             </Select>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <Select label="Tipo de contrato"
                       value={form.tipo_contrato}
                       onChange={e => set('tipo_contrato', e.target.value)}>
@@ -455,7 +455,7 @@ function EditarTrabajadorModal({ trabajador, trainers, identity, onClose, onSave
             </div>
             <Input label="Categoría profesional" value={form.categoria_profesional}
                    onChange={e => set('categoria_profesional', e.target.value)} />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <Input label="Vacaciones override (días)" type="number"
                      value={form.vacaciones_dias_override}
                      onChange={e => set('vacaciones_dias_override', e.target.value)} />
@@ -1156,7 +1156,7 @@ function PreferenciasPanel({ trabajadorId, identity }) {
           centro respetándolas todas.
         </p>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <Input label="Máx. horas / semana" type="number" step="0.5"
                  value={form.max_horas_semana ?? ''}
                  onChange={e => set('max_horas_semana', e.target.value === '' ? null : Number(e.target.value))} />

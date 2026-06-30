@@ -239,7 +239,7 @@ function CuentaEditor({ cuenta, centros, identity, onClose, onSaved }) {
           </ol>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <Field label="Centro / trainer">
             <select value={form.id_trainer} onChange={e => set({ id_trainer: e.target.value })} style={inputStyle}>
               <option value="">— Manager (todos los centros) —</option>
@@ -263,7 +263,7 @@ function CuentaEditor({ cuenta, centros, identity, onClose, onSaved }) {
         </Field>
 
         {(form.red === 'meta' || form.red === 'facebook') && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 12 }}>
             <Field label="Facebook Page ID">
               <input value={form.fb_page_id} onChange={e => set({ fb_page_id: e.target.value })}
                      placeholder="1234567890" style={inputStyle} />
@@ -276,7 +276,7 @@ function CuentaEditor({ cuenta, centros, identity, onClose, onSaved }) {
         )}
 
         {(form.red === 'meta' || form.red === 'instagram') && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginTop: 12 }}>
             <Field label="IG Business Account ID">
               <input value={form.ig_business_account_id}
                      onChange={e => set({ ig_business_account_id: e.target.value })}

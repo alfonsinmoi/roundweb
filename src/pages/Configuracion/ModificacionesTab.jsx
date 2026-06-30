@@ -141,7 +141,7 @@ function ModForm({ mod, identity, onClose, onSaved }) {
               un trainer desde el sidebar.
             </div>
           )}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             <Field label="Tipo *">
               <select value={data.tipo} onChange={e => set('tipo', e.target.value)} style={inputStyle}>
                 {TIPOS_MODIFICACION.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}

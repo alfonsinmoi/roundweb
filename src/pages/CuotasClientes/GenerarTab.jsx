@@ -346,7 +346,7 @@ function ValidacionModal({ mes, loading, result, onClose, onDescargar }) {
           )}
           {result && (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
                 <div style={{ padding: 16, borderRadius: 12, background: 'var(--green-bg)',
                                 border: '1px solid var(--green-border)' }}>
                   <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Coherentes (OK)</div>
