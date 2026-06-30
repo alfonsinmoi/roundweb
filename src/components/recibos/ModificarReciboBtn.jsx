@@ -50,6 +50,16 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // Aviso informativo (no bloquea) si el no-cobrado arrastra factura Odoo legacy.
   const avisoLegacyOdoo = editableFull && tieneMoveOdoo
 
+  // Límites de la FECHA FIN (fecha_hasta) — regla del propietario:
+  //   mínimo = fecha_inicio + 1 mes
+  //   máximo = fin natural de la periodicidad de la cuota + 31 días
+  // La fecha fin define cuándo vuelve a tocar emitir (cobertura). Mismo límite
+  // que valida el backend (recibos.update_recibo).
+  const fdesdeISO = (f.fecha_desde || '').slice(0, 10)
+  const perMeses = PERIOD_MESES[(f.periodicidad || 'mensual').toLowerCase()] || 1
+  const minHasta = fdesdeISO ? addMonthsISO(fdesdeISO, 1) : undefined
+  const maxHasta = fdesdeISO ? addDaysISO(addMonthsISO(fdesdeISO, perMeses), 31) : undefined
+
   if (!canModificar) return null
   if (!isBd) return null
 
@@ -68,6 +78,18 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   }
 
   const submit = async () => {
+    // Validar rango de la fecha fin antes de enviar (espejo del backend).
+    if (editableFull && f.fecha_hasta) {
+      const fh = f.fecha_hasta.slice(0, 10)
+      if (minHasta && fh < minHasta) {
+        toast.error(`La fecha fin no puede ser anterior a ${minHasta} (mínimo 1 mes desde el inicio).`)
+        return
+      }
+      if (maxHasta && fh > maxHasta) {
+        toast.error(`La fecha fin no puede superar ${maxHasta} (periodicidad + 31 días).`)
+        return
+      }
+    }
     setSaving(true)
     try {
       const payload = {
@@ -176,11 +198,17 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
                      onChange={e => set('fecha_desde', e.target.value)}
                      style={inp} />
             </Fld>
-            <Fld label="Periodo hasta">
+            <Fld label="Periodo hasta (fecha fin)">
               <input type="date" value={(f.fecha_hasta || '').slice(0, 10)}
                      disabled={!editableFull}
+                     min={minHasta} max={maxHasta}
                      onChange={e => set('fecha_hasta', e.target.value)}
                      style={inp} />
+              {editableFull && (minHasta || maxHasta) && (
+                <span style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>
+                  Entre {minHasta || '—'} y {maxHasta || '—'} ({f.periodicidad || 'mensual'} + 31 días)
+                </span>
+              )}
             </Fld>
           </div>
 
@@ -312,6 +340,37 @@ function recalcular(setF, campo, valor) {
     const tot = Math.round((base + iva) * 100) / 100
     return { ...next, importe_iva: iva.toFixed(2), importe_total: tot.toFixed(2) }
   })
+}
+
+
+// ── Helpers de fecha para acotar la fecha fin (fecha_hasta) ──────────────────
+// Periodicidad → meses de cobertura natural (espejo del backend _PERIOD_MESES).
+const PERIOD_MESES = { mensual: 1, bimestral: 2, bimensual: 2, trimestral: 3,
+                       semestral: 6, anual: 12, unico: 1 }
+
+// Formatea componentes locales a 'YYYY-MM-DD' (sin pasar por toISOString, que
+// usaría UTC y podría desplazar el día en zonas horarias != UTC).
+function fmtISO(d) {
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${dd}`
+}
+// Suma n meses recortando al último día válido del mes destino (31-ene+1m=28-feb).
+function addMonthsISO(iso, n) {
+  const [y, m, dd] = iso.slice(0, 10).split('-').map(Number)
+  if (!y || !m || !dd) return iso
+  const base = new Date(y, m - 1, 1)
+  base.setMonth(base.getMonth() + n)
+  const last = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate()
+  base.setDate(Math.min(dd, last))
+  return fmtISO(base)
+}
+function addDaysISO(iso, n) {
+  const [y, m, dd] = iso.slice(0, 10).split('-').map(Number)
+  if (!y || !m || !dd) return iso
+  const d = new Date(y, m - 1, dd)
+  d.setDate(d.getDate() + n)
+  return fmtISO(d)
 }
 
 

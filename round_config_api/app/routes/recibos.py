@@ -226,6 +226,23 @@ def create_recibo():
     return jsonify({'ok': True, 'id': rid})
 
 
+# Periodicidad → nº de meses de cobertura natural. Para validar la fecha fin
+# del recibo (ver update_recibo). 'unico' = puntual → se trata como 1 mes.
+_PERIOD_MESES = {'mensual': 1, 'bimestral': 2, 'bimensual': 2, 'trimestral': 3,
+                 'semestral': 6, 'anual': 12, 'unico': 1}
+
+
+def _add_months(d0, n):
+    """Suma n meses a una fecha, recortando al último día válido del mes destino
+    (p.ej. 31-ene + 1 mes = 28/29-feb). Sin dependencias externas."""
+    import calendar
+    m = d0.month - 1 + n
+    y = d0.year + m // 12
+    m = m % 12 + 1
+    day = min(d0.day, calendar.monthrange(y, m)[1])
+    return dt.date(y, m, day)
+
+
 @bp.route('/<int:rid>', methods=['PATCH'])
 @auth_required
 @require_permission('economico.cuotas_mensuales.modificar_recibo')
@@ -335,6 +352,30 @@ def update_recibo(rid):
         else:
             return jsonify({'ok': False, 'error': 'estado_no_editable',
                             'detalle': f'Estado actual: {estado}'}), 400
+
+        # ── Validación de la FECHA FIN (fecha_hasta) ─────────────────────────
+        # Regla (propietario): la fecha fin del recibo NUNCA puede ser inferior
+        # a 1 mes desde la fecha de inicio, ni superior en 31 días al fin natural
+        # de la periodicidad de la cuota. La fecha fin define cuándo vuelve a
+        # tocar emitir el siguiente recibo (cobertura, auditoría #24), por eso se
+        # acota. Solo se valida si se está cambiando fecha_hasta (recibo editable).
+        if editable_full and d.get('fecha_hasta'):
+            fd_raw = d.get('fecha_desde') or r.get('fecha_desde')
+            if fd_raw:
+                fdesde = dt.date.fromisoformat(str(fd_raw)[:10])
+                fhasta = dt.date.fromisoformat(str(d['fecha_hasta'])[:10])
+                per = str(d.get('periodicidad') or r.get('periodicidad') or 'mensual').lower()
+                meses = _PERIOD_MESES.get(per, 1)
+                min_hasta = _add_months(fdesde, 1)
+                max_hasta = _add_months(fdesde, meses) + dt.timedelta(days=31)
+                if fhasta < min_hasta:
+                    return jsonify({'ok': False, 'error': 'fecha_hasta_min',
+                        'detalle': f'La fecha fin no puede ser anterior a {min_hasta.isoformat()} '
+                                   f'(mínimo 1 mes desde el inicio {fdesde.isoformat()}).'}), 400
+                if fhasta > max_hasta:
+                    return jsonify({'ok': False, 'error': 'fecha_hasta_max',
+                        'detalle': f'La fecha fin no puede superar {max_hasta.isoformat()} '
+                                   f'(periodicidad {per} + 31 días desde {fdesde.isoformat()}).'}), 400
 
         sets, vals = [], []
         for f in allowed:
