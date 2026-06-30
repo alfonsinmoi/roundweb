@@ -55,15 +55,14 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // Aviso informativo (no bloquea) si el no-cobrado arrastra factura Odoo legacy.
   const avisoLegacyOdoo = editableFull && tieneMoveOdoo
 
-  // Límites de la FECHA FIN (fecha_hasta) — regla del propietario:
-  //   mínimo = fecha_inicio + 1 mes
-  //   máximo = fin natural de la periodicidad de la cuota + 31 días
-  // La fecha fin define cuándo vuelve a tocar emitir (cobertura). Mismo límite
-  // que valida el backend (recibos.update_recibo).
-  const fdesdeISO = (f.fecha_desde || '').slice(0, 10)
+  // FECHA FIN AUTOMÁTICA — se deriva de la periodicidad elegida y la fecha de
+  // emisión (último día cubierto = emisión + periodicidad − 1 día). NO se teclea
+  // a mano: define cuándo vuelve a tocar cobrar (cobertura). Mismo cálculo que
+  // recalcula el backend (recibos.update_recibo).
+  const baseEmisionISO = (f.fecha_emision || f.fecha_desde || '').slice(0, 10)
   const perMeses = PERIOD_MESES[(f.periodicidad || 'mensual').toLowerCase()] || 1
-  const minHasta = fdesdeISO ? addMonthsISO(fdesdeISO, 1) : undefined
-  const maxHasta = fdesdeISO ? addDaysISO(addMonthsISO(fdesdeISO, perMeses), 31) : undefined
+  const fechaHastaCalc = baseEmisionISO
+    ? addDaysISO(addMonthsISO(baseEmisionISO, perMeses), -1) : ''
 
   if (!canModificar) return null
   if (!isBd) return null
@@ -83,18 +82,6 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   }
 
   const submit = async () => {
-    // Validar rango de la fecha fin antes de enviar (espejo del backend).
-    if (editableFechaHasta && f.fecha_hasta) {
-      const fh = f.fecha_hasta.slice(0, 10)
-      if (minHasta && fh < minHasta) {
-        toast.error(`La fecha fin no puede ser anterior a ${minHasta} (mínimo 1 mes desde el inicio).`)
-        return
-      }
-      if (maxHasta && fh > maxHasta) {
-        toast.error(`La fecha fin no puede superar ${maxHasta} (periodicidad + 31 días).`)
-        return
-      }
-    }
     setSaving(true)
     try {
       const payload = {
@@ -106,7 +93,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
       if (editableFull) {
         Object.assign(payload, {
           fecha_desde: f.fecha_desde || null,
-          fecha_hasta: f.fecha_hasta || null,
+          fecha_hasta: fechaHastaCalc || null,   // derivada (emisión + periodicidad)
           periodicidad: f.periodicidad || null,
           importe_base: numOrSkip(f.importe_base),
           importe_iva: numOrSkip(f.importe_iva),
@@ -120,10 +107,11 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
         Object.keys(payload).forEach(k => {
           if (payload[k] === undefined) delete payload[k]
         })
-      } else if (esCobrado && f.fecha_hasta) {
-        // Recibo cobrado/facturado: solo se permite ajustar la fecha fin
-        // (próximo cobro). El backend rechaza el resto de campos de importe.
-        payload.fecha_hasta = f.fecha_hasta
+      } else if (esCobrado) {
+        // Recibo cobrado/facturado: solo periodicidad + fecha fin (derivada).
+        // El backend recalcula la fecha fin y rechaza el resto de importes.
+        if (f.periodicidad) payload.periodicidad = f.periodicidad
+        if (fechaHastaCalc) payload.fecha_hasta = fechaHastaCalc
       }
       await reciboUpdate(getRoundIdentity(user), r.id_bd, payload)
       toast.success('Recibo modificado')
@@ -208,18 +196,13 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
                      onChange={e => set('fecha_desde', e.target.value)}
                      style={inp} />
             </Fld>
-            <Fld label="Periodo hasta (fecha fin)">
-              <input type="date" value={(f.fecha_hasta || '').slice(0, 10)}
-                     disabled={!editableFechaHasta}
-                     min={minHasta} max={maxHasta}
-                     onChange={e => set('fecha_hasta', e.target.value)}
-                     style={inp} />
-              {editableFechaHasta && (minHasta || maxHasta) && (
-                <span style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>
-                  Entre {minHasta || '—'} y {maxHasta || '—'} ({f.periodicidad || 'mensual'} + 31 días)
-                  {esCobrado && !editableFull ? ' · define el próximo cobro' : ''}
-                </span>
-              )}
+            <Fld label="Periodo hasta (fecha fin · automática)">
+              <input type="date" value={fechaHastaCalc} disabled readOnly
+                     style={{ ...inp, opacity: 0.75 }} />
+              <span style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>
+                Automática = emisión + {f.periodicidad || 'mensual'}
+                {esCobrado && !editableFull ? ' · define el próximo cobro' : ''}
+              </span>
             </Fld>
           </div>
 
@@ -235,7 +218,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
               </select>
             </Fld>
             <Fld label="Periodicidad">
-              <select value={f.periodicidad || ''} disabled={!editableFull}
+              <select value={f.periodicidad || ''} disabled={!editableFechaHasta}
                       onChange={e => set('periodicidad', e.target.value)}
                       style={inp}>
                 <option value="">—</option>

@@ -325,11 +325,13 @@ def update_recibo(rid):
             # importe ni la factura Odoo. Por eso se PERMITE editarla también en
             # recibos cobrados/facturados (es el caso típico: ajustar el próximo
             # cobro del último recibo, que casi siempre está pagado). El resto de
-            # importe_fields siguen inmovilizados. La validación de rango se aplica
-            # igualmente más abajo.
-            if 'fecha_hasta' in d:
-                allowed += ['fecha_hasta']
-            otros_importe = [f for f in campos_importe_en_d if f != 'fecha_hasta']
+            # importe_fields siguen inmovilizados. La fecha fin se RECALCULA más
+            # abajo en función de periodicidad + fecha de emisión.
+            for _campo in ('fecha_hasta', 'periodicidad'):
+                if _campo in d:
+                    allowed += [_campo]
+            otros_importe = [f for f in campos_importe_en_d
+                             if f not in ('fecha_hasta', 'periodicidad')]
             # Excepción ADMIN — corregir SOLO la forma de pago (error de
             # registro), indicando el motivo. NO toca importes ni el pago/
             # journal de Odoo (el cobro ya ocurrió); corrige el dato Round
@@ -361,30 +363,25 @@ def update_recibo(rid):
             return jsonify({'ok': False, 'error': 'estado_no_editable',
                             'detalle': f'Estado actual: {estado}'}), 400
 
-        # ── Validación de la FECHA FIN (fecha_hasta) ─────────────────────────
-        # Regla (propietario): la fecha fin del recibo NUNCA puede ser inferior
-        # a 1 mes desde la fecha de inicio, ni superior en 31 días al fin natural
-        # de la periodicidad de la cuota. La fecha fin define cuándo vuelve a
-        # tocar emitir el siguiente recibo (cobertura, auditoría #24), por eso se
-        # acota. Se valida siempre que fecha_hasta vaya a escribirse (editable o
-        # cobrado — en cobrado solo se permite este campo).
-        if d.get('fecha_hasta') and 'fecha_hasta' in allowed:
-            fd_raw = d.get('fecha_desde') or r.get('fecha_desde')
-            if fd_raw:
-                fdesde = dt.date.fromisoformat(str(fd_raw)[:10])
-                fhasta = dt.date.fromisoformat(str(d['fecha_hasta'])[:10])
-                per = str(d.get('periodicidad') or r.get('periodicidad') or 'mensual').lower()
-                meses = _PERIOD_MESES.get(per, 1)
-                min_hasta = _add_months(fdesde, 1)
-                max_hasta = _add_months(fdesde, meses) + dt.timedelta(days=31)
-                if fhasta < min_hasta:
-                    return jsonify({'ok': False, 'error': 'fecha_hasta_min',
-                        'detalle': f'La fecha fin no puede ser anterior a {min_hasta.isoformat()} '
-                                   f'(mínimo 1 mes desde el inicio {fdesde.isoformat()}).'}), 400
-                if fhasta > max_hasta:
-                    return jsonify({'ok': False, 'error': 'fecha_hasta_max',
-                        'detalle': f'La fecha fin no puede superar {max_hasta.isoformat()} '
-                                   f'(periodicidad {per} + 31 días desde {fdesde.isoformat()}).'}), 400
+        # ── FECHA FIN AUTOMÁTICA = fecha de emisión + periodicidad ───────────
+        # Regla (propietario): la fecha fin NO se teclea a mano; se DERIVA de la
+        # periodicidad elegida y la fecha de emisión (último día cubierto =
+        # emisión + N meses − 1 día). Define cuándo vuelve a tocar emitir
+        # (cobertura, auditoría #24). El servidor la recalcula (fuente de verdad,
+        # no se fía del valor del cliente) siempre que se toque periodicidad,
+        # fecha_hasta o fecha_emisión en un recibo editable o cobrado.
+        _toca_fechafin = (('periodicidad' in allowed or 'fecha_hasta' in allowed)
+                          and ('periodicidad' in d or 'fecha_hasta' in d or 'fecha_emision' in d))
+        if _toca_fechafin:
+            per = str(d.get('periodicidad') or r.get('periodicidad') or 'mensual').lower()
+            meses = _PERIOD_MESES.get(per, 1)
+            base_raw = (d.get('fecha_emision') or r.get('fecha_emision')
+                        or d.get('fecha_desde') or r.get('fecha_desde'))
+            if base_raw:
+                base = dt.date.fromisoformat(str(base_raw)[:10])
+                d['fecha_hasta'] = (_add_months(base, meses) - dt.timedelta(days=1)).isoformat()
+                if 'fecha_hasta' not in allowed:
+                    allowed += ['fecha_hasta']
 
         sets, vals = [], []
         for f in allowed:
