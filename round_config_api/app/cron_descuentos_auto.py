@@ -90,6 +90,31 @@ def _cargar_familias(id_manager):
     return out
 
 
+def _cargar_trainer_por_cliente(id_manager):
+    """Devuelve {idnoofit(str): id_trainer} desde cliente_cache. Se usa para
+    aplicar el scope por trainer (auditoría #28) al ASIGNAR: un descuento AUTO
+    solo se asigna a clientes de su propio trainer, igual que hace la emisión
+    (descuentos_apply._solo_trainer_propio). Así la ficha del cliente refleja
+    exactamente lo que se cobra."""
+    out = {}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id, id_trainer FROM cliente_cache
+                        WHERE id_manager=%s""", (str(id_manager),))
+        for r in cur.fetchall():
+            out[str(r['id'])] = r['id_trainer']
+    return out
+
+
+def _cumple_scope_trainer(client_trainer, desc_trainer):
+    """Mirror de descuentos_apply._solo_trainer_propio (auditoría #28): un
+    descuento AUTO solo aplica a clientes de SU propio trainer. Si el cliente
+    no tiene trainer asignado (None) NO se filtra (la emisión, con
+    id_trainer_cliente=None, aplica todos)."""
+    if client_trainer is None:
+        return True
+    return str(client_trainer) == str(desc_trainer or '')
+
+
 def _upsert_asignacion_auto(cur, descuento_id, cliente_idnoofit,
                             id_manager, id_trainer, origen, motivo,
                             tomar_manuales=False):
@@ -174,6 +199,7 @@ def recalcular_descuentos_auto(id_manager):
 
     cuotas_por_idn = _cargar_cuotas_activas_por_cliente(id_manager)
     familias = _cargar_familias(id_manager)
+    trainer_por_idn = _cargar_trainer_por_cliente(id_manager)  # scope #28
 
     with get_conn() as conn, conn.cursor() as cur:
         # ── varias_cuotas ──────────────────────────────────────────────
@@ -202,6 +228,11 @@ def recalcular_descuentos_auto(id_manager):
                 if req not in codigos: continue
                 # Necesita ≥1 secundaria activa también
                 if not any(sc in codigos for sc in sec_codes): continue
+                # Scope por trainer (#28): solo clientes del propio trainer del
+                # descuento (manager-wide/NULL no asigna a nadie, como la emisión).
+                if not _cumple_scope_trainer(trainer_por_idn.get(idn),
+                                             d.get('id_trainer')):
+                    continue
                 cumplen.append(idn)
                 stats['varias_cuotas']['evaluados'] += 1
                 motivo = (f'Cumple "{d["codigo"]}": tiene cuota requerida '
@@ -254,6 +285,11 @@ def recalcular_descuentos_auto(id_manager):
                         if cuota_obj in cuotas_por_idn.get(m, set()))
                     if n_con_cuota < 2: continue
                     if idn in cumplen: continue   # mismo desc para mismo cli
+                    # Scope por trainer (#28): solo clientes del propio trainer
+                    # del descuento (igual que la emisión).
+                    if not _cumple_scope_trainer(trainer_por_idn.get(idn),
+                                                 d.get('id_trainer')):
+                        continue
                     cumplen.append(idn)
                     stats['familiares']['evaluados'] += 1
                     motivo = (f'Cumple "{d["codigo"]}": cuota "{cuota_obj}" '

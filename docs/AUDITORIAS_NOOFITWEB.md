@@ -479,6 +479,54 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
 
+## 30. Auditoría descuentos auto: cron, scope #28 al asignar, Málaga huérfano — 2026-06-30 ✅
+**Revisado:** `cron_descuentos_auto.py`, catálogo `descuento`, `descuento_asignacion`,
+timer `round_descuentos_auto`, rutas de emisión/preemisión. Auditoría completa pedida por el
+propietario (aplican bien, cron corre, se ejecuta antes de emitir/preemitir, sin duplicados,
+periodicidad #29).
+
+**Lo que ESTABA bien (verificado):**
+- `round_descuentos_auto.timer` enabled+active (diario 03:15, última ejecución OK).
+- `recalcular_descuentos_auto` se dispara **antes de PRE-emitir** (`preemision_validar`:197) y
+  **antes de EMITIR** (`preemision_v2.generar`:120). `emision_v2` no recomputa (importe fijado en
+  `generar`). Motor #29 (periodicidad) operativo.
+- Aplicación Añoreta correcta; dedup #27 + scope #28 funcionando; 0 filas duplicadas exactas.
+
+**Bug 1 (🔴 resuelto) — clientes de MÁLAGA sin descuento familiar/varias.** El catálogo tenía el
+concepto como **manager-wide** (#9 familiar, #6 varias, `scope=plantilla_manager`, id_trainer NULL)
+y como **Añoreta** (#12/#14). Existían además filas **propias de Málaga** (#30 familiar, #28 varias,
+`scope=trainer` 17675) pero **VACÍAS** (combo_secundarias `[]`, sin cuota_requerida). Como el scope
+#28 (AUTO = solo trainer propio estricto, NO manager-wide) excluye los NULL, **12 clientes de Málaga
+quedaban sin descuento** (verificado: RT 2 dias 60→60; I MYGYM 40→40, vs Añoreta 52,5 / 10).
+**Acción A (datos):** poblar #30 (← combo de #9: RT 2 dias 7,5€ importe) y #28 (← #6: req RT 2 dias
++ I MYGYM combinado 10€); **desactivar** los manager-wide #6/#9 (redundantes, aplicaban a nadie);
+cancelar sus 121 asignaciones huérfanas. Backup `/root/backup_descuentos_2026-06-30.sql`.
+Verificado tras la acción: Málaga **y** Añoreta → familiar 60→52,5, varias I MYGYM 40→10.
+Esto resuelve también el **catálogo duplicado** (cada concepto queda 1×trainer: Málaga #28/#30,
+Añoreta #12/#14).
+
+**Bug 2 (🟠 resuelto en código) — el cron asignaba SIN scope #28.** `recalcular_descuentos_auto`
+marcaba en `descuento_asignacion` a cualquier cliente que "cumpliera", sin filtrar por trainer →
+la ficha del cliente mostraba descuentos cross-trainer que la emisión luego no cobraba (display ≠
+emisión; 15+ clientes con 2 asignaciones familiares). **Acción C (código):** helpers
+`_cargar_trainer_por_cliente` + `_cumple_scope_trainer` (mirror de `_solo_trainer_propio`); ambos
+bucles (varias + familiares) saltan al cliente cuyo trainer no coincide con el del descuento
+(manager-wide/NULL no asigna a nadie, salvo cliente sin trainer → no se filtra, igual que la
+emisión). Tras re-ejecutar: asignaciones **diagonales** (#12/#14→17674, #28/#30→17675), 0 sobre
+descuentos inactivos.
+
+**Pendiente (no bloqueante):**
+- (#29 datos) rellenar valores POR PERIODICIDAD donde el valor único legacy sea incorrecto — sobre
+  todo `varias` con cuotas que tengan trimestral/anual (el precio único se aplicaría a todas las
+  periodicidades). RT 2 dias familiar es importe fijo 7,5€ (consistente); I MYGYM Málaga es
+  mensual-only (sin riesgo). Editor por periodicidad ya disponible.
+- (D, opcional) purgar asignaciones `manual` legacy inertes sobre descuentos familiares
+  (la lógica familiar reevalúa desde catálogo y las ignora).
+
+**REGLA:** el catálogo de un concepto de descuento AUTO debe existir **una vez por trainer**
+(no manager-wide + trainer a la vez), porque el scope #28 excluye el manager-wide. El cron asigna
+con el mismo scope que aplica la emisión.
+
 ## 29. Descuentos familiares / varias cuotas POR PERIODICIDAD — 2026-06-30 ✅
 **Revisado:** `descuentos_apply.py` (aplicar_descuentos_familiares / varias_cuotas_auto /
 calcular_precio_con_descuentos), `preemision_v2.generar`, `preemision_validar` (2 puntos),
