@@ -523,9 +523,24 @@ descuentos inactivos.
 - (D, opcional) purgar asignaciones `manual` legacy inertes sobre descuentos familiares
   (la lógica familiar reevalúa desde catálogo y las ignora).
 
+**Migración de descuentos MANUALES de Málaga al scope propio (2026-06-30, a petición del
+propietario):** "round antiguos clientes" (−7,50€ importe) tenía **151 clientes de Málaga asignados
+al manager-wide #10**; se re-apuntaron al Málaga-scoped **#29** (`UPDATE descuento_asignacion SET
+descuento_id=29, id_trainer='17675'` para los `cc.id_trainer=17675`). #29 estaba vacío → sin choque
+unique ni doble descuento (se MUEVE, no se duplica). Verificado: emisión aplica −7,50€ (60→52,5) a
+los Málaga; control Añoreta no lo coge. #10 (mgr) queda con 1 Añoreta + 1 sin-trainer (se deja).
+Backup `descuento_asignacion` previo en `/root/backup_desc_asig_antiguos_2026-06-30_*.sql`.
+**DES-TRABAJADOR** (50%, "familiares de trabajadores"): **0 asignaciones** en cualquier variante
+(#11 mgr / #13 Añoreta / #27 Málaga) ni tipo `familiar_trabajador` → nada que migrar. Pendiente de
+que el propietario indique la lista/regla de quién debe llevarlo (hay 28 clientes en categoría
+"Trabajador" y 5 trabajadores registrados, pero el descuento es para sus FAMILIARES, no derivable
+con fiabilidad). NO se asigna a ciegas un 50%.
+
 **REGLA:** el catálogo de un concepto de descuento AUTO debe existir **una vez por trainer**
 (no manager-wide + trainer a la vez), porque el scope #28 excluye el manager-wide. El cron asigna
-con el mismo scope que aplica la emisión.
+con el mismo scope que aplica la emisión. Los MANUALES manager-wide siguen aplicando a todos los
+trainers (scope #28 manual), pero por consistencia se migran al trainer propio cuando el propietario
+lo pide.
 
 ## 29. Descuentos familiares / varias cuotas POR PERIODICIDAD — 2026-06-30 ✅
 **Revisado:** `descuentos_apply.py` (aplicar_descuentos_familiares / varias_cuotas_auto /
