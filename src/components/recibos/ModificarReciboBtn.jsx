@@ -47,6 +47,11 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // GestPlus). Solo `pagado`/`facturado` quedan inmovilizados (espejo backend).
   const editableFull = ['borrador_remesa', 'pendiente', 'emitido', 'impagado', 'devuelto']
     .includes(r.estado_bd || r.estado)
+  // La FECHA FIN (próximo cobro) sí se puede ajustar incluso en cobrados/
+  // facturados: no es un cambio contable (no toca importe ni Odoo). Espejo del
+  // backend (recibos.update_recibo permite fecha_hasta en pagado/facturado).
+  const esCobrado = ['pagado', 'facturado'].includes((r.estado_bd || r.estado || '').toLowerCase())
+  const editableFechaHasta = editableFull || esCobrado
   // Aviso informativo (no bloquea) si el no-cobrado arrastra factura Odoo legacy.
   const avisoLegacyOdoo = editableFull && tieneMoveOdoo
 
@@ -79,7 +84,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
 
   const submit = async () => {
     // Validar rango de la fecha fin antes de enviar (espejo del backend).
-    if (editableFull && f.fecha_hasta) {
+    if (editableFechaHasta && f.fecha_hasta) {
       const fh = f.fecha_hasta.slice(0, 10)
       if (minHasta && fh < minHasta) {
         toast.error(`La fecha fin no puede ser anterior a ${minHasta} (mínimo 1 mes desde el inicio).`)
@@ -115,6 +120,10 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
         Object.keys(payload).forEach(k => {
           if (payload[k] === undefined) delete payload[k]
         })
+      } else if (esCobrado && f.fecha_hasta) {
+        // Recibo cobrado/facturado: solo se permite ajustar la fecha fin
+        // (próximo cobro). El backend rechaza el resto de campos de importe.
+        payload.fecha_hasta = f.fecha_hasta
       }
       await reciboUpdate(getRoundIdentity(user), r.id_bd, payload)
       toast.success('Recibo modificado')
@@ -144,8 +153,9 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           </strong>
           {!editableFull && (
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-              ⚠ Solo descripciones/notas editables — el recibo está cobrado/facturado y los
-              importes ya están en contabilidad.
+              ⚠ Recibo cobrado/facturado: los importes están en contabilidad y no se editan.
+              Sí puedes ajustar la <strong>fecha fin</strong> (define el próximo cobro) y
+              descripciones/notas.
             </div>
           )}
           {avisoLegacyOdoo && (
@@ -200,13 +210,14 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
             </Fld>
             <Fld label="Periodo hasta (fecha fin)">
               <input type="date" value={(f.fecha_hasta || '').slice(0, 10)}
-                     disabled={!editableFull}
+                     disabled={!editableFechaHasta}
                      min={minHasta} max={maxHasta}
                      onChange={e => set('fecha_hasta', e.target.value)}
                      style={inp} />
-              {editableFull && (minHasta || maxHasta) && (
+              {editableFechaHasta && (minHasta || maxHasta) && (
                 <span style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>
                   Entre {minHasta || '—'} y {maxHasta || '—'} ({f.periodicidad || 'mensual'} + 31 días)
+                  {esCobrado && !editableFull ? ' · define el próximo cobro' : ''}
                 </span>
               )}
             </Fld>

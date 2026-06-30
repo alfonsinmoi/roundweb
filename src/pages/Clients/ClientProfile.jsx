@@ -2825,11 +2825,11 @@ function ReciboRow({ r, mostrarCliente, onReload }) {
           {isImpagado && (
             <PagarBtn r={r} onReload={onReload} />
           )}
-          {/* Modificar — recibos BD no cobrados (impagado/devuelto/pendiente/
-              borrador). El propio botón se oculta si no es BD o sin permiso, y
-              limita los campos según tenga o no factura Odoo. */}
-          {isBd && (isImpagado ||
-                    ['pendiente', 'borrador_remesa'].includes((r.estado_bd || '').toLowerCase())) && (
+          {/* Modificar — cualquier recibo BD. El propio botón se oculta si no es
+              BD o sin permiso, y limita los campos según el estado: no cobrados
+              = todos; cobrados/facturados = solo fecha fin (próximo cobro) +
+              descripciones/notas. */}
+          {isBd && (
             <ModificarReciboBtn r={r} onReload={onReload} />
           )}
           {isPosted && r.payment_state === 'paid' && isBd && (

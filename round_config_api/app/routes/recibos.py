@@ -320,6 +320,16 @@ def update_recibo(rid):
                 return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
         elif estado in ('pagado', 'facturado'):
             campos_importe_en_d = [f for f in importe_fields if f in d]
+            # La FECHA FIN (fecha_hasta) define cuándo vuelve a tocar cobrar
+            # (cobertura, auditoría #24) y NO es un cambio contable: no altera el
+            # importe ni la factura Odoo. Por eso se PERMITE editarla también en
+            # recibos cobrados/facturados (es el caso típico: ajustar el próximo
+            # cobro del último recibo, que casi siempre está pagado). El resto de
+            # importe_fields siguen inmovilizados. La validación de rango se aplica
+            # igualmente más abajo.
+            if 'fecha_hasta' in d:
+                allowed += ['fecha_hasta']
+            otros_importe = [f for f in campos_importe_en_d if f != 'fecha_hasta']
             # Excepción ADMIN — corregir SOLO la forma de pago (error de
             # registro), indicando el motivo. NO toca importes ni el pago/
             # journal de Odoo (el cobro ya ocurrió); corrige el dato Round
@@ -327,7 +337,7 @@ def update_recibo(rid):
             # is_admin) o el manager NoofitPro (perfil None).
             perfil = getattr(g, 'perfil', None)
             es_admin = (perfil is None) or bool(perfil.get('is_admin'))
-            if es_admin and campos_importe_en_d == ['metodo_pago']:
+            if es_admin and otros_importe == ['metodo_pago']:
                 if d['metodo_pago'] not in METODOS_VALIDOS:
                     return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
                 motivo = (d.get('motivo') or '').strip()
@@ -339,16 +349,14 @@ def update_recibo(rid):
                 d['notas'] = (r.get('notas') or '') + (
                     f"\n[CORRECCIÓN forma de pago {dt.date.today().isoformat()}] "
                     f"{r.get('metodo_pago')} → {d['metodo_pago']} · {motivo} ({actor_label})")
-            else:
-                forbidden = campos_importe_en_d
-                if forbidden:
-                    return jsonify({
-                        'ok': False, 'error': 'estado_no_permite_modificar_importes',
-                        'detalle': f'Recibo {estado}: solo se pueden editar notas/descripciones '
-                                   f'(o la forma de pago, solo admin). '
-                                   f'Para cambios contables: anula y recrea.',
-                        'campos_bloqueados': forbidden,
-                    }), 400
+            elif otros_importe:
+                return jsonify({
+                    'ok': False, 'error': 'estado_no_permite_modificar_importes',
+                    'detalle': f'Recibo {estado}: solo se pueden editar notas/descripciones, '
+                               f'la fecha fin (próximo cobro) o la forma de pago (admin). '
+                               f'Para cambios contables: anula y recrea.',
+                    'campos_bloqueados': otros_importe,
+                }), 400
         else:
             return jsonify({'ok': False, 'error': 'estado_no_editable',
                             'detalle': f'Estado actual: {estado}'}), 400
@@ -358,8 +366,9 @@ def update_recibo(rid):
         # a 1 mes desde la fecha de inicio, ni superior en 31 días al fin natural
         # de la periodicidad de la cuota. La fecha fin define cuándo vuelve a
         # tocar emitir el siguiente recibo (cobertura, auditoría #24), por eso se
-        # acota. Solo se valida si se está cambiando fecha_hasta (recibo editable).
-        if editable_full and d.get('fecha_hasta'):
+        # acota. Se valida siempre que fecha_hasta vaya a escribirse (editable o
+        # cobrado — en cobrado solo se permite este campo).
+        if d.get('fecha_hasta') and 'fecha_hasta' in allowed:
             fd_raw = d.get('fecha_desde') or r.get('fecha_desde')
             if fd_raw:
                 fdesde = dt.date.fromisoformat(str(fd_raw)[:10])
