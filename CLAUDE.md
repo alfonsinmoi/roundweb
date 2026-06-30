@@ -267,6 +267,7 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
 | `round_entradas_puntuales.timer` | cada 5 min | detecta reservas confirmadas → entradas puntuales |
 | `round_estado_fisico_sync.timer` | diario 03:45 | sync tests estado físico NoofitPro → cache local |
 | `round_ejercicios_sync.timer` | diario 04:15 | sync ejercicios realizados (getTrainingsUser) → `ejercicio_realizado` |
+| `round_descuentos_auto.timer` | diario 03:15 | recalcula descuentos AUTO (familiares + varias_cuotas) → `descuento_asignacion` con `origen='auto_*'`. También se dispara JUSTO ANTES de preemitir (`preemision_validar`) y emitir (`preemision_v2.generar`). El cron NO aplica scope #28 por trainer (solo marca quién cumple); el scope lo aplica la emisión. |
 
 ## Tablas BD principales (round_config)
 
