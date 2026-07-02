@@ -493,17 +493,17 @@ Estado global: **sano** (0 errores API en 72h, backups nightly OK, 100% endpoint
 - **`.env` con permisos 644 → 640** (`/opt/round_config_api/.env`, owner odoo). Evita lectura por
   otros usuarios del VPS (contenía DB/Resend/NoofitPro/token).
 
-**Hallazgos PENDIENTES (verificados leyendo código, requieren decisión/fix):**
-- 🟠 **`marcar_impagado` (recibos.py:863) SIN guard de estado**: puede pasar a `impagado` un recibo
-  `cancelado`/`facturado`/`pagado` sin restricción → revive un recibo anulado a cobro. Recomendado:
-  rechazar transición desde `cancelado`/`facturado`.
-- 🟠 **`marcar_devuelto` (recibos.py:886) sin guard `facturado`/move posteado**: si el recibo tiene
-  `account_move_id` posteado, anula el payment pero deja la factura Odoo huérfana (descuadre SII).
-  Recomendado: bloquear si move posteado y exigir nota de crédito.
-- 🟡 **update_recibo — periodicidad editable en PAGADO recalcula fecha_hasta pero NO importe**
-  (introducido #hoy, POR DISEÑO a petición del propietario para controlar el próximo cobro): el
-  importe pagado no cambia → posible desajuste importe↔cobertura. Está **auditado** (log_action),
-  pero conviene un aviso en UI. Decisión del propietario.
+**CORREGIDO (2026-07-02 ✅, segunda tanda):**
+- **#1 `marcar_impagado` (recibos.py:863)** — ya rechaza pasar a `impagado` un recibo `cancelado`
+  o `facturado` (`estado_no_permite_impagado`). Evita revivir a cobro un anulado / desincronizar
+  la factura Odoo posteada.
+- **#2 `marcar_devuelto` (recibos.py:886)** — ya rechaza si `estado='facturado'`
+  (`estado_no_permite_devolver`): exige nota de crédito en Odoo antes, para no dejar la factura
+  sin conciliar (SII).
+- **#3 aviso UI (ModificarReciboBtn)** — el recibo cobrado/facturado avisa que se puede ajustar
+  periodicidad + fecha fin (próximo cobro) pero **el importe cobrado NO cambia**.
+
+**Hallazgos PENDIENTES (mejoras, requieren decisión/sprint):**
 - 🟡 **Sin cron de reconciliación recibo BD ↔ Odoo** (estado/payment/move). Mejora preventiva:
   `cron_reconciliacion_recibos` diario → incidencia `warning` si divergen.
 - 🟡 **XSS almacenado potencial** en descripción de lead (crm.py) si el admin renderiza HTML en
