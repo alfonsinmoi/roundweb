@@ -119,7 +119,11 @@ if not CONFIRM:
 # Aplicar
 hoy = datetime.date.today().isoformat()
 sub_ids = [s['id'] for s in subs]
-o._call('round.subscription', 'write', [sub_ids],
+# FIX 2026-07-02: _call(model, 'write', ids, vals) espera la LISTA de ids
+# directamente (convención de odoo_alta: `[partner_id]` = lista con ints).
+# Antes se pasaba `[sub_ids]` → ids anidados [[...]] → Odoo mail_thread
+# reventaba con "unhashable type: list" y el cron llevaba días fallando.
+o._call('round.subscription', 'write', sub_ids,
     {'fecha_fin': hoy, 'estado': 'cancelada'})
 
 # Audit log: id_manager por suscripción (vía company → manager).

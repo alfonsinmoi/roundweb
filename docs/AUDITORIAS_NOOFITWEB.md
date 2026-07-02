@@ -479,6 +479,49 @@ de escalar a managers reales con datos sensibles hay que decidir si se migra a D
 - `ensure_chart` vía `subprocess odoo-bin shell` con `env.cr.commit()`: si el provisioner
   corre concurrente para 2 managers podría haber contención; hoy es secuencial (no problema).
 
+## 31. Auditoría transversal seguridad + fiabilidad de datos (todos los módulos) — 2026-07-02 🟠
+**Barrido completo** (backend rutas/crons/auth) con 3 revisiones paralelas + verificación en VPS.
+Estado global: **sano** (0 errores API en 72h, backups nightly OK, 100% endpoints mutantes con
+`@auth_required`, sin SQLi, tokens con entropía correcta, JWT firmados y con exp).
+
+**CORREGIDO ya (2026-07-02 ✅):**
+- **Cron `round_sync_nf_subs` caído desde hace días** (`scripts/sync_nf_subs.py:122`): pasaba
+  `write(model,'write',[sub_ids],vals)` → ids anidados `[[...]]` → Odoo `mail_thread` reventaba
+  con `TypeError: unhashable type: 'list'` y **ninguna** sub de cliente NF-inactivo se cancelaba
+  (0 registros en accion_log). Fix: `write(..., sub_ids, ...)` (lista directa, como odoo_alta).
+  Verificado dry-run + aplicado: **95 subs canceladas** de 98 clientes NF inactivos. `reset-failed`.
+- **`.env` con permisos 644 → 640** (`/opt/round_config_api/.env`, owner odoo). Evita lectura por
+  otros usuarios del VPS (contenía DB/Resend/NoofitPro/token).
+
+**Hallazgos PENDIENTES (verificados leyendo código, requieren decisión/fix):**
+- 🟠 **`marcar_impagado` (recibos.py:863) SIN guard de estado**: puede pasar a `impagado` un recibo
+  `cancelado`/`facturado`/`pagado` sin restricción → revive un recibo anulado a cobro. Recomendado:
+  rechazar transición desde `cancelado`/`facturado`.
+- 🟠 **`marcar_devuelto` (recibos.py:886) sin guard `facturado`/move posteado**: si el recibo tiene
+  `account_move_id` posteado, anula el payment pero deja la factura Odoo huérfana (descuadre SII).
+  Recomendado: bloquear si move posteado y exigir nota de crédito.
+- 🟡 **update_recibo — periodicidad editable en PAGADO recalcula fecha_hasta pero NO importe**
+  (introducido #hoy, POR DISEÑO a petición del propietario para controlar el próximo cobro): el
+  importe pagado no cambia → posible desajuste importe↔cobertura. Está **auditado** (log_action),
+  pero conviene un aviso en UI. Decisión del propietario.
+- 🟡 **Sin cron de reconciliación recibo BD ↔ Odoo** (estado/payment/move). Mejora preventiva:
+  `cron_reconciliacion_recibos` diario → incidencia `warning` si divergen.
+- 🟡 **XSS almacenado potencial** en descripción de lead (crm.py) si el admin renderiza HTML en
+  Odoo; validar/escapar entrada de formularios públicos. Whitelist de `tipo` de campo en lead_form.
+- 🟡 **Meta/Email**: token caducado se marca `fallido` sin estado propio ni aviso al admin;
+  sin backoff exponencial en reintentos. Mejora de robustez de publicación social.
+- 🟡 **13 endpoints mutantes sin `log_action`** (cliente_portal, lead_forms borrar, manager_odoo
+  wc_check/wcommerce_cliente, horario correcciones/fichaje) → añadir traza.
+- 🟢 **Precisión monetaria**: cálculos con `float`+`round()`; reconcilian al total pero podrían dar
+  descuadres de 1 cént en Σbase vs Σiva en agregados grandes. Mejora: `Decimal` en `_split_iva` y
+  `descuentos_apply`.
+- 🟢 **Pausa fantasma**: `cliente_inactivo_temporal` #23 (cliente 1821170) no existe en cliente_cache
+  ni en NoofitPro (baja cron: "no encontrado"). Limpiar/registrar.
+
+**Pendientes conocidos re-confirmados:** webhook PayComet sin firma HMAC (sigue en stub, BLOCKER
+pre-producción PayComet real); H1/H2 auth bootstrap = RESUELTOS (Sprint 8); rate-limit público =
+IMPLEMENTADO (#13). Detalle completo de cada hallazgo en el informe de esta fecha.
+
 ## 30. Auditoría descuentos auto: cron, scope #28 al asignar, Málaga huérfano — 2026-06-30 ✅
 **Revisado:** `cron_descuentos_auto.py`, catálogo `descuento`, `descuento_asignacion`,
 timer `round_descuentos_auto`, rutas de emisión/preemisión. Auditoría completa pedida por el
