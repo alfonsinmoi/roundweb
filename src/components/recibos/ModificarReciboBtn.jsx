@@ -140,10 +140,11 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
             Modificar recibo #{r.id_bd} ({r.estado_bd || r.estado})
           </strong>
           {!editableFull && (
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
-              ⚠ Recibo cobrado/facturado: los importes están en contabilidad y no se editan.
-              Sí puedes ajustar la <strong>fecha fin</strong> (define el próximo cobro) y
-              descripciones/notas.
+            <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4, lineHeight: 1.5 }}>
+              ⚠ Recibo cobrado/facturado: puedes ajustar la <strong>periodicidad</strong> y la{' '}
+              <strong>fecha fin</strong> (define el próximo cobro), además de descripciones/notas.
+              El <strong>importe ya cobrado NO cambia</strong> — solo cambia la cobertura, no lo
+              pagado.
             </div>
           )}
           {avisoLegacyOdoo && (

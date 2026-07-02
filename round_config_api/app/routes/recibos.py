@@ -863,11 +863,20 @@ def marcar_pagado(rid):
 def marcar_impagado(rid):
     actor = actor_from_request()
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id_trainer FROM recibo WHERE id_manager=%s AND id=%s",
+        cur.execute("SELECT id_trainer, estado FROM recibo WHERE id_manager=%s AND id=%s",
                     (str(g.id_manager), rid))
         guard = cur.fetchone()
         if not guard or trainer_bloquea(guard['id_trainer']):
             return jsonify({'ok': False, 'error': 'not_found'}), 404
+        # Guard de transición (auditoría #31 · #1): 'cancelado' y 'facturado' son
+        # estados finales/contabilizados — no se reabren a 'impagado' desde aquí
+        # (reviviría a cobro un recibo anulado, o desincronizaría la factura Odoo
+        # ya posteada). Para un facturado que se rechaza: nota de crédito en Odoo.
+        if guard['estado'] in ('cancelado', 'facturado'):
+            return jsonify({'ok': False, 'error': 'estado_no_permite_impagado',
+                            'detalle': f"Recibo {guard['estado']}: no se puede marcar impagado. "
+                                       f"Si es facturado y se rechaza, emite una nota de crédito "
+                                       f"en Odoo."}), 400
         cur.execute("""
             UPDATE recibo SET estado='impagado', fecha_pago=NULL, updated_by=%s
              WHERE id_manager=%s AND id=%s
@@ -911,6 +920,14 @@ def marcar_devuelto(rid):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
     if trainer_bloquea(r['id_trainer']):
         return jsonify({'ok': False, 'error': 'not_found'}), 404
+    # Guard de transición (auditoría #31 · #2): un recibo 'facturado' tiene una
+    # factura Odoo posteada; marcarlo devuelto aquí anularía solo el payment y
+    # dejaría la factura huérfana (descuadre SII). La devolución de un facturado
+    # exige nota de crédito en Odoo, no este flujo.
+    if r['estado'] == 'facturado':
+        return jsonify({'ok': False, 'error': 'estado_no_permite_devolver',
+                        'detalle': 'Recibo facturado: emite una nota de crédito en Odoo antes '
+                                   'de marcarlo devuelto (no dejar la factura sin conciliar).'}), 400
 
     pago_anulado = False
     if r.get('account_payment_id'):
