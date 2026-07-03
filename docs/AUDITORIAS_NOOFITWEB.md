@@ -503,20 +503,26 @@ Estado global: **sano** (0 errores API en 72h, backups nightly OK, 100% endpoint
 - **#3 aviso UI (ModificarReciboBtn)** — el recibo cobrado/facturado avisa que se puede ajustar
   periodicidad + fecha fin (próximo cobro) pero **el importe cobrado NO cambia**.
 
-**Hallazgos PENDIENTES (mejoras, requieren decisión/sprint):**
-- 🟡 **Sin cron de reconciliación recibo BD ↔ Odoo** (estado/payment/move). Mejora preventiva:
-  `cron_reconciliacion_recibos` diario → incidencia `warning` si divergen.
-- 🟡 **XSS almacenado potencial** en descripción de lead (crm.py) si el admin renderiza HTML en
-  Odoo; validar/escapar entrada de formularios públicos. Whitelist de `tipo` de campo en lead_form.
-- 🟡 **Meta/Email**: token caducado se marca `fallido` sin estado propio ni aviso al admin;
-  sin backoff exponencial en reintentos. Mejora de robustez de publicación social.
-- 🟡 **13 endpoints mutantes sin `log_action`** (cliente_portal, lead_forms borrar, manager_odoo
-  wc_check/wcommerce_cliente, horario correcciones/fichaje) → añadir traza.
-- 🟢 **Precisión monetaria**: cálculos con `float`+`round()`; reconcilian al total pero podrían dar
-  descuadres de 1 cént en Σbase vs Σiva en agregados grandes. Mejora: `Decimal` en `_split_iva` y
-  `descuentos_apply`.
-- 🟢 **Pausa fantasma**: `cliente_inactivo_temporal` #23 (cliente 1821170) no existe en cliente_cache
-  ni en NoofitPro (baja cron: "no encontrado"). Limpiar/registrar.
+**Sprint de mejoras — CERRADO (2026-07-03 ✅):**
+- ✅ **Cron reconciliación recibo BD ↔ Odoo** (`cron_reconciliacion_recibos` + timer diario 05:00):
+  detecta pago inexistente/cancelado, factura no posteada, devolución no propagada. Emite UNA
+  incidencia RESUMEN por manager (update-or-insert, no inunda). **Hallazgo:** 363 recibos `pagado`
+  con pago Odoo stale (**309 inexistente + 54 cancelado**) = backlog histórico de migración →
+  requiere decisión del propietario (¿reconciliar / aceptar?). El cron vigila que el número no suba.
+- ✅ **XSS**: `crm.py` escapa (`html.escape`) el texto libre del lead antes de HTML Odoo/email;
+  `lead_forms` valida whitelist de tipos de campo.
+- ✅ **Meta**: cuenta con token caducado/sin token → incidencia_admin `warning` idempotente por
+  cuenta avisando de reconectar (antes fallaba en silencio). Reintentos ya acotados (attempts<3).
+- ✅ **log_action** añadido donde faltaba (cliente_portal, lead_forms, horario_ausencias);
+  manager_odoo/inactivo_temporal/categorias ya lo tenían (verificado).
+- ✅ **Decimal**: `_split_iva` con `Decimal`+ROUND_HALF_UP; verificado equivalente al cálculo previo
+  en todos los totales 0,01–3000€ (0 diferencias) → sin cambio de importes. (El resto de la cadena
+  float en `descuentos_apply` reconcilia al total; migración a Decimal allí = mejora futura opcional.)
+- ✅ **Pausa fantasma** #23 (cliente 1821170 = dup de 1822605) cancelada + cron `baja_programada`
+  blindado (auto-cancela pausas de clientes inexistentes) → servicio verde de nuevo.
+
+**DECISIÓN PROPIETARIO pendiente:** los 363 recibos con pago Odoo stale (backlog migración) —
+¿se reconcilian (re-vincular/re-crear pagos) o se aceptan como histórico? El cron los vigila.
 
 **Pendientes conocidos re-confirmados:** webhook PayComet sin firma HMAC (sigue en stub, BLOCKER
 pre-producción PayComet real); H1/H2 auth bootstrap = RESUELTOS (Sprint 8); rate-limit público =
