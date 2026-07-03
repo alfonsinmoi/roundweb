@@ -164,6 +164,20 @@ def main():
     return 0 if (total_fail == 0 and rc_temp == 0) else 2
 
 
+def _cliente_existe(id_manager, idnoofit):
+    """¿El cliente sigue existiendo en cliente_cache? (id NoofitPro vivo).
+    Un id ausente = duplicado/muerto → evita reintentos eternos (auditoría #31)."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT 1 FROM cliente_cache
+                            WHERE id_manager=%s AND id::text=%s LIMIT 1""",
+                        (str(id_manager), str(idnoofit)))
+            return cur.fetchone() is not None
+    except Exception:
+        # Ante duda (error BD), NO auto-cancelar: dejar el flujo normal.
+        return True
+
+
 def _procesar_inactivo_temporal():
     """Aplica las transiciones por fecha de las pausas temporales:
       - programada con fecha_inicio <= hoy  → archivar (aplicar_inicio)
@@ -184,6 +198,19 @@ def _procesar_inactivo_temporal():
         a_terminar = cur.fetchall()
     log.info(f'INACTIVO TEMPORAL: a_iniciar={len(a_iniciar)} a_terminar={len(a_terminar)}')
     for row in a_iniciar:
+        # Guard anti-fantasma (auditoría #31): si el cliente no existe en
+        # cliente_cache (id NoofitPro muerto/duplicado), NoofitPro devolverá
+        # "no encontrado" cada noche → el servicio quedaría 'failed' para
+        # siempre y enmascararía fallos reales. Auto-cancelamos la pausa.
+        if not _cliente_existe(row['id_manager'], row['cliente_idnoofit']):
+            with get_conn() as c2, c2.cursor() as cur2:
+                cur2.execute("""UPDATE cliente_inactivo_temporal
+                                   SET estado='cancelada',
+                                       error='cliente_inexistente_en_cache (idnoofit muerto/duplicado) — auto-cancelada'
+                                 WHERE id=%s AND estado='programada'""", (row['id'],))
+            log.warning(f'  ⚠ pausa {row["id"]} cliente {row["cliente_idnoofit"]} no existe en '
+                        f'cliente_cache → auto-cancelada (no se reintenta)')
+            continue
         try:
             ok, err = aplicar_inicio(row)
             if ok: log.info(f'  ▶ pausa {row["id"]} cliente={row["cliente_idnoofit"]} INICIADA')
