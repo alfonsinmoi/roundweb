@@ -16,6 +16,7 @@ from ..auth_cliente import (
     issue_jwt_cliente, cliente_required, resolver_trabajador_activo,
 )
 from ..db import get_conn
+from ..audit_log import log_action, actor_from_request
 
 bp = Blueprint('cliente_portal', __name__)
 log = logging.getLogger(__name__)
@@ -265,6 +266,9 @@ def solicitar_alta_trabajador():
         """, (str(g.id_manager), str(g.cliente_idnoofit), trainer, nif,
               nombre, email, jornada, fecha_alta, motivo))
         row = cur.fetchone()
+    log_action(actor_from_request(), entidad='trabajador',
+               accion='solicitar_alta', entidad_id=row['id'],
+               resumen=f'Cliente {g.cliente_idnoofit} solicita alta laboral (trainer {trainer})')
     return jsonify({
         'ok': True,
         'trabajador_id': row['id'],
@@ -470,6 +474,9 @@ def marcar_nota_leida(nota_id):
         r = cur.fetchone()
     if not r:
         return jsonify({'ok': False, 'error': 'no_encontrada'}), 404
+    log_action(actor_from_request(), entidad='cliente_nota', accion='leer',
+               entidad_id=nota_id,
+               resumen=f'Cliente {g.cliente_idnoofit} marca nota leída')
     return jsonify({'ok': True, 'leida_at': r['leida_at_cliente'].isoformat()})
 
 
@@ -513,6 +520,9 @@ def responder_nota(nota_id):
                  updated_at = NOW()
            WHERE id = %s
         """, (nota_id,))
+    log_action(actor_from_request(), entidad='cliente_nota', accion='responder',
+               entidad_id=nueva['id'],
+               resumen=f'Cliente {g.cliente_idnoofit} responde nota {nota_id}')
     return jsonify({
         'ok': True,
         'respuesta': {

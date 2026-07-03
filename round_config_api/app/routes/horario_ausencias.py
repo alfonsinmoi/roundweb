@@ -213,6 +213,9 @@ def crear_ausencia():
         """, (str(g.id_manager), g.trabajador['id'], tipo,
               fd, fh, jornada_completa, hora_desde, hora_hasta, motivo))
         row = cur.fetchone()
+    log_action(actor_from_request(), entidad='solicitud_ausencia',
+               entidad_id=row['id'], accion='crear',
+               resumen=f'trab={g.trabajador["id"]} tipo={tipo} {fd}..{fh}')
     return jsonify({'ok': True, 'solicitud': _row_to_dict(row)})
 
 
@@ -255,6 +258,9 @@ def cancelar_ausencia(sol_id):
         """, (sol_id, g.trabajador['id'], str(g.id_manager)))
         if not cur.fetchone():
             return jsonify({'ok': False, 'error': 'not_found_o_no_pendiente'}), 404
+    log_action(actor_from_request(), entidad='solicitud_ausencia',
+               entidad_id=sol_id, accion='cancelar',
+               resumen=f'trab={g.trabajador["id"]} cancela solicitud {sol_id}')
     return jsonify({'ok': True})
 
 

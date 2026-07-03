@@ -4,7 +4,7 @@
   GET  /api/crm/leads      (auth)     — lista leads para el dashboard Round
   PATCH /api/crm/leads/:id (auth)     — actualizar etapa, asignación, etc.
 """
-import os, json, logging, re, time
+import os, json, logging, re, time, html
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission, require_seccion
@@ -147,18 +147,23 @@ def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
     full_name = (f'{nombre} {apellidos}'.strip()) or email or telefono
 
     # 2) Crear lead en Odoo (en la company del manager)
-    description_lines = [f'<b>Origen:</b> {origen_label}']
-    if cuota_interes: description_lines.append(f'<b>Cuota interés:</b> {cuota_interes}')
-    if objetivo:      description_lines.append(f'<b>Objetivo:</b> {objetivo}')
-    if presupuesto:   description_lines.append(f'<b>Presupuesto:</b> {presupuesto}')
-    if mensaje:       description_lines.append(f'<b>Mensaje:</b><br/>{mensaje}')
+    # Escapamos SOLO el texto libre del usuario (mensaje, nombre, cuota, etc.)
+    # antes de meterlo en el HTML de la descripción — evita XSS almacenado
+    # renderizado luego en el CRM de Odoo. Las etiquetas de plantilla (<b>,
+    # <br/>, <i>) y los datos de centro (config propia) NO se escapan.
+    esc = html.escape
+    description_lines = [f'<b>Origen:</b> {esc(origen_label)}']
+    if cuota_interes: description_lines.append(f'<b>Cuota interés:</b> {esc(cuota_interes)}')
+    if objetivo:      description_lines.append(f'<b>Objetivo:</b> {esc(objetivo)}')
+    if presupuesto:   description_lines.append(f'<b>Presupuesto:</b> {esc(presupuesto)}')
+    if mensaje:       description_lines.append(f'<b>Mensaje:</b><br/>{esc(mensaje)}')
     description_lines.append(
         f'<br/><i>Centro asignado: {centro["nombre_centro"]} '
         f'(trainer #{centro["id_trainer"]} · {centro["email"]})</i>'
     )
-    if d.get('utm_source'):  description_lines.append(f'<i>UTM source: {d["utm_source"]}</i>')
-    if d.get('utm_medium'):  description_lines.append(f'<i>UTM medium: {d["utm_medium"]}</i>')
-    if d.get('utm_campaign'):description_lines.append(f'<i>UTM campaign: {d["utm_campaign"]}</i>')
+    if d.get('utm_source'):  description_lines.append(f'<i>UTM source: {esc(str(d["utm_source"]))}</i>')
+    if d.get('utm_medium'):  description_lines.append(f'<i>UTM medium: {esc(str(d["utm_medium"]))}</i>')
+    if d.get('utm_campaign'):description_lines.append(f'<i>UTM campaign: {esc(str(d["utm_campaign"]))}</i>')
 
     odoo_lead_id = None
     try:
@@ -240,10 +245,10 @@ def _procesar_lead(id_manager, d, *, origen='web_form', company_id=None,
             body_html = f"""<p>Hola,</p>
 <p>Te ha llegado un nuevo lead a tu centro <b>{centro['nombre_centro']}</b>:</p>
 <table style="border-collapse:collapse">
-  <tr><td><b>Nombre:</b></td><td>{full_name}</td></tr>
-  <tr><td><b>Email:</b></td><td>{email}</td></tr>
-  <tr><td><b>Teléfono:</b></td><td>{telefono}</td></tr>
-  {'<tr><td><b>Mensaje:</b></td><td>'+mensaje+'</td></tr>' if mensaje else ''}
+  <tr><td><b>Nombre:</b></td><td>{esc(full_name)}</td></tr>
+  <tr><td><b>Email:</b></td><td>{esc(email)}</td></tr>
+  <tr><td><b>Teléfono:</b></td><td>{esc(telefono)}</td></tr>
+  {'<tr><td><b>Mensaje:</b></td><td>'+esc(mensaje)+'</td></tr>' if mensaje else ''}
 </table>
 <p>Gestionar: <a href="https://noofit.wiemspro.com/crm">panel CRM</a></p>"""
             enviar_email(centro['email'],
@@ -462,13 +467,15 @@ def crear_lead_manual():
     full_name = f'{nombre} {apellidos}'.strip() or email or telefono
 
     # 2) Crear lead en Odoo (mismo formato que público, etiquetado "Manual")
+    # Escapamos el texto libre antes de meterlo en el HTML (XSS almacenado).
+    esc = html.escape
     description_lines = [
         f'<b>Origen:</b> Alta manual desde ERP por '
-        f'{actor.get("label") or actor.get("email") or "operador"}'
+        f'{esc(actor.get("label") or actor.get("email") or "operador")}'
     ]
-    if cuota_interes: description_lines.append(f'<b>Cuota interés:</b> {cuota_interes}')
-    if objetivo:      description_lines.append(f'<b>Objetivo:</b> {objetivo}')
-    if mensaje:       description_lines.append(f'<b>Mensaje:</b><br/>{mensaje}')
+    if cuota_interes: description_lines.append(f'<b>Cuota interés:</b> {esc(cuota_interes)}')
+    if objetivo:      description_lines.append(f'<b>Objetivo:</b> {esc(objetivo)}')
+    if mensaje:       description_lines.append(f'<b>Mensaje:</b><br/>{esc(mensaje)}')
     description_lines.append(
         f'<br/><i>Centro asignado: {centro["nombre_centro"]} '
         f'(trainer #{centro["id_trainer"]} · {centro["email"]})</i>'

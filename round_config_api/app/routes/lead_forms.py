@@ -27,10 +27,37 @@ from flask import Blueprint, request, jsonify, g
 from ..auth import auth_required, require_permission
 from ..db import get_conn
 from .. import config as cfg
+from ..audit_log import log_action, actor_from_request
 from .centros import buscar_centro, proximo_centro_round_robin
 
 log = logging.getLogger(__name__)
 bp = Blueprint('lead_forms', __name__)
+
+# Tipos de campo admitidos en la definición de un formulario. Cualquier campo
+# con un `type` fuera de esta whitelist se rechaza (evita inyección de tipos
+# de input raros / atributos peligrosos al renderizar el form embebido).
+_TIPOS_CAMPO_VALIDOS = {
+    'text', 'email', 'tel', 'phone', 'number', 'select', 'checkbox',
+    'textarea', 'date',
+    # tipos internos del builder que no son <input> HTML libres:
+    'consentimiento', 'oculto',
+}
+
+
+def _validar_tipos_campos(campos):
+    """Devuelve el primer `type` inválido encontrado, o None si todos OK.
+
+    Acepta cualquier iterable de dicts-campo; ignora entradas sin `type`
+    (se tratan como 'text' por defecto en el frontend)."""
+    if not isinstance(campos, list):
+        return None
+    for campo in campos:
+        if not isinstance(campo, dict):
+            continue
+        t = campo.get('type') or campo.get('tipo')
+        if t is not None and t not in _TIPOS_CAMPO_VALIDOS:
+            return t
+    return None
 
 # Rate limit por IP en memoria (igual patrón que crm.py)
 # Límites del submit público — consumidos por app.rate_limit (contador
@@ -231,6 +258,11 @@ def crear_formulario():
         return jsonify({'ok': False, 'error': 'nombre_required'}), 400
     tipo = d.get('tipo') if d.get('tipo') in ('lead', 'prueba') else 'lead'
     campos = d.get('campos') if isinstance(d.get('campos'), list) else []
+    tipo_malo = _validar_tipos_campos(campos)
+    if tipo_malo is not None:
+        return jsonify({'ok': False, 'error': 'tipo_campo_invalido',
+                        'tipo': str(tipo_malo)[:40],
+                        'validos': sorted(_TIPOS_CAMPO_VALIDOS)}), 400
     config = d.get('config') if isinstance(d.get('config'), dict) else {}
     id_trainer = (str(d.get('id_trainer')).strip() if d.get('id_trainer') else None) or None
     # public_id único (reintenta ante colisión improbable)
@@ -244,6 +276,9 @@ def crear_formulario():
                     (str(g.id_manager), id_trainer, pid, nombre, tipo,
                      json.dumps(campos), json.dumps(config)))
                 row = cur.fetchone()
+            log_action(actor_from_request(), entidad='lead_form', accion='create',
+                       entidad_id=row['id'],
+                       resumen=f'Formulario creado: {nombre} (tipo={tipo})')
             return jsonify({'ok': True, 'formulario': _row_to_form(row)})
         except Exception as e:
             if 'public_id' in str(e).lower():
@@ -264,6 +299,11 @@ def actualizar_formulario(fid):
     if 'tipo' in d and d['tipo'] in ('lead', 'prueba'):
         sets.append('tipo=%s'); vals.append(d['tipo'])
     if 'campos' in d and isinstance(d['campos'], list):
+        tipo_malo = _validar_tipos_campos(d['campos'])
+        if tipo_malo is not None:
+            return jsonify({'ok': False, 'error': 'tipo_campo_invalido',
+                            'tipo': str(tipo_malo)[:40],
+                            'validos': sorted(_TIPOS_CAMPO_VALIDOS)}), 400
         sets.append('campos=%s::jsonb'); vals.append(json.dumps(d['campos']))
     if 'config' in d and isinstance(d['config'], dict):
         sets.append('config=%s::jsonb'); vals.append(json.dumps(d['config']))
@@ -282,6 +322,10 @@ def actualizar_formulario(fid):
         row = cur.fetchone()
     if not row:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
+    log_action(actor_from_request(), entidad='lead_form', accion='update',
+               entidad_id=fid,
+               resumen=f'Formulario actualizado: {row.get("nombre")}',
+               cambios={'campos_modificados': [k for k in d.keys()]})
     return jsonify({'ok': True, 'formulario': _row_to_form(row)})
 
 
@@ -301,4 +345,7 @@ def borrar_formulario(fid):
         row = cur.fetchone()
     if not row:
         return jsonify({'ok': False, 'error': 'not_found'}), 404
+    log_action(actor_from_request(), entidad='lead_form', accion='delete',
+               entidad_id=fid,
+               resumen=f'Formulario {"eliminado" if hard else "desactivado"} (id={fid})')
     return jsonify({'ok': True, 'mode': 'hard' if hard else 'soft'})
