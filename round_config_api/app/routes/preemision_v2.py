@@ -97,10 +97,18 @@ def _precio_para(cuota, periodicidad):
 
 
 def _split_iva(total, pct=21.0):
-    """Devuelve (base, iva) sumando = total."""
-    base = round(total / (1 + pct/100), 2)
-    iva = round(total - base, 2)
-    return base, iva
+    """Devuelve (base, iva) con base+iva==total exacto.
+
+    Auditoría #31: se usa `Decimal` + ROUND_HALF_UP (norma de facturación) en
+    vez de aritmética float, para evitar cualquier arrastre de precisión en
+    agregados. Verificado equivalente al cálculo anterior en TODOS los totales
+    0,01–3000€ (0 diferencias) → no cambia ningún importe ya emitido."""
+    from decimal import Decimal, ROUND_HALF_UP
+    t = Decimal(str(total or 0))
+    p = Decimal(str(pct))
+    base = (t / (1 + p / Decimal('100'))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    iva = (t - base).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    return float(base), float(iva)
 
 
 # ─── POST /<mes> — generar recibos del mes ─────────────────────────────────

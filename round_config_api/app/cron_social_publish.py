@@ -65,12 +65,15 @@ def publicar_pendientes():
             if not row:
                 continue
 
-            # Token caducado?
+            # Token caducado? → avisar al admin (incidencia idempotente por cuenta)
+            # para que reconecte la cuenta Meta; el post no se puede publicar.
             if row.get('expires_at') and row['expires_at'] < datetime.now(timezone.utc):
+                _incidencia_cuenta_meta(row, 'access_token caducado')
                 _marcar_fallido(post_id, 'access_token caducado · renueva la cuenta Meta')
                 fallidos += 1
                 continue
             if not row.get('access_token'):
+                _incidencia_cuenta_meta(row, 'sin access_token configurado')
                 _marcar_fallido(post_id, 'sin access_token configurado')
                 fallidos += 1
                 continue
@@ -105,6 +108,37 @@ def publicar_pendientes():
             fallidos += 1
 
     return {'publicados': publicados, 'fallidos': fallidos, 'intentos': intentos}
+
+
+def _incidencia_cuenta_meta(row, motivo):
+    """Avisa al admin (incidencia_admin 'warning') de que una cuenta Meta no
+    puede publicar (token caducado / sin token) → hay que reconectarla.
+    Idempotente por cuenta: no crea una nueva si ya hay una sin leer para esa
+    social_cuenta (auditoría #31). Antes el post fallaba en silencio."""
+    try:
+        cuenta_id = row.get('social_cuenta_id')
+        idm = row.get('id_manager')
+        if not cuenta_id or not idm:
+            return
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT 1 FROM incidencia_admin
+                            WHERE tipo='meta_token' AND entidad='social_cuenta'
+                              AND entidad_id=%s AND leida_at IS NULL LIMIT 1""",
+                        (cuenta_id,))
+            if cur.fetchone():
+                return
+        nombre = row.get('fb_page_name') or row.get('ig_username') or f'cuenta {cuenta_id}'
+        from .incidencias import crear_incidencia_admin
+        crear_incidencia_admin(
+            id_manager=idm, tipo='meta_token', entidad='social_cuenta',
+            entidad_id=cuenta_id, severidad='warning',
+            titulo=f'Cuenta Meta «{nombre}» necesita reconexión',
+            mensaje=(f'No se pueden publicar posts programados: {motivo}. '
+                     f'Reconecta la cuenta en Configuración → Redes sociales. '
+                     f'Los posts pendientes quedarán fallidos hasta entonces.'),
+            created_by='cron_social_publish')
+    except Exception as e:
+        log.warning(f'_incidencia_cuenta_meta: {e}')
 
 
 def _marcar_fallido(post_id, error_msg):
