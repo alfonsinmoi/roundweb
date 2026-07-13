@@ -120,6 +120,19 @@ export function getRoundIdentity(user) {
   }
 }
 
+// Identidad MANAGER-WIDE para config GLOBAL del manager (perfiles, usuarios web…).
+// Si el manager está IMPERSONANDO un centro, `getRoundIdentity` devuelve el
+// trainerId del centro impersonado → el backend (`require_manager`) lo tomaría
+// por un trainer y respondería 403 al editar config manager-wide. Aquí el actor
+// real es el MANAGER (hay `originalSession`), así que se ignora el trainer
+// impersonado. Un trainer NoofitPro REAL (sin originalSession) conserva su
+// trainerId → sigue (correctamente) bloqueado por require_manager.
+export function getRoundManagerWideIdentity(user) {
+  const id = getRoundIdentity(user)
+  if (user?.originalSession) return { managerId: id.managerId, trainerId: null }
+  return id
+}
+
 // Override del trainerId via selector global del header (admin).
 // Si el admin elige un trainer concreto, sus llamadas se filtran como si
 // estuviese impersonándolo. Si elige "Todos", no se manda el header.

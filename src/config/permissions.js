@@ -194,6 +194,7 @@ export const PERMISSIONS = {
         label: 'Cuotas mensuales',
         children: {
           ver:                  { label: 'Ver listado', action: true },
+          crear_recibo:         { label: 'Generar recibo manual a un cliente', action: true },
           reenviar_factura:     { label: 'Reenviar factura PDF', action: true },
           generar_link_pago:    { label: 'Generar link PayComet', action: true },
           marcar_pagado_manual: { label: 'Botón "Pagar" — marcar recibo como pagado manualmente', action: true },

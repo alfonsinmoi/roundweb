@@ -292,6 +292,32 @@ def require_permission(path: str):
     return deco
 
 
+def require_any_permission(*paths):
+    """Como `require_permission` pero pasa si el perfil tiene CUALQUIERA de los
+    permisos dados (OR). Útil cuando una acción puede concederse desde varias
+    claves del árbol o para retrocompatibilidad al introducir una clave nueva
+    (p.ej. `crear_recibo` nuevo + `modificar_recibo` antiguo). Debe ir DESPUÉS
+    de `@auth_required`."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            perfil = getattr(g, 'perfil', None)
+            if not any(_has_permission(perfil, p) for p in paths):
+                try:
+                    from .audit_log import log_action, actor_from_request
+                    log_action(actor_from_request(), entidad='permission_check',
+                               entidad_id=paths[0], accion='denied',
+                               resumen=(f'perm_any={list(paths)} '
+                                        f'perfil={perfil.get("nombre") if perfil else "?"}'))
+                except Exception:
+                    pass
+                return jsonify({'ok': False, 'error': 'permission_denied',
+                                'perm': list(paths)}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
+
+
 def require_manager(fn):
     """Gating "solo el manager del grupo" para una sesión NoofitPro.
 

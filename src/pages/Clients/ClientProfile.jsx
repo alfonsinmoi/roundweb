@@ -333,9 +333,11 @@ export default function ClientProfile() {
   const canArchivar     = useCan('clientes.archivar')
   const canCrearUw      = useCan('configuracion.usuarios_web.crear')
   const canNotificar    = useCan('clientes.notificar')
-  // TODO(perms): no existe en el catálogo una clave para "Generar recibo
-  // manual" ni para "Desvincular cliente". Quedan sin gate fino hasta que se
-  // añadan al catálogo (reportado).
+  // "Generar recibo manual": permiso dedicado `crear_recibo` (nuevo) o el
+  // antiguo `modificar_recibo` (retrocompat con perfiles ya configurados).
+  const canCrearRecibo = useCan('economico.cuotas_mensuales.crear_recibo')
+                      || useCan('economico.cuotas_mensuales.modificar_recibo')
+  // TODO(perms): "Desvincular cliente" sigue sin clave de permiso fino.
 
   const [confirmArchivar, setConfirmArchivar] = useState(false)
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
@@ -818,7 +820,7 @@ export default function ClientProfile() {
           {/* "Generar recibo": emite un recibo manual puntual (cobro extra,
               recibo retroactivo, cobro en efectivo del día, etc.) sin esperar
               al cron mensual ni al wizard trimestral. Sólo si hay Odoo. */}
-          {hasOdoo && (
+          {hasOdoo && canCrearRecibo && (
             <Btn variant="secondary" size="sm" onClick={() => setGenerarReciboOpen(true)}
                  disabled={!!actionLoading}
                  title="Emitir un recibo manual para este cliente">

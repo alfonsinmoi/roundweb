@@ -25,7 +25,7 @@ import json
 import logging
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required, require_permission, require_seccion
+from ..auth import auth_required, require_permission, require_seccion, require_any_permission
 from ..db import get_conn
 from ..audit_log import log_action, actor_from_request
 from ..trainer_scope import (
@@ -152,7 +152,8 @@ def get_recibo(rid):
 @bp.route('', methods=['POST'])
 @bp.route('/', methods=['POST'])
 @auth_required
-@require_permission('economico.cuotas_mensuales.modificar_recibo')
+@require_any_permission('economico.cuotas_mensuales.crear_recibo',
+                        'economico.cuotas_mensuales.modificar_recibo')
 def create_recibo():
     d = request.get_json() or {}
     # Validaciones — cliente_idnoofit puede llegar como int o string.

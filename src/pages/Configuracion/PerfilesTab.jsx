@@ -5,13 +5,15 @@ import { useAuth } from '../../contexts/AuthContext'
 import { Card, Btn, Badge } from '../../components/UI'
 import Modal from '../../components/Modal'
 import { useToast } from '../../components/Toast'
-import { getRoundIdentity } from '../../utils/configApi'
+import { getRoundManagerWideIdentity } from '../../utils/configApi'
 import { perfilesList, perfilCreate, perfilUpdate, perfilDelete } from '../../utils/authUsuarioApi'
 import { PERMISSIONS } from '../../config/permissions'
 
 export default function PerfilesTab() {
   const { user } = useAuth()
-  const identity = useMemo(() => getRoundIdentity(user), [user])
+  // Config manager-wide: si el manager está impersonando un centro, se usa su
+  // identidad de manager (no la del centro) para no chocar con require_manager.
+  const identity = useMemo(() => getRoundManagerWideIdentity(user), [user])
   const toast = useToast()
   const [perfiles, setPerfiles] = useState([])
   const [loading, setLoading] = useState(true)
