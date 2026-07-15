@@ -268,6 +268,8 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
 | `round_estado_fisico_sync.timer` | diario 03:45 | sync tests estado físico NoofitPro → cache local |
 | `round_ejercicios_sync.timer` | diario 04:15 | sync ejercicios realizados (getTrainingsUser) → `ejercicio_realizado` |
 | `round_descuentos_auto.timer` | diario 03:15 | recalcula descuentos AUTO (familiares + varias_cuotas) → `descuento_asignacion` con `origen='auto_*'`. También se dispara JUSTO ANTES de preemitir (`preemision_validar`) y emitir (`preemision_v2.generar`). El cron NO aplica scope #28 por trainer (solo marca quién cumple); el scope lo aplica la emisión. |
+| `round_reconciliacion_recibos.timer` | diario 05:00 | reconcilia recibo BD ↔ Odoo (pago inexistente/cancelado, factura no posteada, devolución no propagada) → 1 incidencia RESUMEN por manager si diverge (auditoría #31). |
+| `round_competiciones_sync.timer` | diario 04:45 | barre `getSalasByManagerByRange` (salas `competicion=true`) → `sala.users[]` → `competicion_realizada`. Alimenta el informe `/informe-competiciones` y el historial por cliente. (Round no usa la modalidad aún → 0 datos.) |
 
 ## Tablas BD principales (round_config)
 
