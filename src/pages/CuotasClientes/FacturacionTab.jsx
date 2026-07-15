@@ -8,16 +8,11 @@ import { ChevronRight, ChevronDown, RefreshCw, Loader2, TrendingUp } from 'lucid
 import { Card, Btn, SectionTitle } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { facturacionResumen } from '../../utils/configApi'
+import { FORMA_PAGO_LABELS } from '../../utils/cuotasApi'
 
-const METODO_LABEL = {
-  sepa: 'SEPA',
-  tarjeta_tok: 'Tarjeta', tarjeta_token: 'Tarjeta', tokenizacion: 'Tarjeta',
-  caja_efectivo: 'Efectivo', efectivo: 'Efectivo',
-  caja_tpv_fisico: 'TPV físico',
-  tpv: 'TPV virtual', caja_tpv_virtual: 'TPV virtual',
-  enlace_pago: 'Enlace pago',
-  '(sin metodo)': 'Sin método',
-}
+// Etiquetas idénticas al filtro del Listado (FORMA_PAGO_LABELS) para que
+// CAJA/efectivo y TPV queden diferenciados en columnas distintas.
+const METODO_LABEL = { ...FORMA_PAGO_LABELS, tpv: 'TPV virtual', '(sin metodo)': 'Sin método' }
 const metodoLabel = (m) => METODO_LABEL[m] || m || 'Sin método'
 const TRIM_LABEL = { 1: 'T1 (ene-mar)', 2: 'T2 (abr-jun)', 3: 'T3 (jul-sep)', 4: 'T4 (oct-dic)' }
 const MES_LABEL = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',

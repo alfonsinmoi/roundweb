@@ -106,12 +106,18 @@ export async function descargarSepa(identity, attachmentId, filename = 'remesa.x
 }
 
 // ── Helpers de formato ──────────────────────────────────────────────────────
+// Etiquetas de forma de cobro. Deben coincidir con las categorías del filtro
+// (FORMA_PAGO_OPCIONES en ListadoTab) para diferenciar CAJA/efectivo de TPV.
 export const FORMA_PAGO_LABELS = {
-  sepa:           'SEPA',
-  tarjeta_token:  'Tarjeta tokenizada',
-  enlace_pago:    'Enlace de pago / efectivo',
-  efectivo:       'Efectivo',
-  tokenizacion:   'Tarjeta tokenizada',
+  sepa:             'SEPA',
+  tarjeta_token:    'Tarjeta tokenizada',
+  tarjeta_tok:      'Tarjeta tokenizada',
+  tokenizacion:     'Tarjeta tokenizada',
+  enlace_pago:      'Enlace de pago',
+  efectivo:         'Efectivo',
+  caja_efectivo:    'Efectivo / caja',
+  caja_tpv_fisico:  'TPV físico',
+  caja_tpv_virtual: 'TPV virtual',
 }
 
 export const PAYMENT_STATE_LABELS = {
