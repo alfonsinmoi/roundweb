@@ -354,6 +354,16 @@ export const recibosImpagadosCliente = (identity, idCliente) =>
 export const reciboCreate = (identity, payload) =>
   _requestRoot('POST', '/api/recibos', identity, payload).then(d => d.id)
 
+// GET /api/recibos/facturacion-resumen — resumen agrupable año/trimestre/mes ×
+// tipo de cobro (cobrado/impagado/pendiente). Devuelve filas planas.
+export const facturacionResumen = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.anio) qs.set('anio', params.anio)
+  if (params.id_trainer) qs.set('id_trainer', params.id_trainer)
+  const sfx = qs.toString() ? `?${qs}` : ''
+  return _requestRoot('GET', `/api/recibos/facturacion-resumen${sfx}`, identity)
+}
+
 // PATCH /api/recibos/<id> — edición de campos. Junio 2026:
 //   Estados editable_full (borrador_remesa, pendiente, impagado, devuelto)
 //   admiten todos los campos incluido metodo_pago, importes, fechas, periodo.
@@ -466,6 +476,25 @@ export const informeEjerciciosEstado = (identity) =>
   _requestRoot('GET', '/api/informes/ejercicios/estado', identity)
 export const informeEjerciciosSync = (identity, force = false) =>
   _requestRoot('POST', `/api/informes/ejercicios/sync${force ? '?force=1' : ''}`, identity)
+
+// ── Informe de competiciones (participaciones + puestos) ─────────────────
+// GET /api/informes/competiciones con filtros de fecha + trainer. Cache local
+// sincronizada desde NoofitPro (clases de tipo competición).
+export const informeCompeticiones = (identity, params = {}) => {
+  const qs = new URLSearchParams()
+  for (const k of ['desde', 'hasta', 'id_trainer', 'limit']) {
+    if (params[k]) qs.set(k, params[k])
+  }
+  const suffix = qs.toString() ? `?${qs}` : ''
+  return _requestRoot('GET', `/api/informes/competiciones${suffix}`, identity)
+}
+export const informeCompeticionesEstado = (identity) =>
+  _requestRoot('GET', '/api/informes/competiciones/estado', identity)
+export const informeCompeticionesSync = (identity, force = false) =>
+  _requestRoot('POST', `/api/informes/competiciones/sync${force ? '?force=1' : ''}`, identity)
+// Competiciones de UN cliente concreto (usado por la ficha de cliente).
+export const competicionesCliente = (idCliente, identity) =>
+  _requestRoot('GET', `/api/informes/competiciones/cliente/${idCliente}`, identity)
 
 // ── Baja programada de cliente (fecha futura/pasada de inactivación) ─────
 // La pestaña vive en /api/clientes (no /api/config). Endpoints:

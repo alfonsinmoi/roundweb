@@ -1125,3 +1125,62 @@ def stats():
     for r in rows:
         if r.get('total'): r['total'] = float(r['total'])
     return jsonify({'ok': True, 'stats': rows})
+
+
+@bp.route('/facturacion-resumen', methods=['GET'])
+@auth_required
+@require_seccion('economico.cuotas_mensuales')
+def facturacion_resumen():
+    """Resumen de facturación agrupable por año/trimestre/mes × tipo de cobro
+    (metodo_pago), con importes cobrados / impagados / pendientes. Devuelve
+    filas planas (periodo = YYYY-MM + trimestre + método) y el frontend arma
+    el árbol con subtotales.
+
+    Buckets por estado:
+      - cobrado   = pagado, facturado
+      - impagado  = impagado, devuelto
+      - pendiente = emitido, pendiente, borrador_remesa
+      - (cancelado se excluye)
+
+    Periodo efectivo: `periodo` (YYYY-MM) o, si falta, mes de `fecha_emision`.
+    Filtros opcionales: ?anio=YYYY, ?id_trainer (respeta scope por trainer).
+    """
+    qs = request.args
+    where = ["id_manager = %s", "estado <> 'cancelado'"]
+    vals = [str(g.id_manager)]
+    apply_trainer_filter_direct(where, vals, include_nulls=False)
+
+    sub2 = f"""
+        SELECT importe_total, estado, metodo_pago AS metodo,
+               COALESCE(NULLIF(periodo, ''), to_char(fecha_emision, 'YYYY-MM')) AS pe
+          FROM recibo
+         WHERE {' AND '.join(where)}
+    """
+    outer_where = ["pe ~ '^[0-9]{4}-[0-9]{2}'"]
+    outer_vals = []
+    if qs.get('anio'):
+        outer_where.append("left(pe, 4) = %s"); outer_vals.append(qs['anio'][:4])
+    sql = f"""
+        SELECT left(pe, 4)                               AS anio,
+               ceil(substring(pe, 6, 2)::int / 3.0)::int AS trimestre,
+               pe                                        AS periodo,
+               substring(pe, 6, 2)                       AS mes,
+               COALESCE(NULLIF(metodo, ''), '(sin metodo)') AS metodo,
+               SUM(CASE WHEN estado IN ('pagado','facturado')        THEN importe_total ELSE 0 END) AS cobrado_imp,
+               COUNT(*) FILTER (WHERE estado IN ('pagado','facturado'))        AS cobrado_n,
+               SUM(CASE WHEN estado IN ('impagado','devuelto')       THEN importe_total ELSE 0 END) AS impagado_imp,
+               COUNT(*) FILTER (WHERE estado IN ('impagado','devuelto'))       AS impagado_n,
+               SUM(CASE WHEN estado IN ('emitido','pendiente','borrador_remesa') THEN importe_total ELSE 0 END) AS pendiente_imp,
+               COUNT(*) FILTER (WHERE estado IN ('emitido','pendiente','borrador_remesa')) AS pendiente_n
+          FROM ({sub2}) x
+         WHERE {' AND '.join(outer_where)}
+         GROUP BY anio, trimestre, periodo, mes, metodo
+         ORDER BY anio, trimestre, periodo, metodo
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, vals + outer_vals)
+        rows = cur.fetchall()
+    for r in rows:
+        for k in ('cobrado_imp', 'impagado_imp', 'pendiente_imp'):
+            r[k] = float(r[k] or 0)
+    return jsonify({'ok': True, 'filas': rows})

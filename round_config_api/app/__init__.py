@@ -63,6 +63,7 @@ from .routes.baja_programada   import bp as bp_baja_programada
 from .routes.inactivo_temporal import bp as bp_inactivo_temporal
 from .routes.informe_clientes  import bp as bp_informe_clientes
 from .routes.informe_ejercicios import bp as bp_informe_ejercicios
+from .routes.informe_competiciones import bp as bp_informe_competiciones
 from .routes.horario           import bp as bp_horario
 from .routes.horario_fichaje   import bp as bp_horario_fichaje
 from .routes.horario_ausencias import bp as bp_horario_ausencias
@@ -181,6 +182,10 @@ def create_app():
     # ── Informe de ejercicios realizados (ranking de consumo) ─────────────
     for prefix in ('/informes', '/api/informes'):
         app.register_blueprint(bp_informe_ejercicios, name=f'inf_ej{prefix}', url_prefix=prefix)
+
+    # ── Informe de competiciones realizadas ───────────────────────────────
+    for prefix in ('/informes', '/api/informes'):
+        app.register_blueprint(bp_informe_competiciones, name=f'inf_comp{prefix}', url_prefix=prefix)
 
     # ── Redes sociales (cuentas Meta + agenda) ────────────────────────────
     for prefix in ('/social', '/api/social'):

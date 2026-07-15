@@ -339,6 +339,7 @@ export const PERMISSIONS = {
       patrones:      { label: 'Análisis de patrones (clusters)', action: true },
       retos:         { label: 'Retos', action: true },
       estado_fisico: { label: 'Estado físico (tests)',    action: true },
+      competiciones: { label: 'Competiciones (informe + ficha)', action: true },
     },
   },
 

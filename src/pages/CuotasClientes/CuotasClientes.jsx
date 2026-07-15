@@ -8,6 +8,7 @@ import FacturacionTrimestreTab from './FacturacionTrimestreTab'
 import ListadoTab from './ListadoTab'
 import DevolucionesTab from './DevolucionesTab'
 import EvolucionTab from './EvolucionTab'
+import FacturacionTab from './FacturacionTab'
 import PagadoresTab from './PagadoresTab'
 
 const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
@@ -23,6 +24,7 @@ const ALL_TABS = [
   { id: 'devoluciones',    label: 'Devoluciones',            comp: DevolucionesTab,      modes: ['*'] },
   { id: 'pagadores',       label: 'Pagadores',               comp: PagadoresTab,         modes: ['*'] },
   { id: 'evolucion',       label: 'Evolución',               comp: EvolucionTab,         modes: ['*'] },
+  { id: 'facturacion',     label: 'Facturación',             comp: FacturacionTab,       modes: ['*'] },
   { id: 'generar_recibos', label: 'Generar recibos del mes', comp: GenerarRecibosTab,
     modes: ['recibo_trimestre', 'factura_draft'] },
   { id: 'generar',         label: 'Remesa mensual',          comp: GenerarTab,

@@ -37,6 +37,7 @@ import ModificarReciboBtn from '../../components/recibos/ModificarReciboBtn'
 import { usuarioWebFindByEmail } from '../../utils/authUsuarioApi'
 import { recibosImpagadosCliente } from '../../utils/configApi'
 import InformesEstadoFisicoButton from '../../components/InformesEstadoFisicoButton'
+import CompeticionesClienteButton from '../../components/CompeticionesClienteButton'
 import ClienteNotasTab from '../../components/notas/ClienteNotasTab'
 import TabComprasTPV from './TabComprasTPV'
 import CuotasClienteCard from '../../components/subs/CuotasClienteCard'
@@ -806,6 +807,7 @@ export default function ClientProfile() {
             </Btn>
           )}
           <InformesEstadoFisicoButton cliente={cliente} />
+          <CompeticionesClienteButton cliente={cliente} />
           {/* "Atender": vuelve a disparar el wizard AltaClienteModal para
               que el operador pueda corregir un alta mal hecha (categoría /
               cuota / descuento equivocado, etc.). Sólo si el manager tiene

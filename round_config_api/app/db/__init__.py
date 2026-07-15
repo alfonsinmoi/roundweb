@@ -1085,6 +1085,45 @@ CREATE INDEX IF NOT EXISTS idx_ej_sync_synced
   ON ejercicio_sync_cliente(id_manager, synced_at);
 
 
+-- ─── COMPETICIONES realizadas (jul 2026) ────────────────────────────────
+-- Cache local de participaciones en clases tipo competición (sala.competicion
+-- =true). 1 fila por participación (user en sala). Fuente: NoofitPro
+-- getSalasByManagerByRange → sala.users[]. PK = participacion_id (= user.id del
+-- join sala↔cliente, único) → UPSERT idempotente. Demografía NO duplicada
+-- (se cruza con cliente_cache.raw_data en la query). Espejo de ejercicio_realizado.
+CREATE TABLE IF NOT EXISTS competicion_realizada (
+  id_manager         VARCHAR(64) NOT NULL,
+  id_trainer         VARCHAR(64),
+  participacion_id   BIGINT NOT NULL,        -- user.id (join sala-cliente), único
+  sala_id            BIGINT,                 -- id de la competición (sala NF)
+  cliente_idnoofit   BIGINT NOT NULL,        -- user.idClient → cliente_cache.id
+  cliente_nombre     VARCHAR(240),
+  competicion_nombre VARCHAR(240),
+  fecha              TIMESTAMPTZ,            -- sala.dateStart
+  personal_rank      INTEGER,                -- puesto personal en la competición
+  global_rank        INTEGER,                -- puesto global
+  verify             BOOLEAN NOT NULL DEFAULT FALSE,  -- asistencia confirmada
+  synced_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, participacion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_comp_real_fecha
+  ON competicion_realizada(id_manager, fecha DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_comp_real_cliente
+  ON competicion_realizada(id_manager, cliente_idnoofit);
+CREATE INDEX IF NOT EXISTS idx_comp_real_sala
+  ON competicion_realizada(id_manager, sala_id);
+
+-- Estado del barrido de competiciones (1 fila por manager; el sync es por
+-- ventana de fechas sobre las salas del grupo, no incremental por cliente).
+CREATE TABLE IF NOT EXISTS competicion_sync (
+  id_manager        VARCHAR(64) NOT NULL PRIMARY KEY,
+  synced_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  n_competiciones   INTEGER NOT NULL DEFAULT 0,
+  n_participaciones INTEGER NOT NULL DEFAULT 0,
+  ultima_falla      TEXT
+);
+
+
 -- ─── Fase 4: multi-trainer con analytic accounts ────────────────────────
 -- En Odoo cada `res.company` tendrá un `account.analytic.plan` propio
 -- (p. ej. "Trainers Round Málaga") y dentro un `account.analytic.account`
