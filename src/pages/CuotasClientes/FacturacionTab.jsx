@@ -14,6 +14,16 @@ import { FORMA_PAGO_LABELS } from '../../utils/cuotasApi'
 // CAJA/efectivo y TPV queden diferenciados en columnas distintas.
 const METODO_LABEL = { ...FORMA_PAGO_LABELS, tpv: 'TPV virtual', '(sin metodo)': 'Sin método' }
 const metodoLabel = (m) => METODO_LABEL[m] || m || 'Sin método'
+
+// Sinónimos legacy → código canónico (espejo de _METODO_PAGO_NORM en el
+// backend). Colapsa un mismo método en UNA sola columna aunque en histórico
+// aparezca con otro código (efectivo≡caja_efectivo, tpv≡caja_tpv_virtual…).
+const METODO_NORM = {
+  efectivo: 'caja_efectivo',
+  tpv: 'caja_tpv_virtual', tpv_virtual: 'caja_tpv_virtual', tpv_fisico: 'caja_tpv_fisico',
+  tarjeta_token: 'tarjeta_tok', tokenizacion: 'tarjeta_tok',
+}
+const normMetodo = (m) => METODO_NORM[m] || m || '(sin metodo)'
 const TRIM_LABEL = { 1: 'T1 (ene-mar)', 2: 'T2 (abr-jun)', 3: 'T3 (jul-sep)', 4: 'T4 (oct-dic)' }
 const MES_LABEL = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -52,7 +62,7 @@ export default function FacturacionTab({ identity }) {
     const anios = {}
     const total = nodo()
     for (const r of filas) {
-      const met = r.metodo || '(sin metodo)'
+      const met = normMetodo(r.metodo)
       metset.add(met)
       const a = r.anio, t = String(r.trimestre), m = r.periodo
       anios[a] ||= { n: nodo(), trims: {} }

@@ -23,6 +23,23 @@ from ..audit_log import log_action, actor_from_request
 bp = Blueprint('preemision_v2', __name__)
 log = logging.getLogger(__name__)
 
+# Normalización de forma_pago (suscripción) → metodo_pago canónico (recibo).
+# Las suscripciones arrastran sinónimos legacy (efectivo, tpv, tarjeta_token…)
+# que deben grabarse en el recibo con el vocabulario canónico de METODOS_VALIDOS
+# (recibos.py) para que Facturación/Listado no dividan un mismo método en dos
+# columnas. Solo afecta al valor ESCRITO; la lógica de estado sigue usando
+# forma_pago tal cual.
+_METODO_PAGO_NORM = {
+    'efectivo':      'caja_efectivo',
+    'tpv':           'caja_tpv_virtual',
+    'tpv_virtual':   'caja_tpv_virtual',
+    'tpv_fisico':    'caja_tpv_fisico',
+    'tarjeta_token': 'tarjeta_tok',
+    'tokenizacion':  'tarjeta_tok',
+}
+def _norm_metodo(fp):
+    return _METODO_PAGO_NORM.get((fp or '').strip(), fp)
+
 
 def _odoo():
     from ..odoo_alta import OdooAlta
@@ -521,7 +538,7 @@ def generar(mes):
                     mes, fecha_emision, fecha_hasta_calc,
                     periodicidad_recibo,
                     base, iva, total_eur,
-                    forma_pago, estado, fecha_emision, fecha_pago,
+                    _norm_metodo(forma_pago), estado, fecha_emision, fecha_pago,
                     f'Recibo unión: {len(subs_cliente)} sub(s) · forma_pago activa: {forma_pago}'
                     + (' · descuentos: ' + ', '.join(
                         f"{x['descuento_codigo']} ({x['precio_antes']}€→{x['precio_despues']}€)"
