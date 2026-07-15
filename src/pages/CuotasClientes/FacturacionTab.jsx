@@ -1,6 +1,7 @@
-// Pestaña "Facturación" — resumen agrupado por año → trimestre → mes → tipo de
-// cobro, con importes COBRADOS / IMPAGADOS / PENDIENTES y subtotales por nivel.
-// Fuente: GET /api/recibos/facturacion-resumen (filas planas; el árbol y los
+// Pestaña "Facturación" — resumen agrupado por año → trimestre → mes con una
+// COLUMNA por cada forma de cobro (método), en pares Cobrado / Impagado, y
+// sumatorios por agrupación en cada nivel + total general.
+// Fuente: GET /api/recibos/facturacion-resumen (filas planas; el pivote y los
 // subtotales se calculan aquí).
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronRight, ChevronDown, RefreshCw, Loader2, TrendingUp } from 'lucide-react'
@@ -10,15 +11,11 @@ import { facturacionResumen } from '../../utils/configApi'
 
 const METODO_LABEL = {
   sepa: 'SEPA',
-  tarjeta_tok: 'Tarjeta tokenizada',
-  tarjeta_token: 'Tarjeta tokenizada',
-  tokenizacion: 'Tarjeta tokenizada',
-  caja_efectivo: 'Efectivo / caja',
-  efectivo: 'Efectivo',
+  tarjeta_tok: 'Tarjeta', tarjeta_token: 'Tarjeta', tokenizacion: 'Tarjeta',
+  caja_efectivo: 'Efectivo', efectivo: 'Efectivo',
   caja_tpv_fisico: 'TPV físico',
-  tpv: 'TPV virtual',
-  caja_tpv_virtual: 'TPV virtual',
-  enlace_pago: 'Enlace de pago',
+  tpv: 'TPV virtual', caja_tpv_virtual: 'TPV virtual',
+  enlace_pago: 'Enlace pago',
   '(sin metodo)': 'Sin método',
 }
 const metodoLabel = (m) => METODO_LABEL[m] || m || 'Sin método'
@@ -26,15 +23,16 @@ const TRIM_LABEL = { 1: 'T1 (ene-mar)', 2: 'T2 (abr-jun)', 3: 'T3 (jul-sep)', 4:
 const MES_LABEL = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
 
-const eur = (v) => (v || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
+const eur = (v) => !v ? '—' : v.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'
 
-function emptyAgg() {
-  return { c: 0, cn: 0, i: 0, iN: 0, p: 0, pn: 0 }
-}
-function addAgg(a, r) {
-  a.c += r.cobrado_imp || 0;  a.cn += r.cobrado_n || 0
-  a.i += r.impagado_imp || 0; a.iN += r.impagado_n || 0
-  a.p += r.pendiente_imp || 0; a.pn += r.pendiente_n || 0
+// Nodo: acumula por método {metodo: {c, i}} + totales de fila (tc, ti).
+function nodo() { return { porMetodo: {}, tc: 0, ti: 0 } }
+function add(n, met, r) {
+  n.porMetodo[met] ||= { c: 0, i: 0 }
+  n.porMetodo[met].c += r.cobrado_imp || 0
+  n.porMetodo[met].i += r.impagado_imp || 0
+  n.tc += r.cobrado_imp || 0
+  n.ti += r.impagado_imp || 0
 }
 
 export default function FacturacionTab({ identity }) {
@@ -53,51 +51,47 @@ export default function FacturacionTab({ identity }) {
   }
   useEffect(() => { if (identity?.managerId) cargar() }, [identity?.managerId])
 
-  // ── Árbol año → trimestre → mes → método + subtotales ──────────────────────
-  const { anios, total } = useMemo(() => {
+  // ── Métodos (columnas) + árbol año→trimestre→mes con acumulado por método ──
+  const { metodos, anios, total } = useMemo(() => {
+    const metset = new Set()
     const anios = {}
-    const total = emptyAgg()
+    const total = nodo()
     for (const r of filas) {
-      const a = r.anio, t = String(r.trimestre), m = r.periodo, met = r.metodo
-      anios[a] ||= { agg: emptyAgg(), trims: {} }
-      anios[a].trims[t] ||= { agg: emptyAgg(), meses: {} }
-      anios[a].trims[t].meses[m] ||= { agg: emptyAgg(), mes: r.mes, metodos: {} }
-      anios[a].trims[t].meses[m].metodos[met] ||= { agg: emptyAgg() }
-      addAgg(anios[a].agg, r)
-      addAgg(anios[a].trims[t].agg, r)
-      addAgg(anios[a].trims[t].meses[m].agg, r)
-      addAgg(anios[a].trims[t].meses[m].metodos[met].agg, r)
-      addAgg(total, r)
+      const met = r.metodo || '(sin metodo)'
+      metset.add(met)
+      const a = r.anio, t = String(r.trimestre), m = r.periodo
+      anios[a] ||= { n: nodo(), trims: {} }
+      anios[a].trims[t] ||= { n: nodo(), meses: {} }
+      anios[a].trims[t].meses[m] ||= { n: nodo(), mes: r.mes }
+      add(anios[a].n, met, r)
+      add(anios[a].trims[t].n, met, r)
+      add(anios[a].trims[t].meses[m].n, met, r)
+      add(total, met, r)
     }
-    return { anios, total }
+    const metodos = [...metset].sort((x, y) => metodoLabel(x).localeCompare(metodoLabel(y)))
+    return { metodos, anios, total }
   }, [filas])
 
   const toggle = (k) => setExpanded(prev => {
     const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n
   })
 
-  // Filas visibles (según expandido) con nivel para indentar
   const visibles = useMemo(() => {
     const out = []
     for (const a of Object.keys(anios).sort().reverse()) {
       const kA = `a:${a}`
-      out.push({ key: kA, level: 0, label: a, agg: anios[a].agg, expandable: true, open: expanded.has(kA) })
+      out.push({ key: kA, level: 0, label: a, n: anios[a].n, open: expanded.has(kA) })
       if (!expanded.has(kA)) continue
       const trims = anios[a].trims
       for (const t of Object.keys(trims).sort().reverse()) {
         const kT = `${kA}/t:${t}`
-        out.push({ key: kT, level: 1, label: TRIM_LABEL[t] || `T${t}`, agg: trims[t].agg, expandable: true, open: expanded.has(kT) })
+        out.push({ key: kT, level: 1, label: TRIM_LABEL[t] || `T${t}`, n: trims[t].n, open: expanded.has(kT) })
         if (!expanded.has(kT)) continue
         const meses = trims[t].meses
         for (const m of Object.keys(meses).sort().reverse()) {
-          const kM = `${kT}/m:${m}`
           const mesNum = parseInt(meses[m].mes, 10)
-          out.push({ key: kM, level: 2, label: `${MES_LABEL[mesNum] || m} ${a}`, agg: meses[m].agg, expandable: true, open: expanded.has(kM) })
-          if (!expanded.has(kM)) continue
-          const metodos = meses[m].metodos
-          for (const met of Object.keys(metodos).sort()) {
-            out.push({ key: `${kM}/x:${met}`, level: 3, label: metodoLabel(met), agg: metodos[met].agg, expandable: false })
-          }
+          out.push({ key: `${kT}/m:${m}`, level: 2, label: `${MES_LABEL[mesNum] || m} ${a}`,
+                     n: meses[m].n, open: null })
         }
       }
     }
@@ -109,11 +103,45 @@ export default function FacturacionTab({ identity }) {
       <Loader2 size={20} className="animate-spin" style={{ color: 'var(--green)' }} /></div>
   }
 
-  const th = { textAlign: 'right', padding: '8px 12px', fontSize: 11, fontWeight: 600,
-               color: 'var(--text-3)', whiteSpace: 'nowrap' }
-  const td = { textAlign: 'right', padding: '7px 12px', fontSize: 13, whiteSpace: 'nowrap',
+  const thG = { padding: '6px 10px', fontSize: 11, fontWeight: 700, textAlign: 'center',
+                borderLeft: '1px solid var(--line)', whiteSpace: 'nowrap' }
+  const thS = { padding: '4px 10px', fontSize: 10, fontWeight: 600, textAlign: 'right',
+                color: 'var(--text-3)', whiteSpace: 'nowrap' }
+  const td = { textAlign: 'right', padding: '6px 10px', fontSize: 12.5, whiteSpace: 'nowrap',
                fontVariantNumeric: 'tabular-nums' }
-  const indent = (lvl) => 12 + lvl * 22
+  const indent = (lvl) => 12 + lvl * 20
+
+  const cols = [...metodos, '__TOTAL__']
+  const cellC = (n, met) => met === '__TOTAL__' ? n.tc : (n.porMetodo[met]?.c || 0)
+  const cellI = (n, met) => met === '__TOTAL__' ? n.ti : (n.porMetodo[met]?.i || 0)
+
+  const fila = (row) => {
+    const weight = row.level === 0 ? 700 : row.level === 1 ? 600 : 500
+    const bg = row.level === 0 ? 'var(--bg-2)' : row.level === 1 ? 'rgba(255,255,255,0.02)' : 'transparent'
+    const expandable = row.open !== null
+    return (
+      <tr key={row.key}
+          className={expandable ? 'interactive-row' : undefined}
+          onClick={expandable ? () => toggle(row.key) : undefined}
+          style={{ borderBottom: '1px solid var(--line-decorative)', background: bg,
+                   cursor: expandable ? 'pointer' : 'default' }}>
+        <td style={{ ...td, textAlign: 'left', paddingLeft: indent(row.level), fontWeight: weight,
+                     color: 'var(--text-0)', position: 'sticky', left: 0, background: bg, zIndex: 1 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {expandable ? (row.open ? <ChevronDown size={13} /> : <ChevronRight size={13} />)
+                        : <span style={{ width: 13, display: 'inline-block' }} />}
+            {row.label}
+          </span>
+        </td>
+        {cols.map(met => [
+          <td key={met + ':c'} style={{ ...td, fontWeight: weight, borderLeft: '1px solid var(--line)',
+               color: cellC(row.n, met) ? 'var(--green)' : 'var(--text-3)' }}>{eur(cellC(row.n, met))}</td>,
+          <td key={met + ':i'} style={{ ...td, fontWeight: weight,
+               color: cellI(row.n, met) ? 'var(--red)' : 'var(--text-3)' }}>{eur(cellI(row.n, met))}</td>,
+        ])}
+      </tr>
+    )
+  }
 
   return (
     <Card style={{ padding: 20 }}>
@@ -122,8 +150,10 @@ export default function FacturacionTab({ identity }) {
         <div>
           <SectionTitle><TrendingUp size={15} style={{ marginRight: 6 }} /> Facturación</SectionTitle>
           <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 0' }}>
-            Recibos agrupados por año · trimestre · mes y tipo de cobro. Cobrado = pagado/facturado ·
-            Impagado = impagado/devuelto · Pendiente = emitido/pendiente.
+            Recibos por año · trimestre · mes, con columnas por forma de cobro
+            (<span style={{ color: 'var(--green)' }}>Cobrado</span> = pagado/facturado ·
+            <span style={{ color: 'var(--red)' }}> Impagado</span> = impagado/devuelto).
+            Clic en un año/trimestre para desplegar.
           </p>
         </div>
         <Btn variant="secondary" size="sm" onClick={cargar}><RefreshCw size={13} /> Actualizar</Btn>
@@ -135,64 +165,39 @@ export default function FacturacionTab({ identity }) {
         </p>
       ) : (
         <div className="table-scroll" style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+          <table style={{ borderCollapse: 'collapse', minWidth: 640 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--line)' }}>
-                <th style={{ ...th, textAlign: 'left', paddingLeft: 12 }}>Periodo / tipo de cobro</th>
-                <th style={{ ...th, color: 'var(--green)' }}>Cobrado</th>
-                <th style={{ ...th, color: 'var(--red)' }}>Impagado</th>
-                <th style={{ ...th, color: 'var(--amber)' }}>Pendiente</th>
-                <th style={th}>Total</th>
+                <th rowSpan={2} style={{ ...thG, textAlign: 'left', borderLeft: 'none',
+                     position: 'sticky', left: 0, background: 'var(--bg-1)', zIndex: 2 }}>
+                  Periodo
+                </th>
+                {cols.map(met => (
+                  <th key={met} colSpan={2} style={{ ...thG,
+                       color: met === '__TOTAL__' ? 'var(--text-0)' : 'var(--text-1)' }}>
+                    {met === '__TOTAL__' ? 'TOTAL' : metodoLabel(met)}
+                  </th>
+                ))}
+              </tr>
+              <tr style={{ borderBottom: '1px solid var(--line)' }}>
+                {cols.map(met => [
+                  <th key={met + ':c'} style={{ ...thS, borderLeft: '1px solid var(--line)', color: 'var(--green)' }}>Cobrado</th>,
+                  <th key={met + ':i'} style={{ ...thS, color: 'var(--red)' }}>Impagado</th>,
+                ])}
               </tr>
             </thead>
             <tbody>
-              {/* TOTAL general */}
-              <tr style={{ background: 'var(--bg-3)', borderBottom: '1px solid var(--line)', fontWeight: 700 }}>
-                <td style={{ ...td, textAlign: 'left', paddingLeft: 12 }}>TOTAL general</td>
-                <td style={{ ...td, color: 'var(--green)', fontWeight: 700 }}>{eur(total.c)}</td>
-                <td style={{ ...td, color: 'var(--red)', fontWeight: 700 }}>{eur(total.i)}</td>
-                <td style={{ ...td, color: 'var(--amber)', fontWeight: 700 }}>{eur(total.p)}</td>
-                <td style={{ ...td, fontWeight: 700 }}>{eur(total.c + total.i + total.p)}</td>
+              <tr style={{ background: 'var(--bg-3)', borderBottom: '2px solid var(--line)', fontWeight: 700 }}>
+                <td style={{ ...td, textAlign: 'left', paddingLeft: 12, fontWeight: 700, color: 'var(--text-0)',
+                     position: 'sticky', left: 0, background: 'var(--bg-3)', zIndex: 1 }}>TOTAL general</td>
+                {cols.map(met => [
+                  <td key={met + ':c'} style={{ ...td, fontWeight: 700, borderLeft: '1px solid var(--line)',
+                       color: cellC(total, met) ? 'var(--green)' : 'var(--text-3)' }}>{eur(cellC(total, met))}</td>,
+                  <td key={met + ':i'} style={{ ...td, fontWeight: 700,
+                       color: cellI(total, met) ? 'var(--red)' : 'var(--text-3)' }}>{eur(cellI(total, met))}</td>,
+                ])}
               </tr>
-              {visibles.map(row => {
-                const isMetodo = row.level === 3
-                const bg = row.level === 0 ? 'var(--bg-2)' : row.level === 1 ? 'rgba(255,255,255,0.02)' : 'transparent'
-                const weight = row.level === 0 ? 700 : row.level <= 2 ? 600 : 400
-                return (
-                  <tr key={row.key}
-                      className={row.expandable ? 'interactive-row' : undefined}
-                      onClick={row.expandable ? () => toggle(row.key) : undefined}
-                      style={{ borderBottom: '1px solid var(--line-decorative)', background: bg,
-                               cursor: row.expandable ? 'pointer' : 'default' }}>
-                    <td style={{ ...td, textAlign: 'left', paddingLeft: indent(row.level),
-                                 fontWeight: weight, color: isMetodo ? 'var(--text-2)' : 'var(--text-0)' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        {row.expandable
-                          ? (row.open ? <ChevronDown size={13} /> : <ChevronRight size={13} />)
-                          : <span style={{ width: 13, display: 'inline-block' }} />}
-                        {row.label}
-                        {!isMetodo && (
-                          <span style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 400 }}>
-                            ({(row.agg.cn + row.agg.iN + row.agg.pn)} recibos)
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                    <td style={{ ...td, color: 'var(--green)', fontWeight: weight }}>
-                      {eur(row.agg.c)}{row.agg.cn ? <sub style={{ color: 'var(--text-3)', fontSize: 9 }}> {row.agg.cn}</sub> : null}
-                    </td>
-                    <td style={{ ...td, color: row.agg.i ? 'var(--red)' : 'var(--text-3)', fontWeight: weight }}>
-                      {eur(row.agg.i)}{row.agg.iN ? <sub style={{ color: 'var(--text-3)', fontSize: 9 }}> {row.agg.iN}</sub> : null}
-                    </td>
-                    <td style={{ ...td, color: row.agg.p ? 'var(--amber)' : 'var(--text-3)', fontWeight: weight }}>
-                      {eur(row.agg.p)}{row.agg.pn ? <sub style={{ color: 'var(--text-3)', fontSize: 9 }}> {row.agg.pn}</sub> : null}
-                    </td>
-                    <td style={{ ...td, fontWeight: weight, color: 'var(--text-0)' }}>
-                      {eur(row.agg.c + row.agg.i + row.agg.p)}
-                    </td>
-                  </tr>
-                )
-              })}
+              {visibles.map(fila)}
             </tbody>
           </table>
         </div>
