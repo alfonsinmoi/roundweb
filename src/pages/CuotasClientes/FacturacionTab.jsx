@@ -4,7 +4,7 @@
 // Fuente: GET /api/recibos/facturacion-resumen (filas planas; el pivote y los
 // subtotales se calculan aquí).
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, ChevronDown, RefreshCw, Loader2, TrendingUp } from 'lucide-react'
+import { ChevronRight, ChevronDown, RefreshCw, Loader2, TrendingUp, Store } from 'lucide-react'
 import { Card, Btn, SectionTitle } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { facturacionResumen } from '../../utils/configApi'
@@ -43,6 +43,8 @@ function add(n, met, r) {
 export default function FacturacionTab({ identity }) {
   const toast = useToast()
   const [filas, setFilas] = useState([])
+  const [trainersMap, setTrainersMap] = useState({})
+  const [esManager, setEsManager] = useState(false)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(() => new Set())
 
@@ -51,12 +53,19 @@ export default function FacturacionTab({ identity }) {
     try {
       const r = await facturacionResumen(identity, {})
       setFilas(r.filas || [])
+      setTrainersMap(r.trainers || {})
+      setEsManager(!!r.es_manager)
     } catch (e) { toast.error('Error cargando facturación: ' + e.message) }
     finally { setLoading(false) }
   }
   useEffect(() => { if (identity?.managerId) cargar() }, [identity?.managerId])
 
-  // ── Métodos (columnas) + árbol año→trimestre→mes con acumulado por método ──
+  // Etiqueta legible de un trainer/centro
+  const trLabel = (tr) => trainersMap[tr]
+    || (tr === '(sin trainer)' ? 'Sin centro asignado' : `Centro ${tr}`)
+
+  // ── Métodos (columnas) + árbol año→trimestre→mes[→trainer] por método ──
+  // En vista manager cada mes se desglosa además por trainer (nivel hoja).
   const { metodos, anios, total } = useMemo(() => {
     const metset = new Set()
     const anios = {}
@@ -67,15 +76,21 @@ export default function FacturacionTab({ identity }) {
       const a = r.anio, t = String(r.trimestre), m = r.periodo
       anios[a] ||= { n: nodo(), trims: {} }
       anios[a].trims[t] ||= { n: nodo(), meses: {} }
-      anios[a].trims[t].meses[m] ||= { n: nodo(), mes: r.mes }
+      anios[a].trims[t].meses[m] ||= { n: nodo(), mes: r.mes, trainers: {} }
       add(anios[a].n, met, r)
       add(anios[a].trims[t].n, met, r)
       add(anios[a].trims[t].meses[m].n, met, r)
       add(total, met, r)
+      if (esManager) {
+        const tr = r.id_trainer || '(sin trainer)'
+        const mNode = anios[a].trims[t].meses[m].trainers
+        mNode[tr] ||= nodo()
+        add(mNode[tr], met, r)
+      }
     }
     const metodos = [...metset].sort((x, y) => metodoLabel(x).localeCompare(metodoLabel(y)))
     return { metodos, anios, total }
-  }, [filas])
+  }, [filas, esManager])
 
   const toggle = (k) => setExpanded(prev => {
     const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n
@@ -94,14 +109,24 @@ export default function FacturacionTab({ identity }) {
         if (!expanded.has(kT)) continue
         const meses = trims[t].meses
         for (const m of Object.keys(meses).sort().reverse()) {
+          const kM = `${kT}/m:${m}`
           const mesNum = parseInt(meses[m].mes, 10)
-          out.push({ key: `${kT}/m:${m}`, level: 2, label: `${MES_LABEL[mesNum] || m} ${a}`,
-                     n: meses[m].n, open: null })
+          const trObj = meses[m].trainers || {}
+          const trKeys = Object.keys(trObj)
+          const mesExpandable = esManager && trKeys.length > 0
+          out.push({ key: kM, level: 2, label: `${MES_LABEL[mesNum] || m} ${a}`,
+                     n: meses[m].n, open: mesExpandable ? expanded.has(kM) : null })
+          if (mesExpandable && expanded.has(kM)) {
+            for (const tr of trKeys.sort((x, y) => trLabel(x).localeCompare(trLabel(y)))) {
+              out.push({ key: `${kM}/tr:${tr}`, level: 3, label: trLabel(tr),
+                         n: trObj[tr], open: null, trainer: true })
+            }
+          }
         }
       }
     }
     return out
-  }, [anios, expanded])
+  }, [anios, expanded, esManager, trainersMap])
 
   if (loading) {
     return <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
@@ -131,10 +156,12 @@ export default function FacturacionTab({ identity }) {
           style={{ borderBottom: '1px solid var(--line-decorative)', background: bg,
                    cursor: expandable ? 'pointer' : 'default' }}>
         <td style={{ ...td, textAlign: 'left', paddingLeft: indent(row.level), fontWeight: weight,
-                     color: 'var(--text-0)', position: 'sticky', left: 0, background: bg, zIndex: 1 }}>
+                     color: row.trainer ? 'var(--text-2)' : 'var(--text-0)',
+                     position: 'sticky', left: 0, background: bg, zIndex: 1 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             {expandable ? (row.open ? <ChevronDown size={13} /> : <ChevronRight size={13} />)
                         : <span style={{ width: 13, display: 'inline-block' }} />}
+            {row.trainer && <Store size={12} style={{ color: 'var(--text-3)', flexShrink: 0 }} aria-hidden="true" />}
             {row.label}
           </span>
         </td>
@@ -158,7 +185,8 @@ export default function FacturacionTab({ identity }) {
             Recibos por año · trimestre · mes, con columnas por forma de cobro
             (<span style={{ color: 'var(--green)' }}>Cobrado</span> = pagado/facturado ·
             <span style={{ color: 'var(--red)' }}> Impagado</span> = impagado/devuelto).
-            Clic en un año/trimestre para desplegar.
+            Clic en un año/trimestre{esManager ? '/mes' : ''} para desplegar
+            {esManager ? '; cada mes se desglosa por centro.' : '.'}
           </p>
         </div>
         <Btn variant="secondary" size="sm" onClick={cargar}><RefreshCw size={13} /> Actualizar</Btn>

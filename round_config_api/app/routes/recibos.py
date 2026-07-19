@@ -1151,7 +1151,7 @@ def facturacion_resumen():
     apply_trainer_filter_direct(where, vals, include_nulls=False)
 
     sub2 = f"""
-        SELECT importe_total, estado, metodo_pago AS metodo,
+        SELECT importe_total, estado, metodo_pago AS metodo, id_trainer,
                COALESCE(NULLIF(periodo, ''), to_char(fecha_emision, 'YYYY-MM')) AS pe
           FROM recibo
          WHERE {' AND '.join(where)}
@@ -1160,11 +1160,16 @@ def facturacion_resumen():
     outer_vals = []
     if qs.get('anio'):
         outer_where.append("left(pe, 4) = %s"); outer_vals.append(qs['anio'][:4])
+    # Añadimos id_trainer al agrupado: cuando la consulta la hace el manager
+    # (sin trainer impersonado) el frontend desglosa cada agrupación temporal
+    # por trainer. Los subtotales por año/trimestre/mes se recalculan en el
+    # cliente sumando todas las filas, así que siguen siendo cross-trainer.
     sql = f"""
         SELECT left(pe, 4)                               AS anio,
                ceil(substring(pe, 6, 2)::int / 3.0)::int AS trimestre,
                pe                                        AS periodo,
                substring(pe, 6, 2)                       AS mes,
+               COALESCE(id_trainer, '(sin trainer)')     AS id_trainer,
                COALESCE(NULLIF(metodo, ''), '(sin metodo)') AS metodo,
                SUM(CASE WHEN estado IN ('pagado','facturado')        THEN importe_total ELSE 0 END) AS cobrado_imp,
                COUNT(*) FILTER (WHERE estado IN ('pagado','facturado'))        AS cobrado_n,
@@ -1174,13 +1179,19 @@ def facturacion_resumen():
                COUNT(*) FILTER (WHERE estado IN ('emitido','pendiente','borrador_remesa')) AS pendiente_n
           FROM ({sub2}) x
          WHERE {' AND '.join(outer_where)}
-         GROUP BY anio, trimestre, periodo, mes, metodo
-         ORDER BY anio, trimestre, periodo, metodo
+         GROUP BY anio, trimestre, periodo, mes, id_trainer, metodo
+         ORDER BY anio, trimestre, periodo, id_trainer, metodo
     """
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql, vals + outer_vals)
         rows = cur.fetchall()
+        # Mapa id_trainer → nombre de centro (para etiquetar el desglose).
+        cur.execute("""SELECT id_trainer, nombre_centro FROM centro_contacto
+                        WHERE id_manager = %s""", (str(g.id_manager),))
+        trainers = {str(t['id_trainer']): t['nombre_centro']
+                    for t in cur.fetchall() if t.get('id_trainer')}
     for r in rows:
         for k in ('cobrado_imp', 'impagado_imp', 'pendiente_imp'):
             r[k] = float(r[k] or 0)
-    return jsonify({'ok': True, 'filas': rows})
+    return jsonify({'ok': True, 'filas': rows, 'trainers': trainers,
+                    'es_manager': not getattr(g, 'id_trainer', None)})
