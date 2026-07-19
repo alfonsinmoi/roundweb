@@ -975,6 +975,7 @@ CREATE TABLE IF NOT EXISTS test_estado_fisico (
   observations        TEXT,
   is_completed        BOOLEAN NOT NULL DEFAULT FALSE,
   puntuacion          NUMERIC(4,2),
+  id_tecnico          INTEGER,          -- NoofitPro idTecnico (técnico que administra el test)
   last_modified_date  TIMESTAMPTZ,
   raw_data            JSONB,
   synced_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -984,6 +985,17 @@ CREATE INDEX IF NOT EXISTS idx_test_ef_manager
   ON test_estado_fisico(id_manager, test_date DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_test_ef_user
   ON test_estado_fisico(id_manager, user_id, test_date DESC NULLS LAST);
+
+-- Catálogo local id_tecnico → nombre (fallback mientras NoofitPro confirma su
+-- endpoint de técnicos). El manager puede rellenarlo; si está vacío, el
+-- dashboard muestra 'Técnico #<id>'.
+CREATE TABLE IF NOT EXISTS tecnico_noofit (
+  id_manager   VARCHAR(64) NOT NULL,
+  id_tecnico   INTEGER NOT NULL,
+  nombre       VARCHAR(160),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id_tecnico)
+);
 
 -- Estado de sincronización por cliente (cuándo se pidió por última vez a NF)
 CREATE TABLE IF NOT EXISTS test_estado_fisico_sync_cliente (

@@ -315,6 +315,16 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
   (gender M/H=hombre, F=mujer), franja edad (birthdate), día semana y franja
   horaria. Demografía cruzada con `cliente_cache.raw_data`, no duplicada.
   Endpoints: `GET /api/informes/ejercicios[/estado]` + `POST .../sync`.
+- `test_estado_fisico` (+ `test_estado_fisico_sync_cliente`) — cache local de
+  los tests de estado físico (NoofitPro `getEstadoFisicoTestSessions`). Col
+  `id_tecnico` (NoofitPro `idTecnico`, entero/null) = técnico que administra el
+  test. El dashboard (`/api/estado-fisico/dashboard`) devuelve `por_tecnico`
+  (tests/clientes por técnico), `fidelizacion_tecnico` (% de clientes con ≥2
+  tests que repiten con el mismo técnico) y `tecnicos` (mapa id→nombre).
+- `tecnico_noofit` — catálogo local `(id_manager, id_tecnico) → nombre`, fallback
+  para nombrar técnicos mientras NoofitPro confirma el endpoint de su catálogo.
+  Si está vacío el dashboard muestra "Técnico #<id>". (La resolución vía endpoint
+  NoofitPro se enchufa en `_tecnicos_nombres` de `routes/estado_fisico.py`.)
 - `categoria` + `cliente_categoria` — categorías de cliente per manager
   (Gympass / Trabajador / Invitado / …) con flags `puede_reservar`,
   `tiene_cuota`, `activa`

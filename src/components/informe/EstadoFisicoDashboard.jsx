@@ -8,7 +8,7 @@ import {
 } from 'recharts'
 import {
   Activity, Loader2, FlaskConical, RefreshCw, TrendingUp, TrendingDown,
-  Users, Calendar, Award, ArrowUpRight, ArrowDownRight,
+  Users, Calendar, Award, ArrowUpRight, ArrowDownRight, UserCog, Repeat,
 } from 'lucide-react'
 import { Card, Btn, Badge, EmptyState } from '../UI'
 import { useToast } from '../Toast'
@@ -86,6 +86,14 @@ export default function EstadoFisicoDashboard({ onVerPerfil }) {
       const k = s => parseInt(String(s).match(/\d+/)?.[0] || 99)
       return k(a.name) - k(b.name)
     })
+
+  // Técnicos: nombre legible (idTecnico de NoofitPro → nombre; fallback id)
+  const tecnicos = data.tecnicos || {}
+  const tecnicoLabel = (id) =>
+    id == null ? 'Sin técnico' : (tecnicos[String(id)] || `Técnico #${id}`)
+  const porTecnico = data.por_tecnico || []
+  const fidel = data.fidelizacion_tecnico || {}
+  const tecnicosReales = porTecnico.filter(t => t.id_tecnico != null)
 
   return (
     <div role="tabpanel" aria-label="Estado físico" style={{ marginTop: 8 }}>
@@ -238,6 +246,77 @@ export default function EstadoFisicoDashboard({ onVerPerfil }) {
                 <Bar dataKey="value" fill="#FBBF24" name="Tests" />
               </BarChart>
             </ResponsiveContainer>
+          )}
+        </Card>
+      </div>
+
+      {/* Técnicos: tests por técnico + fidelización */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 18 }}>
+        <Card style={{ padding: 18 }}>
+          <h3 style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 700, color: 'var(--text-0)', marginBottom: 10,
+                       display: 'flex', alignItems: 'center', gap: 6 }}>
+            <UserCog size={15} aria-hidden="true" /> Tests por técnico
+            <InfoTip title="Tests por técnico">
+              Tests administrados por cada técnico (campo <code>idTecnico</code> de NoofitPro) y nº de clientes
+              distintos. NoofitPro acaba de empezar a registrar el técnico, por eso la mayoría aún aparecen como
+              “Sin técnico”. Un técnico mostrado como “Técnico #N” es que falta su nombre (pendiente de conectar
+              el catálogo de NoofitPro).
+            </InfoTip>
+          </h3>
+          {porTecnico.length === 0 ? <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Sin datos.</p> : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, padding: '4px 10px',
+                            fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+                            color: 'var(--text-3)' }}>
+                <span>Técnico</span><span style={{ textAlign: 'right' }}>Tests</span><span style={{ textAlign: 'right' }}>Clientes</span>
+              </div>
+              {porTecnico.map(t => (
+                <div key={t.id_tecnico ?? 'none'}
+                     style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'center',
+                              padding: '6px 10px', borderRadius: 8, fontSize: 12.5,
+                              background: t.id_tecnico != null ? 'rgba(45,212,168,0.05)' : 'transparent' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                 color: t.id_tecnico != null ? 'var(--text-0)' : 'var(--text-3)',
+                                 display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    {t.id_tecnico != null && <UserCog size={12} style={{ color: 'var(--green)', flexShrink: 0 }} aria-hidden="true" />}
+                    {tecnicoLabel(t.id_tecnico)}
+                  </span>
+                  <Badge color={t.id_tecnico != null ? 'green' : 'gray'}>{t.n_tests}</Badge>
+                  <span style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-2)',
+                                 fontVariantNumeric: 'tabular-nums' }}>{t.n_clientes}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <Card style={{ padding: 18 }}>
+          <h3 style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 700, color: 'var(--text-0)', marginBottom: 10,
+                       display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Repeat size={15} aria-hidden="true" /> Fidelización al técnico
+            <InfoTip title="Fidelización al técnico" side="left">
+              De los clientes que han hecho ≥ 2 tests <em>con técnico asignado</em>, qué porcentaje repite
+              SIEMPRE con el mismo técnico. Alto = el cliente vuelve con su técnico de confianza.
+            </InfoTip>
+          </h3>
+          {fidel.clientes_evaluables === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.6 }}>
+              Aún no hay clientes con ≥ 2 tests que lleven técnico asignado.
+              {tecnicosReales.length > 0
+                ? ' En cuanto un cliente repita test con técnico, aquí verás el % que repite con el mismo.'
+                : ' NoofitPro todavía no está registrando el técnico en los tests; este indicador se activará cuando empiece a hacerlo.'}
+            </p>
+          ) : (
+            <div>
+              <p style={{ fontFamily: 'Outfit', fontSize: 34, fontWeight: 700,
+                          color: fidel.pct_mismo >= 60 ? 'var(--green)' : 'var(--amber)', margin: '2px 0' }}>
+                {fidel.pct_mismo}%
+              </p>
+              <p style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.6 }}>
+                <strong>{fidel.mismo_tecnico}</strong> de <strong>{fidel.clientes_evaluables}</strong> clientes
+                repiten con el mismo técnico · <strong>{fidel.distinto_tecnico}</strong> han cambiado.
+              </p>
+            </div>
           )}
         </Card>
       </div>

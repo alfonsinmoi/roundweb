@@ -111,6 +111,47 @@ def _epoch_to_ts(v):
     return None
 
 
+def _tecnico_int(v):
+    """idTecnico de NoofitPro → int o None. Es el id del técnico que administra
+    el test (catálogo aparte de NoofitPro; su nombre se resuelve en
+    `_tecnicos_nombres`)."""
+    try:
+        return int(v) if v is not None and str(v).strip() != '' else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _tecnicos_nombres(id_manager, ids):
+    """Resuelve un conjunto de idTecnico → nombre legible.
+
+    NoofitPro expone el catálogo de técnicos en un endpoint aún por confirmar
+    (pendiente: nombre exacto). Hasta integrarlo, devolvemos lo que haya en la
+    tabla local `tecnico_noofit` (si el manager rellena nombres) y el resto
+    queda sin resolver → el frontend muestra 'Técnico #<id>'.
+
+    Estructura pensada para enchufar el endpoint NoofitPro en un único punto:
+    basta con poblar `out` desde la respuesta del catálogo.
+    """
+    ids = {int(i) for i in ids if i is not None}
+    if not ids:
+        return {}
+    out = {}
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_tecnico, nombre FROM tecnico_noofit
+                 WHERE id_manager = %s AND id_tecnico = ANY(%s)
+            """, (str(id_manager), list(ids)))
+            for r in cur.fetchall():
+                if r.get('nombre'):
+                    out[int(r['id_tecnico'])] = r['nombre']
+    except Exception as e:
+        log.info(f'_tecnicos_nombres (tabla opcional): {e}')
+    # TODO: cuando NoofitPro confirme el endpoint del catálogo de técnicos,
+    # resolver aquí los ids que falten (los que no estén ya en `out`).
+    return out
+
+
 def _upsert_sessions(id_manager: str, id_trainer: str, user_id: int,
                       nombre: str, email: str, sessions: list):
     """UPSERT en test_estado_fisico. Idempotente por UUID."""
@@ -126,14 +167,14 @@ def _upsert_sessions(id_manager: str, id_trainer: str, user_id: int,
                     test_date, edad, peso_kg, sexo, categoria,
                     has_squat_jump, has_box_squat, has_flamenco,
                     has_plancha, has_push_up,
-                    observations, is_completed, puntuacion,
+                    observations, is_completed, puntuacion, id_tecnico,
                     last_modified_date, raw_data
                 ) VALUES (
                     %s::uuid, %s, %s, %s,
                     %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
-                    %s, %s, %s,
+                    %s, %s, %s, %s,
                     %s, %s::jsonb
                 )
                 ON CONFLICT (id) DO UPDATE SET
@@ -153,6 +194,7 @@ def _upsert_sessions(id_manager: str, id_trainer: str, user_id: int,
                     observations      = EXCLUDED.observations,
                     is_completed      = EXCLUDED.is_completed,
                     puntuacion        = EXCLUDED.puntuacion,
+                    id_tecnico        = EXCLUDED.id_tecnico,
                     last_modified_date= EXCLUDED.last_modified_date,
                     raw_data          = EXCLUDED.raw_data,
                     synced_at         = NOW()
@@ -167,6 +209,7 @@ def _upsert_sessions(id_manager: str, id_trainer: str, user_id: int,
                 s.get('observations'),
                 bool(s.get('isCompleted')),
                 s.get('puntuacion'),
+                _tecnico_int(s.get('idTecnico')),
                 _epoch_to_ts(s.get('lastModifiedDate')),
                 json.dumps(s, ensure_ascii=False, default=str),
             ))
@@ -356,6 +399,9 @@ def _row_to_session(r):
     raw['_cliente_email']  = r.get('cliente_email') or ''
     raw['_id_trainer_round'] = r.get('id_trainer') or ''
     raw['_synced_at'] = r['synced_at'].isoformat() if r.get('synced_at') else None
+    # idTecnico: preferimos el valor del raw; si falta o es null, la columna.
+    if raw.get('idTecnico') is None:
+        raw['idTecnico'] = r.get('id_tecnico')
     return raw
 
 
@@ -448,7 +494,7 @@ def dashboard():
     sessions = _read_sessions_local(g.id_manager, g.id_trainer)
     state = _sync_state(g.id_manager)
     _sync_background(g.id_manager, g.id_trainer)
-    return jsonify({'ok': True, **_compute_dashboard(sessions),
+    return jsonify({'ok': True, **_compute_dashboard(sessions, g.id_manager),
                     'sync': state, 'fuente': 'local',
                     'sample_session_keys': list(sessions[0].keys()) if sessions else []})
 
@@ -478,8 +524,9 @@ def sync_cliente_endpoint(id_cliente):
 
 # ─── KPIs computados ──────────────────────────────────────────────────────
 
-def _compute_dashboard(sessions):
-    """Calcula KPIs a partir de la lista de sesiones (igual que antes)."""
+def _compute_dashboard(sessions, id_manager=None):
+    """Calcula KPIs a partir de la lista de sesiones. `id_manager` se usa solo
+    para resolver los nombres de técnico (opcional)."""
     if not sessions:
         return {
             'total_tests': 0, 'clientes_con_test': 0,
@@ -489,6 +536,9 @@ def _compute_dashboard(sessions):
             'demografico': {'por_sexo': {}, 'por_edad_bucket': {}},
             'top_clientes': [], 'ranking_puntuacion': [],
             'progreso_clientes': [],
+            'por_tecnico': [], 'tecnicos': {},
+            'fidelizacion_tecnico': {'clientes_evaluables': 0, 'mismo_tecnico': 0,
+                                     'distinto_tecnico': 0, 'pct_mismo': 0},
         }
     total_tests = len(sessions)
     clientes_dict = {}
@@ -599,6 +649,40 @@ def _compute_dashboard(sessions):
                 dias_entre_tests.append(d)
     media_dias = round(sum(dias_entre_tests) / len(dias_entre_tests), 1) if dias_entre_tests else 0
 
+    # ── Técnicos (idTecnico) ────────────────────────────────────────────────
+    # Tests realizados por cada técnico (id + nº tests + nº clientes distintos).
+    tec_stats = {}
+    for s in sessions:
+        it = _tecnico_int(s.get('idTecnico'))
+        key = it if it is not None else '__none__'
+        st = tec_stats.setdefault(key, {'id_tecnico': it, 'n_tests': 0, 'clientes': set()})
+        st['n_tests'] += 1
+        if s.get('userId'):
+            st['clientes'].add(s.get('userId'))
+    por_tecnico = [{'id_tecnico': v['id_tecnico'], 'n_tests': v['n_tests'],
+                    'n_clientes': len(v['clientes'])} for v in tec_stats.values()]
+    por_tecnico.sort(key=lambda x: -x['n_tests'])
+
+    # Fidelización al técnico: de los clientes con ≥2 tests que tengan técnico
+    # asignado en ≥2 de ellos, cuántos repiten SIEMPRE con el mismo técnico.
+    fidel = {'clientes_evaluables': 0, 'mismo_tecnico': 0, 'distinto_tecnico': 0, 'pct_mismo': 0}
+    for v in clientes_dict.values():
+        tecs = [_tecnico_int(s.get('idTecnico')) for s in v['tests']]
+        tecs = [t for t in tecs if t is not None]
+        if len(tecs) < 2:
+            continue
+        fidel['clientes_evaluables'] += 1
+        if len(set(tecs)) == 1:
+            fidel['mismo_tecnico'] += 1
+        else:
+            fidel['distinto_tecnico'] += 1
+    if fidel['clientes_evaluables']:
+        fidel['pct_mismo'] = round(100 * fidel['mismo_tecnico'] / fidel['clientes_evaluables'], 1)
+
+    ids_tec = [v['id_tecnico'] for v in por_tecnico if v['id_tecnico'] is not None]
+    nombres_tec = _tecnicos_nombres(id_manager, ids_tec) if (id_manager and ids_tec) else {}
+    tecnicos_map = {str(k): v for k, v in nombres_tec.items()}
+
     return {
         'total_tests': total_tests,
         'clientes_con_test': clientes_con_test,
@@ -614,4 +698,7 @@ def _compute_dashboard(sessions):
         'top_clientes': top_clientes,
         'ranking_puntuacion': ranking_puntuacion,
         'progreso_clientes': progreso,
+        'por_tecnico': por_tecnico,
+        'fidelizacion_tecnico': fidel,
+        'tecnicos': tecnicos_map,
     }
