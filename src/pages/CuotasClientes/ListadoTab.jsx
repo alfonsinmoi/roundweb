@@ -7,7 +7,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   Loader2, Search, Filter, X, StickyNote, ArrowUp, ArrowDown, ArrowUpDown,
-  RefreshCw, Receipt,
+  RefreshCw, Receipt, Download,
 } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
@@ -34,6 +34,18 @@ const FORMA_PAGO_OPCIONES = [
   { id: 'enlace_pago',      label: 'Enlace de pago' },
   { id: 'tokenizacion',     label: 'Tokenización (legacy)' },
 ]
+
+// Etiqueta de estado replicando la lógica de la fila (Row) para el Excel.
+function estadoLabelDe(r) {
+  if (r.state !== 'posted') return 'Borrador'
+  switch (r.payment_state) {
+    case 'paid':       return 'Cobrado'
+    case 'reversed':   return 'Devuelto'
+    case 'in_payment': return 'En cobro'
+    case 'partial':    return 'Parcial'
+    default:           return 'Pendiente'
+  }
+}
 
 
 export default function ListadoTab({ identity }) {
@@ -137,6 +149,46 @@ export default function ListadoTab({ identity }) {
       : { col, dir: 'asc' })
   }
 
+  // Exporta a Excel EXACTAMENTE lo que hay filtrado (y en el orden mostrado).
+  // xlsx se carga bajo demanda (dynamic import) para no pesar en la carga.
+  const exportarExcel = async () => {
+    if (!sorted.length) return
+    const XLSX = await import('xlsx')
+    const rows = sorted.map(r => ({
+      'Cliente':       r.partner_id?.name || (r.partner_id?.id ? `#${r.partner_id.id}` : ''),
+      'ID cliente':    r.partner_idnoofit || '',
+      'Mes':           r.mes_ref || '',
+      'Cuota':         r.cuota_codigo || '',
+      'Tipo':          r.tipo === 'alta' ? 'Alta' : 'Mensualidad',
+      'Periodicidad':  PERIODICIDAD_LABELS[r.periodicidad] || r.periodicidad || '',
+      'Importe (€)':   Number(r.amount_total || 0),
+      'Forma de pago': FORMA_PAGO_LABELS[r.forma_pago] || r.forma_pago || '',
+      'Emisión':       r.invoice_date || '',
+      'Cobro':         r.state === 'posted' ? (r.invoice_date_due || '') : '',
+      'Estado':        estadoLabelDe(r),
+      'Notas':         (r.narration || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    }))
+    const header = ['Cliente', 'ID cliente', 'Mes', 'Cuota', 'Tipo', 'Periodicidad',
+                    'Importe (€)', 'Forma de pago', 'Emisión', 'Cobro', 'Estado', 'Notas']
+    const ws = XLSX.utils.json_to_sheet(rows, { header })
+    ws['!cols'] = [{ wch: 26 }, { wch: 12 }, { wch: 9 }, { wch: 18 }, { wch: 12 },
+                   { wch: 12 }, { wch: 11 }, { wch: 18 }, { wch: 12 }, { wch: 12 },
+                   { wch: 11 }, { wch: 40 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Recibos')
+    // Nombre de archivo con los filtros aplicados + fecha de descarga.
+    const partes = ['recibos']
+    if (filters.anio) partes.push(filters.mes ? `${filters.anio}-${filters.mes}` : filters.anio)
+    const estLbl = { paid: 'cobrados', not_paid: 'pendientes', in_payment: 'en-cobro',
+                     reversed: 'devueltos', draft: 'borradores' }
+    if (filters.estado) partes.push(estLbl[filters.estado] || filters.estado)
+    if (filters.tipo) partes.push(filters.tipo)
+    if (filters.forma_pago) partes.push(filters.forma_pago)
+    if (filters.buscar) partes.push('busq')
+    const hoy = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `${partes.join('_')}_${hoy}.xlsx`)
+  }
+
   // Stats sobre filtrados (no ordenados)
   const totalImporte = filtered.reduce((s, r) => s + (r.amount_total || 0), 0)
   const cobrado = filtered.filter(r => r.payment_state === 'paid')
@@ -167,6 +219,13 @@ export default function ListadoTab({ identity }) {
             Recibos emitidos
           </SectionTitle>
           <div style={{ flex: 1 }} />
+          <Btn variant="secondary" size="sm" onClick={exportarExcel}
+               disabled={loading || sorted.length === 0}
+               title={sorted.length === 0
+                 ? 'No hay recibos con el filtro actual'
+                 : `Exportar ${sorted.length} recibos filtrados a Excel`}>
+            <Download size={13} /> Exportar Excel
+          </Btn>
           <Btn variant="secondary" size="sm" onClick={reload} disabled={loading}>
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refrescar
           </Btn>
