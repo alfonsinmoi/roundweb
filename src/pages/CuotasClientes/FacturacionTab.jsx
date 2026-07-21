@@ -4,7 +4,7 @@
 // Fuente: GET /api/recibos/facturacion-resumen (filas planas; el pivote y los
 // subtotales se calculan aquí).
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, ChevronDown, RefreshCw, Loader2, TrendingUp, Store } from 'lucide-react'
+import { ChevronRight, ChevronDown, RefreshCw, Loader2, TrendingUp, Store, Download } from 'lucide-react'
 import { Card, Btn, SectionTitle } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { facturacionResumen } from '../../utils/configApi'
@@ -95,6 +95,36 @@ export default function FacturacionTab({ identity }) {
   const toggle = (k) => setExpanded(prev => {
     const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n
   })
+
+  // Exporta a Excel la tabla de facturación (una fila por periodo × [centro] ×
+  // forma de cobro). En vista manager incluye la columna Centro. xlsx bajo demanda.
+  const exportarExcel = async () => {
+    if (!filas.length) return
+    const XLSX = await import('xlsx')
+    const rows = filas.map(f => {
+      const mesNum = parseInt(f.mes, 10)
+      const row = {
+        'Año':       f.anio,
+        'Trimestre': TRIM_LABEL[String(f.trimestre)] || `T${f.trimestre}`,
+        'Mes':       MES_LABEL[mesNum] || f.periodo,
+      }
+      if (esManager) row['Centro'] = trLabel(f.id_trainer)
+      row['Forma de cobro'] = metodoLabel(normMetodo(f.metodo))
+      row['Cobrado (€)']    = Number(f.cobrado_imp || 0)
+      row['Impagado (€)']   = Number(f.impagado_imp || 0)
+      row['Pendiente (€)']  = Number(f.pendiente_imp || 0)
+      return row
+    })
+    const header = ['Año', 'Trimestre', 'Mes', ...(esManager ? ['Centro'] : []),
+                    'Forma de cobro', 'Cobrado (€)', 'Impagado (€)', 'Pendiente (€)']
+    const ws = XLSX.utils.json_to_sheet(rows, { header })
+    ws['!cols'] = header.map(h =>
+      ({ wch: h === 'Centro' ? 22 : h === 'Forma de cobro' ? 16 : h === 'Mes' ? 12 : 11 }))
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Facturación')
+    const hoy = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `facturacion_${hoy}.xlsx`)
+  }
 
   const visibles = useMemo(() => {
     const out = []
@@ -189,7 +219,13 @@ export default function FacturacionTab({ identity }) {
             {esManager ? '; cada mes se desglosa por centro.' : '.'}
           </p>
         </div>
-        <Btn variant="secondary" size="sm" onClick={cargar}><RefreshCw size={13} /> Actualizar</Btn>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn variant="secondary" size="sm" onClick={exportarExcel} disabled={filas.length === 0}
+               title={filas.length === 0 ? 'Sin datos que exportar' : 'Exportar la tabla de facturación a Excel'}>
+            <Download size={13} /> Exportar Excel
+          </Btn>
+          <Btn variant="secondary" size="sm" onClick={cargar}><RefreshCw size={13} /> Actualizar</Btn>
+        </div>
       </div>
 
       {filas.length === 0 ? (

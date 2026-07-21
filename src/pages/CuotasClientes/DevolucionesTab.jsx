@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Loader2, Upload, AlertTriangle, CheckCircle2, X, Trash2, Send, FileSpreadsheet, Search, User, Plus } from 'lucide-react'
+import { Loader2, Upload, AlertTriangle, CheckCircle2, X, Trash2, Send, FileSpreadsheet, Search, User, Plus, Download } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { Card, Btn, SectionTitle, Badge, Avatar } from '../../components/UI'
 import { useToast } from '../../components/Toast'
@@ -207,6 +207,56 @@ export default function DevolucionesTab({ identity }) {
     setProcessing(false)
   }
 
+  // Exporta a Excel las filas de devolución cargadas (fichero + añadidas a mano).
+  function exportarFilas() {
+    if (!filas.length) return
+    const rows = filas.map((f, i) => ({
+      '#':            i + 1,
+      'Cliente':      f.librado || '',
+      'DNI':          f.dni || '',
+      'ID cliente':   f.cliente_idnoofit || '',
+      'Periodo':      f.periodo || '',
+      'Importe (€)':  (f.importe != null && f.importe !== '') ? Number(parseFloat(f.importe).toFixed(2)) : '',
+      'Motivo':       f.motivo || '',
+      'Referencia':   f.referencia || '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows)
+    ws['!cols'] = [{ wch: 5 }, { wch: 26 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
+                   { wch: 11 }, { wch: 30 }, { wch: 18 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Devoluciones')
+    const hoy = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `devoluciones_pendientes_${hoy}.xlsx`)
+  }
+
+  // Exporta el resultado del procesado (procesadas + errores en 2 hojas).
+  function exportarResultado() {
+    if (!resultado) return
+    const wb = XLSX.utils.book_new()
+    const proc = (resultado.procesadas || []).map(p => ({
+      'Referencia':     p.referencia || '',
+      'Cliente':        p.partner || '',
+      'Importe (€)':    p.importe != null ? Number(Number(p.importe).toFixed(2)) : '',
+      'Motivo':         p.motivo || '',
+      'Pagos anulados': p.pagos_anulados ?? '',
+      'Ya devuelto':    p.ya_devuelto ? 'Sí' : '',
+    }))
+    const wsP = XLSX.utils.json_to_sheet(proc)
+    wsP['!cols'] = [{ wch: 18 }, { wch: 26 }, { wch: 11 }, { wch: 30 }, { wch: 13 }, { wch: 11 }]
+    XLSX.utils.book_append_sheet(wb, wsP, 'Procesadas')
+    if ((resultado.errores || []).length) {
+      const errs = resultado.errores.map(e => ({
+        'Cliente / Ref': e.librado || e.referencia || '',
+        'Error':         e.error || '',
+      }))
+      const wsE = XLSX.utils.json_to_sheet(errs)
+      wsE['!cols'] = [{ wch: 26 }, { wch: 50 }]
+      XLSX.utils.book_append_sheet(wb, wsE, 'Errores')
+    }
+    const hoy = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `devoluciones_resultado_${hoy}.xlsx`)
+  }
+
   return (
     <div>
       {/* Card upload */}
@@ -372,9 +422,15 @@ export default function DevolucionesTab({ identity }) {
       {filas.length > 0 && (
         <Card style={{ padding: 20, marginBottom: 16 }}>
           <SectionTitle action={
-            <Btn variant="primary" onClick={procesar} disabled={processing}>
-              {processing ? <><Loader2 size={14} className="animate-spin" /> Procesando…</> : <><Send size={14} /> Procesar {filas.length} devolución{filas.length !== 1 ? 'es' : ''}</>}
-            </Btn>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Btn variant="secondary" onClick={exportarFilas}
+                   title="Exportar las filas cargadas a Excel">
+                <Download size={14} /> Exportar Excel
+              </Btn>
+              <Btn variant="primary" onClick={procesar} disabled={processing}>
+                {processing ? <><Loader2 size={14} className="animate-spin" /> Procesando…</> : <><Send size={14} /> Procesar {filas.length} devolución{filas.length !== 1 ? 'es' : ''}</>}
+              </Btn>
+            </div>
           }>
             Filas a procesar ({filas.length})
           </SectionTitle>
@@ -416,7 +472,12 @@ export default function DevolucionesTab({ identity }) {
       {/* Resultado */}
       {resultado && (
         <Card style={{ padding: 20 }}>
-          <SectionTitle>Resultado</SectionTitle>
+          <SectionTitle action={
+            <Btn variant="secondary" size="sm" onClick={exportarResultado}
+                 title="Exportar el resultado (procesadas + errores) a Excel">
+              <Download size={13} /> Exportar Excel
+            </Btn>
+          }>Resultado</SectionTitle>
           <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
             <Badge color="green">
               <CheckCircle2 size={12} /> {(resultado.procesadas || []).length} procesadas
