@@ -268,7 +268,7 @@ def update_recibo(rid):
     # Sprint 7 M4 — validar tipos numéricos / fechas ANTES del UPDATE
     # (sin esto un string en importe_total → DataError 500 sin mensaje).
     numeric_fields = {'importe_base', 'importe_iva', 'importe_total', 'iva_pct'}
-    date_fields = {'fecha_desde', 'fecha_hasta', 'fecha_emision'}
+    date_fields = {'fecha_desde', 'fecha_hasta', 'fecha_emision', 'fecha_pago'}
     for f in numeric_fields:
         if f in d and d[f] is not None and d[f] != '':
             try:
@@ -284,6 +284,14 @@ def update_recibo(rid):
 
     actor = actor_from_request()
     actor_label = actor.get('label') or actor.get('email')
+    # Admin = manager NoofitPro (perfil None) o usuario_web con is_admin.
+    perfil = getattr(g, 'perfil', None)
+    es_admin = (perfil is None) or bool(perfil.get('is_admin'))
+    # Override MANUAL de la fecha fin: solo admin y solo si lo pide explícito
+    # (flag `fecha_hasta_manual`). Sin el flag, la fecha fin se DERIVA de la
+    # periodicidad (comportamiento por defecto). El flag NO es columna, no se
+    # escribe; solo desactiva el recálculo de más abajo.
+    _manual_fechafin = es_admin and bool(d.get('fecha_hasta_manual')) and bool(d.get('fecha_hasta'))
 
     # Sprint 7 H2 — SELECT FOR UPDATE + UPDATE en MISMA transacción
     # para evitar race con marcar-pagado concurrente.
@@ -331,6 +339,11 @@ def update_recibo(rid):
             for _campo in ('fecha_hasta', 'periodicidad'):
                 if _campo in d:
                     allowed += [_campo]
+            # ADMIN — además puede corregir la FECHA DE COBRO (fecha_pago) de un
+            # recibo ya cobrado (registrar la fecha real del cobro). No toca
+            # importes ni el pago/journal de Odoo; corrige el dato Round.
+            if es_admin and 'fecha_pago' in d:
+                allowed += ['fecha_pago']
             otros_importe = [f for f in campos_importe_en_d
                              if f not in ('fecha_hasta', 'periodicidad')]
             # Excepción ADMIN — corregir SOLO la forma de pago (error de
@@ -338,8 +351,6 @@ def update_recibo(rid):
             # journal de Odoo (el cobro ya ocurrió); corrige el dato Round
             # para informes/SEPA futuros. Requiere ser admin (usuario_web
             # is_admin) o el manager NoofitPro (perfil None).
-            perfil = getattr(g, 'perfil', None)
-            es_admin = (perfil is None) or bool(perfil.get('is_admin'))
             if es_admin and otros_importe == ['metodo_pago']:
                 if d['metodo_pago'] not in METODOS_VALIDOS:
                     return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
@@ -371,8 +382,11 @@ def update_recibo(rid):
         # (cobertura, auditoría #24). El servidor la recalcula (fuente de verdad,
         # no se fía del valor del cliente) siempre que se toque periodicidad,
         # fecha_hasta o fecha_emisión en un recibo editable o cobrado.
+        # El admin puede FIJAR la fecha fin a mano (fecha_hasta_manual): en ese
+        # caso NO se recalcula y se respeta el valor tecleado.
         _toca_fechafin = (('periodicidad' in allowed or 'fecha_hasta' in allowed)
-                          and ('periodicidad' in d or 'fecha_hasta' in d or 'fecha_emision' in d))
+                          and ('periodicidad' in d or 'fecha_hasta' in d or 'fecha_emision' in d)
+                          and not _manual_fechafin)
         if _toca_fechafin:
             per = str(d.get('periodicidad') or r.get('periodicidad') or 'mensual').lower()
             meses = _PERIOD_MESES.get(per, 1)
@@ -406,7 +420,7 @@ def update_recibo(rid):
     # (no solo importe_total). Incluye diff anterior/nuevo en meta.
     contables = ['importe_base', 'importe_iva', 'importe_total', 'iva_pct',
                  'metodo_pago', 'periodo', 'fecha_emision', 'fecha_desde',
-                 'fecha_hasta', 'periodicidad']
+                 'fecha_hasta', 'fecha_pago', 'periodicidad']
     diffs = {}
     for f in contables:
         if f in d:

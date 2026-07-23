@@ -129,6 +129,42 @@ def update(_id):
     return jsonify({'ok': True, 'modificacion': _row(r)})
 
 
+@bp.route('/<int:_id>/anular', methods=['POST'])
+@auth_required
+@require_permission('configuracion.modificaciones.borrar')
+def anular(_id):
+    """Anula (cancela) una modificación → estado='cancelada'.
+
+    A diferencia de DELETE (borrado físico, solo pendientes), anular PRESERVA el
+    registro y funciona también sobre modificaciones ya APLICADAS: deja de
+    aplicarse en emisiones futuras (una cancelada nunca se consume). NO revierte
+    recibos ya emitidos que la consumieron — para eso, edita ese recibo."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT {FIELDS} FROM modificacion WHERE id=%s AND id_manager=%s",
+                    (_id, g.id_manager))
+        r = cur.fetchone()
+        if not r:
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        # Scope trainer: un trainer impersonado solo anula lo suyo.
+        if g.id_trainer and str(r.get('id_trainer')) != str(g.id_trainer):
+            return jsonify({'ok': False, 'error': 'not_found'}), 404
+        if r['estado'] == 'cancelada':
+            return jsonify({'ok': True, 'modificacion': _row(r), 'ya_cancelada': True})
+        cur.execute(f"""UPDATE modificacion SET estado='cancelada'
+                        WHERE id=%s AND id_manager=%s RETURNING {FIELDS}""",
+                    (_id, g.id_manager))
+        row = cur.fetchone()
+    if row.get('odoo_id'):
+        try:
+            get_sync(g.id_manager).modificacion_update(row['odoo_id'], row)
+        except Exception:
+            pass
+    log_action(actor_from_request(), 'modificacion', 'anular', entidad_id=_id,
+               resumen=f"Anulada modificación id={_id} ({r['estado']}→cancelada)",
+               cambios={'estado': {'antes': r['estado'], 'despues': 'cancelada'}})
+    return jsonify({'ok': True, 'modificacion': _row(row)})
+
+
 @bp.route('/<int:_id>', methods=['DELETE'])
 @auth_required
 @require_permission('configuracion.modificaciones.borrar')

@@ -935,6 +935,7 @@ export const modificacionesList  = (identity, params = {}) => {
 export const modificacionCreate  = (identity, data) => _request('POST',  '/modificaciones', identity, data).then(d => d.modificacion)
 export const modificacionUpdate  = (identity, id, data) => _request('PATCH', `/modificaciones/${id}`, identity, data).then(d => d.modificacion)
 export const modificacionDelete  = (identity, id) => _request('DELETE', `/modificaciones/${id}`, identity)
+export const modificacionAnular  = (identity, id) => _request('POST', `/modificaciones/${id}/anular`, identity).then(d => d.modificacion)
 
 
 // ── Estado del Odoo per-manager (Fase 1: gate y wcommerce check) ──────────

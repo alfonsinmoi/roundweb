@@ -2,14 +2,14 @@
 // Lista las modificaciones aplicadas/pendientes (más nuevas arriba).
 // Permite crear nueva y editar las que aún no se han cobrado (estado='activa').
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Loader2, Edit2, X as XIcon, Trash2, Check, Settings2 } from 'lucide-react'
+import { Plus, Loader2, Edit2, X as XIcon, Trash2, Check, Settings2, Ban } from 'lucide-react'
 import { Card, Btn, Badge, SectionTitle } from '../UI'
 import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import {
   getRoundIdentity,
   modificacionesList, modificacionCreate, modificacionUpdate, modificacionDelete,
-  cuotasList,
+  modificacionAnular, cuotasList,
 } from '../../utils/configApi'
 
 // Tipos para el SELECTOR (formulario nuevo). Internamente sigue habiendo
@@ -142,6 +142,21 @@ export default function ModificacionesClienteCard({ cliente }) {
     } catch (e) { toast.error(`Error: ${e.message}`) }
   }
 
+  // Anular = cancelar (soft). A diferencia de borrar, preserva el registro y
+  // funciona también sobre las ya APLICADAS (deja de aplicarse en el futuro;
+  // los recibos ya emitidos no se tocan).
+  async function handleAnular(m) {
+    if (m.estado === 'cancelada') return
+    const msg = m.estado === 'aplicada'
+      ? '¿Anular esta modificación ya aplicada?\n\nDejará de aplicarse en emisiones futuras. Los recibos ya emitidos NO cambian (edita el recibo si necesitas revertirlo).'
+      : '¿Anular esta modificación?\n\nQuedará cancelada y no se aplicará.'
+    if (!confirm(msg)) return
+    try {
+      await modificacionAnular(identity, m.id)
+      toast.success('Modificación anulada'); reload()
+    } catch (e) { toast.error(`Error: ${e.message}`) }
+  }
+
   return (
     <Card style={{ padding: 24 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -226,6 +241,16 @@ export default function ModificacionesClienteCard({ cliente }) {
                           <Trash2 size={13} />
                         </button>
                       </>
+                    )}
+                    {m.estado !== 'cancelada' && (
+                      <button onClick={() => handleAnular(m)}
+                              title={m.estado === 'aplicada'
+                                ? 'Anular (deja de aplicarse; no toca recibos ya emitidos)'
+                                : 'Anular (cancelar)'}
+                              style={{ background: 'none', border: 'none',
+                                       cursor: 'pointer', color: 'var(--amber)', padding: 4 }}>
+                        <Ban size={13} />
+                      </button>
                     )}
                   </div>
                 )

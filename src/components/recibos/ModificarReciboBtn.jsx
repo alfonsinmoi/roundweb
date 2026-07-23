@@ -37,6 +37,12 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // Estados editables — formulario controlado
   const [f, setF] = useState(() => initialForm(r))
   const set = (k, v) => setF(p => ({ ...p, [k]: v }))
+  // Admin = manager NoofitPro (sin perfil) o usuario_web con is_admin (espejo
+  // del backend). El admin puede fijar a mano la fecha fin y la fecha de cobro
+  // aunque el recibo esté cobrado.
+  const esAdmin = !user?.perfil || !!user?.perfil?.is_admin
+  // Override manual de la fecha fin: null = automática (deriva de periodicidad).
+  const [fechaFinManual, setFechaFinManual] = useState(null)
 
   const isBd = r._source === 'bd'
   const tieneMoveOdoo = !!(r.account_move_id || r.account_move_ref)
@@ -69,6 +75,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
 
   const openModal = () => {
     setF(initialForm(r))
+    setFechaFinManual(null)
     setOpen(true)
   }
 
@@ -90,10 +97,12 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
         cuota_descripcion: f.cuota_descripcion,
         notas: f.notas,
       }
+      // Fecha fin manual del admin (si tocó el campo). Si no, se deriva.
+      const fechaFinEsManual = esAdmin && fechaFinManual != null
+      const periodicidadCambiada = (f.periodicidad || '') !== (r.periodicidad || '')
       if (editableFull) {
         Object.assign(payload, {
           fecha_desde: f.fecha_desde || null,
-          fecha_hasta: fechaHastaCalc || null,   // derivada (emisión + periodicidad)
           periodicidad: f.periodicidad || null,
           importe_base: numOrSkip(f.importe_base),
           importe_iva: numOrSkip(f.importe_iva),
@@ -103,15 +112,26 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           periodo: f.periodo,
           fecha_emision: f.fecha_emision,
         })
+        if (fechaFinEsManual) {
+          payload.fecha_hasta = fechaFinManual || null
+          payload.fecha_hasta_manual = true
+        } else {
+          payload.fecha_hasta = fechaHastaCalc || null   // derivada (emisión + periodicidad)
+        }
         // Eliminar las claves undefined para que el backend ignore esos campos
         Object.keys(payload).forEach(k => {
           if (payload[k] === undefined) delete payload[k]
         })
       } else if (esCobrado) {
-        // Recibo cobrado/facturado: solo periodicidad + fecha fin (derivada).
-        // El backend recalcula la fecha fin y rechaza el resto de importes.
-        if (f.periodicidad) payload.periodicidad = f.periodicidad
-        if (fechaHastaCalc) payload.fecha_hasta = fechaHastaCalc
+        // Recibo cobrado/facturado. Solo se envían los cambios reales para no
+        // pisar datos: periodicidad (recalcula fecha fin en backend), fecha fin
+        // manual (admin) y/o fecha de cobro (admin).
+        if (periodicidadCambiada && f.periodicidad) payload.periodicidad = f.periodicidad
+        if (fechaFinEsManual) {
+          payload.fecha_hasta = fechaFinManual || null
+          payload.fecha_hasta_manual = true
+        }
+        if (esAdmin && f.fecha_pago) payload.fecha_pago = f.fecha_pago
       }
       await reciboUpdate(getRoundIdentity(user), r.id_bd, payload)
       toast.success('Recibo modificado')
@@ -143,7 +163,9 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
             <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4, lineHeight: 1.5 }}>
               ⚠ Recibo cobrado/facturado: puedes ajustar la <strong>periodicidad</strong> y la{' '}
               <strong>fecha fin</strong> (define el próximo cobro), además de descripciones/notas.
-              El <strong>importe ya cobrado NO cambia</strong> — solo cambia la cobertura, no lo
+              {esAdmin && <> Como <strong>administrador</strong>, además puedes corregir la{' '}
+                <strong>fecha de cobro</strong> y fijar la <strong>fecha fin a mano</strong>.</>}
+              {' '}El <strong>importe ya cobrado NO cambia</strong> — solo cambia la cobertura, no lo
               pagado.
             </div>
           )}
@@ -197,15 +219,45 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
                      onChange={e => set('fecha_desde', e.target.value)}
                      style={inp} />
             </Fld>
-            <Fld label="Periodo hasta (fecha fin · automática)">
-              <input type="date" value={fechaHastaCalc} disabled readOnly
-                     style={{ ...inp, opacity: 0.75 }} />
+            <Fld label={`Periodo hasta (fecha fin${esAdmin ? '' : ' · automática'})`}>
+              <input type="date"
+                     value={fechaFinManual ?? fechaHastaCalc}
+                     disabled={!esAdmin}
+                     readOnly={!esAdmin}
+                     onChange={e => setFechaFinManual(e.target.value || null)}
+                     style={{ ...inp, opacity: esAdmin ? 1 : 0.75 }} />
               <span style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>
-                Automática = emisión + {f.periodicidad || 'mensual'}
-                {esCobrado && !editableFull ? ' · define el próximo cobro' : ''}
+                {fechaFinManual != null ? (
+                  <>Manual ·{' '}
+                    <button type="button" onClick={() => setFechaFinManual(null)}
+                            style={{ background: 'none', border: 'none', padding: 0,
+                                     color: 'var(--green)', cursor: 'pointer', font: 'inherit',
+                                     textDecoration: 'underline' }}>
+                      usar automática
+                    </button>{' '}(emisión + {f.periodicidad || 'mensual'})</>
+                ) : (
+                  <>Automática = emisión + {f.periodicidad || 'mensual'}
+                    {esAdmin ? ' · editable' : ''}
+                    {esCobrado && !editableFull ? ' · define el próximo cobro' : ''}</>
+                )}
               </span>
             </Fld>
           </div>
+
+          {/* Fecha de cobro (solo recibos cobrados; editable solo admin) */}
+          {esCobrado && (
+            <Fld label="Fecha de cobro (fecha real del pago)">
+              <input type="date" value={(f.fecha_pago || '').slice(0, 10)}
+                     disabled={!esAdmin}
+                     onChange={e => set('fecha_pago', e.target.value)}
+                     style={{ ...inp, maxWidth: 240, opacity: esAdmin ? 1 : 0.75 }} />
+              <span style={{ display: 'block', fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>
+                {esAdmin
+                  ? 'Solo admin. Corrige la fecha registrada del cobro; no cambia el importe ni Odoo.'
+                  : 'Solo el administrador puede cambiar la fecha de cobro.'}
+              </span>
+            </Fld>
+          )}
 
           {/* Método + periodicidad */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
@@ -310,6 +362,7 @@ function initialForm(r) {
     fecha_desde:       r.fecha_desde || '',
     fecha_hasta:       r.fecha_hasta || '',
     periodicidad:      r.periodicidad || '',
+    fecha_pago:        (r.fecha_pago || '').slice(0, 10),
     metodo_pago:       r.forma_pago || r.metodo_pago || 'caja_efectivo',
     importe_base:      (r.importe_base ?? r.amount_untaxed ?? 0).toString(),
     importe_iva:       (r.importe_iva ?? r.amount_tax ?? 0).toString(),

@@ -150,6 +150,11 @@ def _bd_recibo_to_unified(r):
         'cuota_actividades': '',
         'forma_pago': r.get('metodo_pago'),
         'periodicidad': r.get('periodicidad'),
+        # Fechas reales del recibo BD (para precargar el modal Modificar; el
+        # admin puede ajustar fecha de cobro y fecha fin aunque esté cobrado).
+        'fecha_pago': _iso(r.get('fecha_pago')),
+        'fecha_desde': _iso(r.get('fecha_desde')),
+        'fecha_hasta': _iso(r.get('fecha_hasta')),
         'mes_ref': periodo or None,
         'create_date': _iso(r.get('created_at')),
         'narration': r.get('notas') or '',
