@@ -95,6 +95,10 @@ export default function EstadoFisicoDashboard({ onVerPerfil }) {
   const fidel = data.fidelizacion_tecnico || {}
   const tecnicosReales = porTecnico.filter(t => t.id_tecnico != null)
 
+  // Actividad por día (solo días con tests) + agregado por día de la semana
+  const dataDia = data.por_dia || []
+  const dataDow = data.por_dia_semana || []
+
   return (
     <div role="tabpanel" aria-label="Estado físico" style={{ marginTop: 8 }}>
       {/* Cabecera */}
@@ -189,6 +193,62 @@ export default function EstadoFisicoDashboard({ onVerPerfil }) {
               <Bar dataKey="value" fill="#A78BFA" name="Tests" />
             </BarChart>
           </ResponsiveContainer>
+        </Card>
+      </div>
+
+      {/* Actividad por día + por día de la semana */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 14, marginBottom: 18 }}>
+        <Card style={{ padding: 18 }}>
+          <h3 style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 700, color: 'var(--text-0)', marginBottom: 12,
+                       display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Calendar size={15} aria-hidden="true" /> Actividad por día
+            <InfoTip title="Actividad por día">
+              Tests realizados cada día (solo los días con actividad). La etiqueta incluye el día de la
+              semana (Lun–Dom) para ver el patrón. Pasa el ratón para la fecha y nº de tests.
+            </InfoTip>
+          </h3>
+          {dataDia.length === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Sin datos.</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={dataDia} margin={{ top: 4, right: 8, bottom: 24, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="label" stroke="var(--text-3)" fontSize={10}
+                       angle={-45} textAnchor="end" height={52} interval="preserveStartEnd" />
+                <YAxis stroke="var(--text-3)" fontSize={11} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 8, fontSize: 12 }} />
+                <Bar dataKey="tests" fill="#2DD4A8" name="Tests" />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+
+        <Card style={{ padding: 18 }}>
+          <h3 style={{ fontFamily: 'Outfit', fontSize: 15, fontWeight: 700, color: 'var(--text-0)', marginBottom: 12,
+                       display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Calendar size={15} aria-hidden="true" /> Por día de la semana
+            <InfoTip title="Por día de la semana">
+              Total de tests agregados por día de la semana (Lun–Dom). Muestra qué días concentra la
+              actividad; el fin de semana va resaltado. Útil para planificar personal técnico.
+            </InfoTip>
+          </h3>
+          {dataDow.every(d => !d.tests) ? (
+            <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Sin datos.</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={dataDow} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="dia_abbr" stroke="var(--text-3)" fontSize={12} />
+                <YAxis stroke="var(--text-3)" fontSize={11} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: 'var(--bg-1)', border: '1px solid var(--line)', borderRadius: 8, fontSize: 12 }}
+                         formatter={(v) => [v, 'Tests']}
+                         labelFormatter={(l, p) => p?.[0]?.payload?.dia || l} />
+                <Bar dataKey="tests" name="Tests" radius={[4, 4, 0, 0]}>
+                  {dataDow.map((d, i) => <Cell key={i} fill={d.es_finde ? '#FB923C' : '#5B9CF6'} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </Card>
       </div>
 

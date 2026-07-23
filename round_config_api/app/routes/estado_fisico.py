@@ -536,6 +536,7 @@ def _compute_dashboard(sessions, id_manager=None):
             'demografico': {'por_sexo': {}, 'por_edad_bucket': {}},
             'top_clientes': [], 'ranking_puntuacion': [],
             'progreso_clientes': [],
+            'por_dia': [], 'por_dia_semana': [],
             'por_tecnico': [], 'tecnicos': {},
             'fidelizacion_tecnico': {'clientes_evaluables': 0, 'mismo_tecnico': 0,
                                      'distinto_tecnico': 0, 'pct_mismo': 0},
@@ -649,6 +650,35 @@ def _compute_dashboard(sessions, id_manager=None):
                 dias_entre_tests.append(d)
     media_dias = round(sum(dias_entre_tests) / len(dias_entre_tests), 1) if dias_entre_tests else 0
 
+    # ── Actividad por día + día de la semana ────────────────────────────────
+    # por_dia: un punto por cada día CON tests (fecha + etiqueta con día de la
+    # semana). por_dia_semana: agregado Lun..Dom para ver qué días se hace más.
+    DOW = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']  # weekday(): Lun=0
+    DOW_ABBR = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+    by_dia = {}
+    dow_counts = [0] * 7
+    for s in sessions:
+        ts = s.get('testDate')
+        if not ts:
+            continue
+        d = dt.datetime.fromtimestamp(ts / 1000)
+        wd = d.weekday()
+        key = d.strftime('%Y-%m-%d')
+        if key not in by_dia:
+            by_dia[key] = {'fecha': key,
+                           'label': f'{DOW_ABBR[wd]} {d.day:02d}/{d.month:02d}',
+                           'dow': DOW_ABBR[wd], 'tests': 0, 'clientes': set()}
+        by_dia[key]['tests'] += 1
+        if s.get('userId'):
+            by_dia[key]['clientes'].add(s.get('userId'))
+        dow_counts[wd] += 1
+    por_dia = [{'fecha': v['fecha'], 'label': v['label'], 'dow': v['dow'],
+                'tests': v['tests'], 'clientes': len(v['clientes'])}
+               for v in by_dia.values()]
+    por_dia.sort(key=lambda x: x['fecha'])
+    por_dia_semana = [{'dia': DOW[i], 'dia_abbr': DOW_ABBR[i],
+                       'es_finde': i >= 5, 'tests': dow_counts[i]} for i in range(7)]
+
     # ── Técnicos (idTecnico) ────────────────────────────────────────────────
     # Tests realizados por cada técnico (id + nº tests + nº clientes distintos).
     tec_stats = {}
@@ -698,6 +728,8 @@ def _compute_dashboard(sessions, id_manager=None):
         'top_clientes': top_clientes,
         'ranking_puntuacion': ranking_puntuacion,
         'progreso_clientes': progreso,
+        'por_dia': por_dia,
+        'por_dia_semana': por_dia_semana,
         'por_tecnico': por_tecnico,
         'fidelizacion_tecnico': fidel,
         'tecnicos': tecnicos_map,
