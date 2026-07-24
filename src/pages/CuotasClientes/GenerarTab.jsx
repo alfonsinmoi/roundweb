@@ -7,6 +7,7 @@ import {
   preemisionEliminar, emitirRemesa, descargarSepa,
   cuotasList, FORMA_PAGO_LABELS,
 } from '../../utils/cuotasApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 // Por defecto en validación/emisión usamos el MES PRÓXIMO (lo habitual es
 // pre-emitir recibos del mes siguiente). El operador puede cambiarlo desde
@@ -311,9 +312,10 @@ export default function GenerarTab({ identity }) {
 
 
 function ValidacionModal({ mes, loading, result, onClose, onDescargar }) {
+  const overlayClose = useOverlayClose(onClose)
   return (
     <div role="dialog" aria-modal="true"
-         onClick={e => { if (e.target === e.currentTarget) onClose() }}
+         {...overlayClose}
          style={{
            position: 'fixed', inset: 0, zIndex: 1000,
            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',

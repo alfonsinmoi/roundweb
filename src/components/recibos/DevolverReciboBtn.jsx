@@ -18,6 +18,7 @@ import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
 import { getRoundIdentity, reciboMarcarDevuelto } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const MOTIVOS_FRECUENTES = [
   'Devolución bancaria SEPA',
@@ -39,6 +40,7 @@ export default function DevolverReciboBtn({ r, onReload, size = 'sm' }) {
   const [submitting, setSubmitting] = useState(false)
   const [motivo, setMotivo] = useState(MOTIVOS_FRECUENTES[0])
   const [reactivar, setReactivar] = useState(true)
+  const overlayClose = useOverlayClose(() => setOpen(false), !submitting)
 
   const isBd = r._source === 'bd'
 
@@ -82,7 +84,7 @@ export default function DevolverReciboBtn({ r, onReload, size = 'sm' }) {
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   zIndex: 10000 }}
-         onClick={() => !submitting && setOpen(false)}>
+         {...overlayClose}>
       <div onClick={e => e.stopPropagation()}
            style={{ background: 'var(--bg-1)', borderRadius: 12, padding: 20,
                     maxWidth: 420, width: '90%', border: '1px solid var(--line)',

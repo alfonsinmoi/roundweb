@@ -8,6 +8,11 @@ import { X } from 'lucide-react'
 export default function Modal({ open, onClose, title, subtitle, children, maxWidth = 720, disabled = false }) {
   const dialogRef = useRef(null)
   const prevFocusRef = useRef(null)
+  // El backdrop solo debe cerrar si el gesto EMPEZÓ en el backdrop. Sin esto,
+  // seleccionar texto en un input y soltar el ratón fuera (mouseup en el
+  // backdrop) dispara un `click` cuyo target es el backdrop → cerraba el
+  // formulario a media edición. Guardamos dónde empezó el mousedown.
+  const downOnBackdropRef = useRef(false)
 
   // Refs estables para que el useEffect NO se re-ejecute cuando estos
   // callbacks/flags cambian de referencia en cada render del padre.
@@ -70,7 +75,12 @@ export default function Modal({ open, onClose, title, subtitle, children, maxWid
            background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
            overflowY: 'auto', padding: '40px 20px',
          }}
-         onClick={e => { if (e.target === e.currentTarget && !disabled) onClose() }}>
+         onMouseDown={e => { downOnBackdropRef.current = (e.target === e.currentTarget) }}
+         onClick={e => {
+           const cerrar = e.target === e.currentTarget && downOnBackdropRef.current && !disabled
+           downOnBackdropRef.current = false
+           if (cerrar) onClose()
+         }}>
       <div ref={dialogRef}
            style={{
              width: '100%', maxWidth, background: 'var(--bg-2)',

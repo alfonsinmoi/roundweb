@@ -8,6 +8,7 @@ import {
 } from '../../utils/configApi'
 import { getActividades } from '../../utils/api'
 import { useCan } from '../../hooks/useCan'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const PRECIO_CAMPOS = [
   { id: 'precio_mensual',     label: 'Mensual' },
@@ -204,6 +205,7 @@ function CuotaForm({ cuota, actividades, onClose, onSaved, identity }) {
     precio_entrada: cuota.precio_entrada ?? 0,
     active: cuota.active ?? true,
   })
+  const overlayClose = useOverlayClose(onClose)
   const esEntradaPuntual = data.tipo_cuota === 'entrada_puntual'
 
   const set = (k, v) => setData(d => ({ ...d, [k]: v }))
@@ -223,7 +225,7 @@ function CuotaForm({ cuota, actividades, onClose, onSaved, identity }) {
   }
 
   return (
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
                   backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center',
                   justifyContent: 'center', padding: 20 }}>

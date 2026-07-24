@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { LogIn, LogOut, Coffee, PlayCircle, AlertCircle, MapPin, ChevronDown, ChevronUp, Loader2, Target } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
 import { fichajeEstado, fichajePost, fichajeMiJornada, miHorario } from '../../utils/clienteApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 
 // Motivos de pausa por defecto (hasta que el endpoint público con JWT de
@@ -375,9 +376,10 @@ function QrScannerInline({ onScan }) {
 
 
 function ModalMotivoPausa({ onClose, onSend }) {
+  const overlayClose = useOverlayClose(onClose)
   return (
     <div role="dialog" aria-modal="true"
-         onClick={onClose}
+         {...overlayClose}
          style={{
            position: 'fixed', inset: 0, zIndex: 100,
            background: 'rgba(0,0,0,0.6)',

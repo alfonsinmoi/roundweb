@@ -8,11 +8,13 @@ import { Calculator, Loader2, X } from 'lucide-react'
 import { Card, Btn, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { contabDocAsiento } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 export default function AsientoModal({ doc, identity, onClose }) {
   const toast = useToast()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const overlayClose = useOverlayClose(onClose)
 
   useEffect(() => {
     let active = true
@@ -26,7 +28,7 @@ export default function AsientoModal({ doc, identity, onClose }) {
   }, [doc.id])
 
   return createPortal(
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 1000,
                    background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
                    display: 'flex', alignItems: 'flex-start',

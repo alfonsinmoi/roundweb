@@ -13,6 +13,7 @@ import { coincideTexto } from '../../utils/texto'
 import { QrCentroButton } from '../../components/QrAltaCliente'
 import NotasPopover from '../../components/notas/NotasPopover'
 import { useCan } from '../../hooks/useCan'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const PAGE_SIZE = 15
 
@@ -73,6 +74,7 @@ export default function ClientList() {
   // Pausas (inactividad temporal) activas: { clienteIdnoofit: <pausa> }
   const [temporales, setTemporales] = useState({})
   const [fotoFailed,  setFotoFailed]  = useState(false)
+  const overlayClose = useOverlayClose(() => setFotoPreview(null))
   // Reset del fallo al cambiar de foto
   useEffect(() => { setFotoFailed(false) }, [fotoPreview?.imgUrl])
 
@@ -595,7 +597,7 @@ export default function ClientList() {
       {fotoPreview && (
         <>
           {/* Capa transparente para cerrar al hacer click fuera */}
-          <div onClick={() => setFotoPreview(null)}
+          <div {...overlayClose}
                style={{ position: 'fixed', inset: 0, zIndex: 99, background: 'transparent' }} />
           {/* Popup en la posición del click */}
           <div role="dialog" aria-label={`Foto de ${fotoPreview.nombre}`}

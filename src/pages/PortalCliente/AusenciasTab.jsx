@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { usePortalAuth } from '../../contexts/PortalAuthContext'
 import { misAusencias, solicitarAusencia, cancelarAusencia } from '../../utils/clienteApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 
 const TIPOS = [
@@ -229,6 +230,7 @@ function SolicitarModal({ token, saldo, onClose, onSent }) {
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+  const overlayClose = useOverlayClose(onClose)
 
   // Autoajusta fecha_hasta = fecha_desde si está vacía
   function setDesde(v) {
@@ -253,7 +255,7 @@ function SolicitarModal({ token, saldo, onClose, onSent }) {
   }
 
   return (
-    <div role="dialog" aria-modal="true" onClick={onClose}
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{
            position: 'fixed', inset: 0, zIndex: 100,
            background: 'rgba(0,0,0,0.6)',

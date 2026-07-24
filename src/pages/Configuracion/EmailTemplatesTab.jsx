@@ -10,6 +10,7 @@ import {
   emailTemplateUpdate, emailTemplateDelete, emailTemplatesSeed,
   emailTemplateTest, getRoundIdentity,
 } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 export default function EmailTemplatesTab({ identity: identityProp }) {
   const { user, isImpersonating } = useAuth()
@@ -203,6 +204,7 @@ function EditorModal({ tpl, meta, identity, onClose, onSaved }) {
   const [testEmail, setTestEmail] = useState('')
   const [testing, setTesting] = useState(false)
   const set = patch => setForm(f => ({ ...f, ...patch }))
+  const overlayClose = useOverlayClose(onClose)
 
   async function handleSave() {
     setSaving(true)
@@ -237,11 +239,11 @@ function EditorModal({ tpl, meta, identity, onClose, onSaved }) {
   }
 
   return (
-    <div style={{
+    <div {...overlayClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100,
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 20,
       overflowY: 'auto',
-    }} onClick={onClose}>
+    }}>
       <div style={{
         width: '100%', maxWidth: 820, background: 'var(--bg-1)',
         border: '1px solid var(--line-2)', borderRadius: 'var(--radius-lg)',

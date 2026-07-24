@@ -11,6 +11,7 @@ import {
 } from '../../utils/configApi'
 import Modal from '../../components/Modal'
 import { useCan } from '../../hooks/useCan'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const SCORE_COLOR = {
   green: { bg: 'var(--green-bg)',  fg: 'var(--green)',  border: 'var(--green-border)'  },
@@ -443,11 +444,12 @@ function Chip({ children }) {
 
 function LostReasonModal({ reasons, onCancel, onConfirm }) {
   const [reason, setReason] = useState(reasons[0]?.value || '')
+  const overlayClose = useOverlayClose(onCancel)
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-    }} onClick={onCancel}>
+    }} {...overlayClose}>
       <div style={{
         width: '100%', maxWidth: 420, background: 'var(--bg-1)',
         border: '1px solid var(--line-2)', borderRadius: 'var(--radius-lg)', padding: 24,

@@ -30,6 +30,7 @@ import { useOdooStatus } from '../../hooks/useOdooStatus'
 import { useCan } from '../../hooks/useCan'
 import { getRoundIdentity, centrosList } from '../../utils/configApi'
 import { getClientes } from '../../utils/api'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 import {
   posCategoriasList, posProductosList, posVentaCreate, posVentasList,
   posDescuentosList, posVentaSyncOdoo, posVentaAnular,
@@ -1509,8 +1510,9 @@ function SyncBadge({ v, syncing, onRetry }) {
 // ═══════════════════════════════════════════════════════════════════════
 
 function Modal({ title, onClose, children, maxWidth = 480 }) {
+  const overlayClose = useOverlayClose(onClose)
   return (
-    <div role="dialog" aria-modal="true" onClick={onClose}
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   zIndex: 10000 }}>

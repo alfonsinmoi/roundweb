@@ -15,6 +15,7 @@
 // Borradores NO aparecen en la ficha del cliente ni en el Listado general
 // hasta que se emiten.
 import { useEffect, useState, useMemo } from 'react'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 import { Loader2, Plus, Pencil, Trash2, Receipt, X } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
@@ -194,6 +195,7 @@ function ModalRecibo({ identity, mes, initial, onClose, onSaved }) {
   const toast = useToast()
   const isEdit = !!initial?.id
   const [submitting, setSubmitting] = useState(false)
+  const overlayClose = useOverlayClose(onClose)
 
   // Form state
   const today = new Date().toISOString().slice(0, 10)
@@ -344,7 +346,7 @@ function ModalRecibo({ identity, mes, initial, onClose, onSaved }) {
     <div role="dialog" aria-modal="true"
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}
-         onClick={onClose}>
+         {...overlayClose}>
       <div onClick={e => e.stopPropagation()}
            style={{ background: 'var(--bg-1)', borderRadius: 14, maxWidth: 760, width: '92%',
                     maxHeight: '90vh', display: 'flex', flexDirection: 'column',

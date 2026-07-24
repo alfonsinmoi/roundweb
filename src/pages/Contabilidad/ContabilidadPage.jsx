@@ -21,6 +21,7 @@ import {
   contabDocAsiento, contabDocABorrador,
 } from '../../utils/configApi'
 import AsientoModal from './AsientoModal'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 export default function ContabilidadPage() {
   const { user, isImpersonating } = useAuth()
@@ -1245,6 +1246,7 @@ function UploadModal({ cats, identity, onClose, onUploaded }) {
     concepto: '', notas: '',
   })
   const [saving, setSaving] = useState(false)
+  const overlayClose = useOverlayClose(onClose, fase !== 'scanning')
 
   // Auto-rellenar IVA cuando cambia categoría (solo si no viene del LLM)
   useEffect(() => {
@@ -1449,7 +1451,7 @@ function UploadModal({ cats, identity, onClose, onUploaded }) {
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20,
-    }} onClick={fase !== 'scanning' ? onClose : undefined}>
+    }} {...overlayClose}>
       <Card style={{ padding: 0, maxWidth: 720, width: '100%', maxHeight: '92vh',
                      overflowY: 'auto', display: 'flex', flexDirection: 'column' }}
             onClick={e => e.stopPropagation()}>

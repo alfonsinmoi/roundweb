@@ -18,6 +18,7 @@ import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
 import { getRoundIdentity, reciboMarcarPagado, reciboMoveCobrar } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const METODOS = [
   { id: 'sepa',             label: 'SEPA' },
@@ -51,6 +52,7 @@ export default function PagarReciboBtn({ r, onReload, size = 'sm' }) {
   const importeEsperado = Number(r.amount_total || 0)
   const [importeCobrado, setImporteCobrado] = useState(importeEsperado.toFixed(2))
   const [observacion, setObservacion] = useState('')
+  const overlayClose = useOverlayClose(() => setOpen(false), !submitting)
 
   const isBd = r._source === 'bd'
   // Sprint 7 audit #M9 — protección input vacío: NO tratar '' como 0
@@ -118,11 +120,10 @@ export default function PagarReciboBtn({ r, onReload, size = 'sm' }) {
   }
 
   const modalContent = open && (
-    <div role="dialog" aria-modal="true"
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  zIndex: 10000 }}
-         onClick={() => !submitting && setOpen(false)}>
+                  zIndex: 10000 }}>
       <div onClick={e => e.stopPropagation()}
            style={{ background: 'var(--bg-1)', borderRadius: 12, padding: 20,
                     maxWidth: 380, width: '90%', border: '1px solid var(--line)',

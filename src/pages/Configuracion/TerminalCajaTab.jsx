@@ -13,6 +13,7 @@ import { useToast } from '../../components/Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
 import { getRoundIdentity, centrosList } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 import {
   posCategoriasList, posCategoriaCreate, posCategoriaUpdate, posCategoriaArchive,
   posProductosList, posProductoCreate, posProductoUpdate,
@@ -1182,12 +1183,13 @@ function DescuentoModal({ identity, initial, productos, centros = [],
 // ═══════════════════════════════════════════════════════════════════════
 
 function ModalShell({ title, children, onClose, maxWidth = 600 }) {
+  const overlayClose = useOverlayClose(onClose)
   return (
     <div role="dialog" aria-modal="true"
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   zIndex: 10000 }}
-         onClick={onClose}>
+         {...overlayClose}>
       <div onClick={e => e.stopPropagation()}
            style={{ background: 'var(--bg-1)', borderRadius: 14, maxWidth,
                     width: '92%', maxHeight: '90vh', display: 'flex', flexDirection: 'column',

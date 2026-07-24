@@ -17,6 +17,7 @@ import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
 import { getRoundIdentity, reciboUpdate } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const METODOS = [
   { id: 'sepa',             label: 'SEPA' },
@@ -43,6 +44,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   const esAdmin = !user?.perfil || !!user?.perfil?.is_admin
   // Override manual de la fecha fin: null = automática (deriva de periodicidad).
   const [fechaFinManual, setFechaFinManual] = useState(null)
+  const overlayClose = useOverlayClose(() => setOpen(false), !saving)
 
   const isBd = r._source === 'bd'
   const tieneMoveOdoo = !!(r.account_move_id || r.account_move_ref)
@@ -144,7 +146,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   }
 
   const modal = open && (
-    <div role="dialog" aria-modal="true" onClick={() => !saving && setOpen(false)}
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   zIndex: 10000 }}>

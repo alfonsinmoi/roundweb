@@ -17,6 +17,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
 import { getRoundIdentity } from '../../utils/configApi'
 import { validarNifCifNie } from '../../utils/validators'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 import {
   posProveedoresList, posProveedorCreate, posProveedorUpdate,
   posProveedorAnular, posProveedorSync, posUploadMedia,
@@ -359,6 +360,7 @@ function FacturaModal({ identity, initial, onClose, onSaved }) {
   const set = (k, v) => setF(p => ({ ...p, [k]: v }))
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const overlayClose = useOverlayClose(onClose)
 
   // Auto-calcular IVA y total cuando cambian base/iva_pct, salvo que el
   // usuario haya tocado manualmente. Heurística: si total queda vacío
@@ -421,7 +423,7 @@ function FacturaModal({ identity, initial, onClose, onSaved }) {
   }
 
   return (
-    <div role="dialog" aria-modal="true" onClick={onClose}
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   zIndex: 10000 }}>

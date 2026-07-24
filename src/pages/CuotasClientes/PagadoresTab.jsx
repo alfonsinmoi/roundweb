@@ -14,6 +14,7 @@ import {
   pagadorClientes, pagadorAddClientes, pagadorBajaCliente, centrosList,
 } from '../../utils/configApi'
 import { getClientes } from '../../utils/api'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const inp = {
   width: '100%', padding: 8, borderRadius: 8, fontSize: 13,
@@ -362,8 +363,9 @@ function Fld({ label, children }) {
 }
 
 function Modal({ title, onClose, children, wide }) {
+  const overlayClose = useOverlayClose(() => onClose && onClose())
   return createPortal(
-    <div role="dialog" aria-modal="true" onClick={() => onClose && onClose()}
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 10000,
                   display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div onClick={e => e.stopPropagation()}

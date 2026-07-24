@@ -10,6 +10,7 @@ import {
   getRoundIdentity, socialCuentasList, socialPostsList,
   socialPostCreate, socialPostUpdate, socialPostDelete, socialPostPublishNow,
 } from '../utils/configApi'
+import { useOverlayClose } from '../hooks/useOverlayClose'
 
 const TIPO_LABELS = {
   image:    { label: 'Foto',     icon: ImageIcon, color: 'var(--blue)' },
@@ -312,6 +313,7 @@ function PostEditor({ post, cuentas, identity, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [newMediaUrl, setNewMediaUrl] = useState('')
   const set = patch => setForm(f => ({ ...f, ...patch }))
+  const overlayClose = useOverlayClose(onClose)
 
   const cuenta = cuentas.find(c => c.id === form.social_cuenta_id)
   const tiposDisponibles = cuenta?.red === 'facebook'
@@ -352,7 +354,7 @@ function PostEditor({ post, cuentas, identity, onClose, onSaved }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div {...overlayClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100,
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 20, overflowY: 'auto',
     }}>

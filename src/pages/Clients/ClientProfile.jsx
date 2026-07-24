@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft, User, CalendarCheck, Send,
@@ -1611,6 +1612,7 @@ function NotifNuevoModal({ cliente, identity, onClose, onCreated }) {
   const toast = useToast()
   const [form, setForm] = useState({ seccion: 'cobros', tipo: '', titulo: '', cuerpo: '' })
   const [saving, setSaving] = useState(false)
+  const overlayClose = useOverlayClose(onClose)
   const tipos = tiposDeSeccion(form.seccion)
   useEffect(() => {
     if (!tipos.find(t => t.id === form.tipo)) setForm(f => ({ ...f, tipo: tipos[0]?.id || '' }))
@@ -1637,7 +1639,7 @@ function NotifNuevoModal({ cliente, identity, onClose, onCreated }) {
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 20,
-    }} onClick={onClose}>
+    }} {...overlayClose}>
       <Card style={{ padding: 0, maxWidth: 480, width: '100%' }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: 20, borderBottom: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0, fontFamily: 'Outfit', fontSize: 16, fontWeight: 700 }}>
@@ -2866,6 +2868,7 @@ function PagarBtn({ r, onReload }) {
   const [submitting, setSubmitting] = useState(false)
   const [metodo, setMetodo] = useState(r.forma_pago || 'caja_efectivo')
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10))
+  const overlayClose2 = useOverlayClose(() => setOpen(false), !submitting)
 
   const isBd = r._source === 'bd'
 
@@ -2901,7 +2904,7 @@ function PagarBtn({ r, onReload }) {
         <div role="dialog" aria-modal="true"
              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
-             onClick={() => !submitting && setOpen(false)}>
+             {...overlayClose2}>
           <div onClick={e => e.stopPropagation()}
                style={{ background: 'var(--bg-1)', borderRadius: 12, padding: 20,
                         maxWidth: 380, width: '90%', border: '1px solid var(--line)' }}>
@@ -3059,6 +3062,7 @@ function TabERPLegacy({ clienteId, cliente }) {
   const [unlocked,setUnlocked]= useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [infoDlg, setInfoDlg] = useState(null) // { title, message }
+  const overlayClose3 = useOverlayClose(() => setInfoDlg(null))
   // Catálogo de cuotas para el dropdown de "Curso / Tipo de cuota"
   const [cuotasCatalogo, setCuotasCatalogo] = useState([])
 
@@ -3546,7 +3550,7 @@ function TabERPLegacy({ clienteId, cliente }) {
       )}
 
       {infoDlg && (
-        <div onClick={e => { if (e.target === e.currentTarget) setInfoDlg(null) }}
+        <div {...overlayClose3}
              style={{
                position: 'fixed', inset: 0, zIndex: 700,
                background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',

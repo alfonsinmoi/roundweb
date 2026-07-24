@@ -11,6 +11,7 @@ import { trabajadoresList } from '../../utils/horarioApi'
 import { getClientes, getActividades } from '../../utils/api'
 import { coincideTexto } from '../../utils/texto'
 import { useCan } from '../../hooks/useCan'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 
 // Aplica un descuento a un precio base. Compartido entre AsignarModal (lista
@@ -206,6 +207,7 @@ function AsignarModal({ desc, identity, onClose }) {
   const [trabajadorId, setTrabajadorId] = useState('')
   const [relacion, setRelacion] = useState('')
   const [relacionOtro, setRelacionOtro] = useState('')
+  const overlayClose = useOverlayClose(onClose)
 
   const isFamiliares = desc.tipo === 'familiares'
   const isFamiliarTrab = desc.tipo === 'familiar_trabajador'
@@ -294,7 +296,7 @@ function AsignarModal({ desc, identity, onClose }) {
   }
 
   return (
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: 'var(--bg-1)', borderRadius: 'var(--radius-lg)', width: '100%',
@@ -674,6 +676,7 @@ function ClientesAsignadosModal({ desc, identity, onClose }) {
   const [search, setSearch] = useState('')
   const [estadoFiltro, setEstadoFiltro] = useState('todos') // todos|vigentes|caducados
   const [relacionFiltro, setRelacionFiltro] = useState('')   // sólo familiar_trabajador
+  const overlayClose = useOverlayClose(onClose)
   const isFamiliarTrab = desc.tipo === 'familiar_trabajador'
   const isFamiliares = desc.tipo === 'familiares'
 
@@ -733,7 +736,7 @@ function ClientesAsignadosModal({ desc, identity, onClose }) {
   }, [asignaciones])
 
   return (
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: 'var(--bg-1)', borderRadius: 'var(--radius-lg)', width: '100%',
@@ -858,6 +861,7 @@ function DescForm({ desc, identity, onClose, onSaved }) {
   const toast = useToast()
   const [saving, setSaving] = useState(false)
   const [cuotas, setCuotas] = useState([])
+  const overlayClose = useOverlayClose(onClose)
 
   // combo_secundarias depende del tipo (estructura NUEVA, por periodicidad):
   //   - varias_cuotas:               [{cuota_codigo, precios:{mensual,…}}]
@@ -1126,7 +1130,7 @@ function DescForm({ desc, identity, onClose, onSaved }) {
   const candidatasSec = cuotas.filter(c => c.codigo !== data.cuota_requerida_codigo)
 
   return (
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: 'var(--bg-1)', borderRadius: 'var(--radius-lg)', width: '100%',

@@ -6,6 +6,7 @@ import {
   modificacionesList, modificacionCreate, modificacionUpdate, modificacionDelete,
   TIPOS_MODIFICACION,
 } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 
 export default function ModificacionesTab({ identity }) {
@@ -101,6 +102,7 @@ function ModForm({ mod, identity, onClose, onSaved }) {
     estado: mod.estado || 'activa',
   })
   const set = (k, v) => setData(d => ({ ...d, [k]: v }))
+  const overlayClose = useOverlayClose(onClose)
 
   async function onSubmit(e) {
     e.preventDefault()
@@ -118,7 +120,7 @@ function ModForm({ mod, identity, onClose, onSaved }) {
   }
 
   return (
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: 'var(--bg-1)', borderRadius: 'var(--radius-lg)', width: '100%',

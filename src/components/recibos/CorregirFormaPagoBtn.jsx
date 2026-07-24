@@ -15,6 +15,7 @@ import { Btn } from '../UI'
 import { useToast } from '../Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { getRoundIdentity, reciboUpdate } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const METODOS = [
   { id: 'sepa',             label: 'SEPA' },
@@ -34,6 +35,7 @@ export default function CorregirFormaPagoBtn({ r, onReload, size = 'sm' }) {
   const actual = r.forma_pago || r.metodo_pago || ''
   const [metodo, setMetodo] = useState(actual || 'caja_efectivo')
   const [motivo, setMotivo] = useState('')
+  const overlayClose = useOverlayClose(() => setOpen(false), !saving)
 
   // Solo admin: usuario_web con perfil is_admin, o manager NoofitPro (no usuario_web).
   const isAdmin = user?.kind !== 'usuario_web' || !!user?.perfil?.is_admin
@@ -61,7 +63,7 @@ export default function CorregirFormaPagoBtn({ r, onReload, size = 'sm' }) {
   }
 
   const modal = open && (
-    <div role="dialog" aria-modal="true" onClick={() => !saving && setOpen(false)}
+    <div role="dialog" aria-modal="true" {...overlayClose}
          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000 }}>
       <div onClick={e => e.stopPropagation()}

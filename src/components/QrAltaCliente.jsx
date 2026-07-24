@@ -27,6 +27,7 @@ import {
   getRoundIdentity, altaModoGet,
 } from '../utils/configApi'
 import { cifrarQrTrainer, payloadQrVincular } from '../utils/qrCifrado'
+import { useOverlayClose } from '../hooks/useOverlayClose'
 
 const POLL_MS = 30_000
 
@@ -153,8 +154,9 @@ export function QrFichaCliente({ cliente, trainerId, compact = false }) {
 
 
 export function QrModal({ title, subtitle, payload, error, showPayloadText, onClose }) {
+  const overlayClose = useOverlayClose(onClose)
   return (
-    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    <div {...overlayClose}
          style={{ position: 'fixed', inset: 0, zIndex: 700,
                   background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',

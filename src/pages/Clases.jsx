@@ -17,6 +17,7 @@ import { colorFromName } from '../utils/colors'
 import { formatHora } from '../utils/formatters'
 import { useAuth } from '../contexts/AuthContext'
 import { getRoundIdentity, leadsEnSala } from '../utils/configApi'
+import { useOverlayClose } from '../hooks/useOverlayClose'
 
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
@@ -605,6 +606,7 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
   const asistieron = usuarios.filter(u => u.verify).length
   const qrValue    = String(sala.idEspejo ?? sala.id)
   const [fotoPreview, setFotoPreview] = useState(null)  // { imgUrl, nombre }
+  const overlayClose = useOverlayClose(() => setFotoPreview(null))
   const [fotoFailed,  setFotoFailed]  = useState(false)
   useEffect(() => { setFotoFailed(false) }, [fotoPreview?.imgUrl])
 
@@ -792,7 +794,7 @@ function PanelClase({ sala, actividad, usuarios, loading, actionLoading, isActiv
 
       {/* Overlay: foto ampliada 5×4 cm */}
       {fotoPreview && (
-        <div onClick={() => setFotoPreview(null)}
+        <div {...overlayClose}
              role="dialog" aria-modal="true" aria-label={`Foto de ${fotoPreview.nombre}`}
              style={{
                position: 'fixed', inset: 0, zIndex: 1000,

@@ -22,6 +22,7 @@ import {
 } from '../../utils/configApi'
 import { getClientes } from '../../utils/api'
 import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 const ICONS = { receipt: Receipt, calendar: Calendar, 'building-2': Building2, newspaper: Newspaper, bell: Bell }
 
@@ -336,6 +337,7 @@ function DetalleEnvioModal({ data, onClose }) {
     getClientes().then(setClientes).catch(() => {})
   }, [])
   const cliMap = useMemo(() => Object.fromEntries(clientes.map(c => [String(c.id), c])), [clientes])
+  const overlayClose = useOverlayClose(onClose)
 
   const fmt = (iso) => {
     if (!iso) return '—'
@@ -351,7 +353,7 @@ function DetalleEnvioModal({ data, onClose }) {
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20,
-    }} onClick={onClose}>
+    }} {...overlayClose}>
       <Card style={{ padding: 0, maxWidth: 720, width: '100%', maxHeight: '90vh',
                      overflowY: 'auto', display: 'flex', flexDirection: 'column' }}
             onClick={ev => ev.stopPropagation()}>
@@ -459,6 +461,7 @@ function nowPlusMin(min) {
 
 function NuevaNotifModal({ identity, seccionInicial, audiencePreset, presetTitle, onClose, onCreated }) {
   const toast = useToast()
+  const overlayClose2 = useOverlayClose(onClose)
   const [form, setForm] = useState({
     seccion: seccionInicial || 'cobros',
     tipo: '',
@@ -565,7 +568,7 @@ function NuevaNotifModal({ identity, seccionInicial, audiencePreset, presetTitle
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20,
-    }} onClick={onClose}>
+    }} {...overlayClose2}>
       <Card style={{ padding: 0, maxWidth: 640, width: '100%', maxHeight: '90vh',
                      overflowY: 'auto', display: 'flex', flexDirection: 'column' }}
             onClick={e => e.stopPropagation()}>

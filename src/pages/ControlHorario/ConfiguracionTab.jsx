@@ -7,6 +7,7 @@ import {
   motivosPausa, motivoCreate, motivoUpdate, motivoDelete,
 } from '../../utils/horarioApi'
 import { getEntrenadores } from '../../utils/api'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 
 export default function ConfiguracionTab({ identity }) {
@@ -278,6 +279,7 @@ function CopiarEmpresaModal({ identity, form, trainers, managerId, empresasById,
   const destinos = trainers.filter(t => String(t.id) !== managerId)
   const [seleccion, setSeleccion] = useState(new Set())
   const [saving, setSaving] = useState(false)
+  const overlayClose = useOverlayClose(onClose)
 
   function toggle(id) {
     setSeleccion(s => {
@@ -317,7 +319,7 @@ function CopiarEmpresaModal({ identity, form, trainers, managerId, empresasById,
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div {...overlayClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }}>

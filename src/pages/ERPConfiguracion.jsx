@@ -3,6 +3,7 @@ import { Database, Plus, Pencil, Trash2, RefreshCw, Check, X, AlertCircle, Save,
 import { postERPConfiguracion, postERPConfiguracionCampos, apiGetRaw, apiPostRaw, apiDeleteRaw } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import ConfirmDialog from '../components/ConfirmDialog'
+import { useOverlayClose } from '../hooks/useOverlayClose'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
 
@@ -168,6 +169,7 @@ function CampoModal({ cfg, camposExistentes, campoEditar, onClose, onSaved }) {
   const [valorDefault,   setValorDefault]   = useState(isEdit ? (campoEditar.valorPorDefecto ?? '') : '')
   const [saving,         setSaving]         = useState(false)
   const [error,          setError]          = useState('')
+  const overlayClose = useOverlayClose(onClose)
 
   // Al cambiar formato → actualizar tipo automáticamente (solo en alta)
   function handleFormato(val) {
@@ -219,7 +221,7 @@ function CampoModal({ cfg, camposExistentes, campoEditar, onClose, onSaved }) {
       position: 'fixed', inset: 0, zIndex: 500,
       background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    }} {...overlayClose}>
       <div style={{
         background: 'var(--bg-1)', borderRadius: 20, width: '100%', maxWidth: 520,
         boxShadow: '0 24px 80px rgba(0,0,0,0.4)', overflow: 'hidden',
@@ -352,6 +354,7 @@ function PasswordGate({ onUnlocked, onClose }) {
   const [show,    setShow]    = useState(false)
   const [error,   setError]   = useState('')
   const inputRef              = useRef(null)
+  const overlayClose = useOverlayClose(onClose)
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
@@ -372,7 +375,7 @@ function PasswordGate({ onUnlocked, onClose }) {
       position: 'fixed', inset: 0, zIndex: 600,
       background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    }} {...overlayClose}>
       <div style={{
         background: 'var(--bg-1)', borderRadius: 20, width: '100%', maxWidth: 400,
         boxShadow: '0 24px 80px rgba(0,0,0,0.45)', overflow: 'hidden',
@@ -491,6 +494,7 @@ export default function ERPConfiguracion() {
   const [confirmDlg, setConfirmDlg] = useState(null)      // { title, message, confirmText, variant, onConfirm }
   const [infoDlg,    setInfoDlg]    = useState(null)      // { title, message }
   const [showLegacy, setShowLegacy] = useState(false)     // mostrar campos legacy no borrables
+  const overlayClose = useOverlayClose(() => setInfoDlg(null))
 
   function lock() {
     sessionStorage.removeItem('erp_unlocked')
@@ -888,7 +892,7 @@ export default function ERPConfiguracion() {
 
       {/* Info dialog (reemplaza alert() nativo) */}
       {infoDlg && (
-        <div onClick={e => { if (e.target === e.currentTarget) setInfoDlg(null) }}
+        <div {...overlayClose}
              style={{
                position: 'fixed', inset: 0, zIndex: 700,
                background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',

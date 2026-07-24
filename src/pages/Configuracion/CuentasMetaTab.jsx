@@ -10,6 +10,7 @@ import {
   getRoundIdentity, socialCuentasList, socialCuentaUpsert,
   socialCuentaDelete, socialCuentaInfo, centrosList,
 } from '../../utils/configApi'
+import { useOverlayClose } from '../../hooks/useOverlayClose'
 
 
 export default function CuentasMetaTab({ identity: identityProp }) {
@@ -201,6 +202,7 @@ function CuentaEditor({ cuenta, centros, identity, onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
   const set = patch => setForm(f => ({ ...f, ...patch }))
   const isNew = !cuenta.id
+  const overlayClose = useOverlayClose(onClose)
 
   async function handleSave() {
     if (!form.red) { toast.error('Selecciona red'); return }
@@ -214,7 +216,7 @@ function CuentaEditor({ cuenta, centros, identity, onClose, onSaved }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div {...overlayClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100,
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 20, overflowY: 'auto',
     }}>

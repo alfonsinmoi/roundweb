@@ -6,6 +6,7 @@ import {
   asignacionesSemana, asignacionesBulk, plantillasList,
   copiarSemana, replicarSemana, aplicarPatronRotativo,
 } from '../../../utils/horarioApi'
+import { useOverlayClose } from '../../../hooks/useOverlayClose'
 
 
 const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
@@ -408,8 +409,9 @@ function ModalPatron({ lunes, identity, onClose, onDone }) {
 
 
 function Overlay({ titulo, children, onClose }) {
+  const overlayClose = useOverlayClose(onClose)
   return (
-    <div onClick={onClose} style={{
+    <div {...overlayClose} style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }}>
