@@ -47,6 +47,7 @@ from .routes.facturacion_emision import bp as bp_facturacion_emision
 from .routes.manager_odoo      import bp as bp_manager_odoo
 from .routes.auth_bootstrap    import bp as bp_auth_bootstrap
 from .routes.preemision_validar import bp as bp_preemision_validar
+from .routes.preemision_aplicar import bp as bp_preemision_aplicar
 from .routes.preemision_v2     import bp as bp_preemision_v2
 from .routes.emision_v2        import bp as bp_emision_v2
 from .routes.sepa              import bp as bp_sepa
@@ -259,6 +260,9 @@ def create_app():
     # ── Validación previa antes de emitir (preemision)
     for prefix in ('/preemision-validar', '/api/cuotas/preemision'):
         app.register_blueprint(bp_preemision_validar, name=f'pv{prefix}', url_prefix=prefix)
+    # Aplicar correcciones desde Excel editado (categoría/cuota/periodicidad)
+    for prefix in ('/preemision-validar', '/api/cuotas/preemision'):
+        app.register_blueprint(bp_preemision_aplicar, name=f'pa{prefix}', url_prefix=prefix)
 
     # ── Preemisión v2 + Emisión v2 (modo α: recibo + trimestral)
     for prefix in ('/preemision-v2', '/api/cuotas/preemision-v2'):

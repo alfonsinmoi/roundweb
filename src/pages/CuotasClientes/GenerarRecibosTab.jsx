@@ -1,7 +1,7 @@
 // Generar recibos del mes — modo α (recibo + trimestral)
 // Usa endpoints v2: /api/cuotas/preemision-v2/<mes> y /api/cuotas/emitir-v2/<mes>
-import { useState, useEffect } from 'react'
-import { Loader2, Play, Send, ShieldCheck, Trash2, X, Download, Check } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Loader2, Play, Send, ShieldCheck, Trash2, X, Download, Check, Upload } from 'lucide-react'
 import { Card, Btn, SectionTitle, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { useCan } from '../../hooks/useCan'
@@ -38,6 +38,9 @@ export default function GenerarRecibosTab({ identity }) {
   const [emitting, setEmitting] = useState(false)
   const [validResult, setValidResult] = useState(null)
   const [validating, setValidating] = useState(false)
+  const [aplicandoExcel, setAplicandoExcel] = useState(false)
+  const [aplicarResult, setAplicarResult] = useState(null)
+  const fileInputRef = useRef(null)
 
   const _hdrs = () => ({
     'X-Round-Token': TOKEN_ENV,
@@ -130,6 +133,49 @@ export default function GenerarRecibosTab({ identity }) {
     } catch (e) { toast.error(e.message) }
   }
 
+  function pedirExcelCorrecciones() {
+    setAplicarResult(null)
+    fileInputRef.current?.click()
+  }
+
+  async function aplicarCorreccionesExcel(ev) {
+    const file = ev.target.files?.[0]
+    if (file) ev.target.value = ''   // permite re-elegir el mismo nombre
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      toast.error('Selecciona un .xlsx')
+      return
+    }
+    setAplicandoExcel(true)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const r = await fetch(`/api/cuotas/preemision/${mes}/aplicar-correcciones-excel`, {
+        method: 'POST', headers: _hdrs(), body: form,
+      })
+      const d = await r.json()
+      setAplicarResult(d)
+      if (!d.ok) {
+        toast.error(d.msg || d.error || `HTTP ${r.status}`)
+        return
+      }
+      const sumario = (
+        `Aplicados: ${d.aplicados_categoria || 0} categoría(s) · `
+        + `${d.aplicados_subscription || 0} cuota(s)`
+        + (d.fallos?.length ? ` · ${d.fallos.length} fallo(s)` : '')
+      )
+      toast.success(sumario)
+      // Re-descargar Excel revalidado
+      await descargarValidacionExcel()
+      // Refrescar lista de recibos por si afecta al mes en curso
+      reload()
+    } catch (e) {
+      toast.error(`Error: ${e.message}`)
+    } finally {
+      setAplicandoExcel(false)
+    }
+  }
+
   async function borrarRecibo(rid) {
     if (!confirm('¿Borrar este recibo?')) return
     try {
@@ -178,6 +224,17 @@ export default function GenerarRecibosTab({ identity }) {
               {generating ? <><Loader2 size={14} className="animate-spin" /> Generando…</> : <><Play size={14} /> Generar recibos</>}
             </Btn>
           )}
+          {canEditPre && (
+            <Btn variant="secondary" onClick={pedirExcelCorrecciones}
+                 disabled={aplicandoExcel || !mes}
+                 title="Sube el Excel de 'Validar antes de emitir' con las columnas 'Nueva categoría/cuota/periodicidad' rellenas. Se aplican los cambios y se vuelve a validar.">
+              {aplicandoExcel
+                ? <><Loader2 size={14} className="animate-spin" /> Aplicando…</>
+                : <><Upload size={14} /> Aplicar correcciones desde Excel</>}
+            </Btn>
+          )}
+          <input ref={fileInputRef} type="file" accept=".xlsx"
+                 style={{ display: 'none' }} onChange={aplicarCorreccionesExcel} />
           {canEmitirMes && (
             <Btn variant="primary" onClick={emitir} disabled={emitting || pendientesEmision === 0}>
               {emitting ? <><Loader2 size={14} className="animate-spin" /> Emitiendo…</> : <><Send size={14} /> Emitir ({pendientesEmision})</>}
@@ -298,6 +355,12 @@ export default function GenerarRecibosTab({ identity }) {
           onClose={() => { setValidResult(null); setValidating(false) }}
           onDescargar={descargarValidacionExcel} />
       )}
+
+      {/* Errores / fallos al aplicar correcciones desde Excel */}
+      {aplicarResult && (aplicarResult.errores?.length || aplicarResult.fallos?.length) && (
+        <CorreccionesModal mes={mes} result={aplicarResult}
+          onClose={() => setAplicarResult(null)} />
+      )}
     </div>
   )
 }
@@ -344,6 +407,66 @@ const th = {
   textTransform: 'uppercase', letterSpacing: '0.04em',
 }
 const td = { padding: '10px 14px', color: 'var(--text-1)' }
+
+
+function CorreccionesModal({ mes, result, onClose }) {
+  const errores = result.errores || []
+  const fallos  = result.fallos  || []
+  const titulo  = errores.length ? 'Validación fallida — no se aplicó nada'
+                                : 'Cambios aplicados con fallos'
+  const color   = errores.length ? 'red' : 'amber'
+  return (
+    <div onClick={e => { if (e.target === e.currentTarget) onClose() }}
+         style={{ position: 'fixed', inset: 0, zIndex: 1000,
+                   display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+                   background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
+                   overflowY: 'auto', padding: '40px 20px' }}>
+      <div style={{ width: '100%', maxWidth: 760, background: 'var(--bg-2)',
+                     border: '1px solid var(--line)', borderRadius: 24 }}>
+        <div style={{ padding: '20px 28px', borderBottom: '1px solid var(--line)',
+                       display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontFamily: 'Outfit', fontSize: 18, fontWeight: 600, margin: 0,
+                        color: `var(--${color})` }}>
+            {titulo} · {mes}
+          </h3>
+          <button onClick={onClose} style={{ background: 'var(--bg-3)', border: '1px solid var(--line)',
+                                              padding: 8, borderRadius: 10, cursor: 'pointer', color: 'var(--text-3)' }}>
+            <X size={16} />
+          </button>
+        </div>
+        <div style={{ padding: 24, maxHeight: '60vh', overflow: 'auto' }}>
+          {result.msg && (
+            <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 0 }}>{result.msg}</p>
+          )}
+          {!!errores.length && (
+            <>
+              <SectionTitle>Errores de validación ({errores.length})</SectionTitle>
+              <ul style={{ fontSize: 12, fontFamily: 'var(--font-mono)',
+                            background: 'var(--red-bg)', border: '1px solid var(--red-border)',
+                            borderRadius: 8, padding: '10px 28px', marginTop: 8, color: 'var(--text-1)' }}>
+                {errores.map((e, i) => <li key={i} style={{ marginBottom: 4 }}>{e}</li>)}
+              </ul>
+            </>
+          )}
+          {!!fallos.length && (
+            <>
+              <SectionTitle>Fallos al aplicar en Odoo ({fallos.length})</SectionTitle>
+              <ul style={{ fontSize: 12, fontFamily: 'var(--font-mono)',
+                            background: 'var(--amber-bg)', border: '1px solid var(--amber-border)',
+                            borderRadius: 8, padding: '10px 28px', marginTop: 8, color: 'var(--text-1)' }}>
+                {fallos.map((e, i) => <li key={i} style={{ marginBottom: 4 }}>{e}</li>)}
+              </ul>
+            </>
+          )}
+        </div>
+        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--line)',
+                       display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 
 function ValidacionModal({ mes, loading, result, onClose, onDescargar }) {
