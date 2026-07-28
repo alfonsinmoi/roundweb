@@ -11,7 +11,7 @@ campo `noofit_alias` en categoria.
 """
 import logging
 from flask import Blueprint, request, jsonify, g
-from ..auth import auth_required, require_permission
+from ..auth import auth_required, require_permission, require_any_permission
 from ..db import get_conn, seed_categorias_for_manager
 from ..audit_log import log_action, actor_from_request
 
@@ -247,7 +247,8 @@ def get_cliente_categoria(id_noofit):
 
 @bp.route('/clientes/<id_noofit>', methods=['PUT'])
 @auth_required
-@require_permission('configuracion.categorias_cliente.asignar_a_cliente')
+@require_any_permission('clientes.asignar_categoria',
+                        'configuracion.categorias_cliente.asignar_a_cliente')
 def set_cliente_categoria(id_noofit):
     """body = {categoria_id: int|null}. Si null o vacío, borra la asignación."""
     try:
@@ -292,7 +293,8 @@ def set_cliente_categoria(id_noofit):
 
 @bp.route('/clientes/<id_noofit>', methods=['DELETE'])
 @auth_required
-@require_permission('configuracion.categorias_cliente.quitar_de_cliente')
+@require_any_permission('clientes.asignar_categoria',
+                        'configuracion.categorias_cliente.quitar_de_cliente')
 def del_cliente_categoria(id_noofit):
     try:
         with get_conn() as conn, conn.cursor() as cur:
