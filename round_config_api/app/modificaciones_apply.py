@@ -145,15 +145,33 @@ def aplicar_modif_globales(modificaciones, total_actual):
     return total, info, ids
 
 
-def marcar_modificaciones_aplicadas(ids, recibo_id=None):
-    """Marca las modificaciones consumidas como estado='aplicada'."""
+def marcar_modificaciones_aplicadas(ids, recibo_id=None, mes_str=None):
+    """Marca las modificaciones consumidas como estado='aplicada'.
+
+    IMPORTANTE (multi-mes): si `mes_str` (YYYY-MM) se pasa, SOLO se consumen las
+    modificaciones cuya ventana TERMINA en ese mes o antes (`fecha_hasta` <=
+    último día del mes) o que no tienen `fecha_hasta` (one-shot). Las de varios
+    meses cuya ventana sigue abierta a meses futuros se dejan en 'activa' para
+    que `get_modificaciones_activas_mes` vuelva a recogerlas y se apliquen
+    también en las próximas emisiones dentro de su rango.
+
+    Sin `mes_str` (compat) se marca todo lo consumido, como antes."""
     if not ids: return 0
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""
-            UPDATE modificacion
-               SET estado='aplicada', updated_at=NOW()
-             WHERE id = ANY(%s) AND estado='activa'
-        """, (list(ids),))
+        if mes_str:
+            _, ultimo = _bounds_mes(mes_str)
+            cur.execute("""
+                UPDATE modificacion
+                   SET estado='aplicada', updated_at=NOW()
+                 WHERE id = ANY(%s) AND estado='activa'
+                   AND (fecha_hasta IS NULL OR fecha_hasta <= %s)
+            """, (list(ids), ultimo))
+        else:
+            cur.execute("""
+                UPDATE modificacion
+                   SET estado='aplicada', updated_at=NOW()
+                 WHERE id = ANY(%s) AND estado='activa'
+            """, (list(ids),))
         return cur.rowcount
 
 

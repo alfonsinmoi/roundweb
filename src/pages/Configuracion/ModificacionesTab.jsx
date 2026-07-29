@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Plus, Pencil, Trash2, Check, X, RefreshCw, Loader2 } from 'lucide-react'
 import { Card, Btn, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
@@ -119,12 +120,13 @@ function ModForm({ mod, identity, onClose, onSaved }) {
     setSaving(false)
   }
 
-  return (
+  return createPortal((
     <div {...overlayClose}
-         style={{ position: 'fixed', inset: 0, zIndex: 600, background: 'rgba(0,0,0,0.6)',
+         style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.6)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: 'var(--bg-1)', borderRadius: 'var(--radius-lg)', width: '100%',
-                    maxWidth: 520, boxShadow: 'var(--shadow-lg)' }}>
+                    maxWidth: 520, maxHeight: '90vh', overflowY: 'auto',
+                    boxShadow: 'var(--shadow-lg)' }}>
         <header style={{ padding: '18px 22px', borderBottom: '1px solid var(--line)',
                          display: 'flex', justifyContent: 'space-between' }}>
           <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: 'var(--text-0)' }}>
@@ -179,7 +181,7 @@ function ModForm({ mod, identity, onClose, onSaved }) {
         </form>
       </div>
     </div>
-  )
+  ), document.body)
 }
 
 const inputStyle = {

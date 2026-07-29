@@ -549,9 +549,11 @@ def generar(mes):
                 ))
                 rid = cur.fetchone()['id']
 
-            # Marcar modificaciones consumidas como 'aplicada' (no se reusan)
+            # Marcar modificaciones consumidas como 'aplicada'. Pasamos el mes:
+            # las de varios meses cuya ventana sigue abierta NO se consumen aún
+            # (se re-aplican en las próximas emisiones dentro de su rango).
             if modif_ids_consumidos:
-                marcar_modificaciones_aplicadas(modif_ids_consumidos, recibo_id=rid)
+                marcar_modificaciones_aplicadas(modif_ids_consumidos, recibo_id=rid, mes_str=mes)
 
             creados.append({
                 'id': rid, 'cliente': nombre, 'idnoofit': idnoofit,
