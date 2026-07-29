@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Receipt, ChevronRight } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { getRoundIdentity } from '../../utils/configApi'
+import IvaNota from '../../components/IvaNota'
 import GenerarTab from './GenerarTab'
 import GenerarRecibosTab from './GenerarRecibosTab'
 import FacturacionTrimestreTab from './FacturacionTrimestreTab'
@@ -72,11 +73,12 @@ export default function CuotasClientes() {
 
   return (
     <div style={{ maxWidth: 1400, padding: '0 4px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
         <Receipt size={22} style={{ color: 'var(--green)' }} aria-hidden="true" />
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 700, color: 'var(--text-0)', margin: 0 }}>
           Cuotas clientes
         </h1>
+        <IvaNota />
       </div>
       <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 20 }}>
         Generación de remesas mensuales, listado filtrable de recibos y analítica de cobros.

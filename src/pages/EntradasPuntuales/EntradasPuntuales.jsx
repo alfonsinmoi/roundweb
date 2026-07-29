@@ -10,6 +10,7 @@ import { Card, Btn, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCan } from '../../hooks/useCan'
+import IvaNota from '../../components/IvaNota'
 import {
   getRoundIdentity, epEventosList, epCobrar, epAnular, epEmitirMes, epDetectar,
   EP_FORMAS_POR_ENTRADA,
@@ -110,8 +111,11 @@ export default function EntradasPuntuales() {
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                     marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
-        <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700,
-                     color: 'var(--text-0)', margin: 0 }}>Entradas puntuales</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 700,
+                       color: 'var(--text-0)', margin: 0 }}>Entradas puntuales</h1>
+          <IvaNota />
+        </div>
         {canDetectar && (
           <Btn variant="secondary" size="sm" onClick={onDetectar} disabled={busy}>
             {busy ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Detectar reservas
