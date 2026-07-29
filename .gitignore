@@ -46,3 +46,6 @@ validacion_*.xlsx
 
 # Scripts de migración GP→NF (ad-hoc, no forman parte del producto)
 migracion/
+
+# Scripts scratch/debug sueltos en la raíz (no versionar; pueden tener secretos)
+/*.mjs
