@@ -9,6 +9,7 @@ import { Card, Btn, SectionTitle } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import { facturacionResumen } from '../../utils/configApi'
 import { FORMA_PAGO_LABELS } from '../../utils/cuotasApi'
+import IvaNota from '../../components/IvaNota'
 
 // Etiquetas idénticas al filtro del Listado (FORMA_PAGO_LABELS) para que
 // CAJA/efectivo y TPV queden diferenciados en columnas distintas.
@@ -210,7 +211,10 @@ export default function FacturacionTab({ identity }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                     marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <SectionTitle><TrendingUp size={15} style={{ marginRight: 6 }} /> Facturación</SectionTitle>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <SectionTitle><TrendingUp size={15} style={{ marginRight: 6 }} /> Facturación</SectionTitle>
+            <IvaNota />
+          </div>
           <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '2px 0 0' }}>
             Recibos por año · trimestre · mes, con columnas por forma de cobro
             (<span style={{ color: 'var(--green)' }}>Cobrado</span> = pagado/facturado ·
