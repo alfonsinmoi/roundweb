@@ -528,6 +528,10 @@ export const temporalInactivoCreate = (identity, clienteId, datos) =>
   _requestRoot('POST', `/api/clientes/${clienteId}/inactivo-temporal`, identity, datos)
 export const temporalInactivoCancel = (identity, clienteId) =>
   _requestRoot('DELETE', `/api/clientes/${clienteId}/inactivo-temporal`, identity)
+// PATCH — modificar fechas de la pausa activa (solo admin). Típico: cambiar
+// la fecha fin (ampliar/acortar la inactividad).
+export const temporalInactivoUpdate = (identity, clienteId, datos) =>
+  _requestRoot('PATCH', `/api/clientes/${clienteId}/inactivo-temporal`, identity, datos)
 export const temporalInactivoList = (identity) =>
   _requestRoot('GET', `/api/clientes/inactivo-temporal`, identity)
     .then(d => d.items || [])

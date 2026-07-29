@@ -39,6 +39,7 @@ export const PERMISSIONS = {
       archivar:           { label: '✗ Archivar cliente (destructivo)', action: true },
       desarchivar:        { label: 'Desarchivar / reactivar cliente', action: true },
       pausar:             { label: 'Pausar cliente', action: true },
+      editar_pausa:       { label: 'Modificar fechas de la inactividad temporal', action: true },
       asignar_categoria:  { label: 'Asignar categoría (Wellhub, Trabajador…)', action: true },
       notificar:          { label: 'Notificar (push individual)', action: true },
       reenviar_factura:   { label: 'Reenviar factura PDF', action: true },

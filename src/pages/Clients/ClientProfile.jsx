@@ -9,7 +9,7 @@ import {
   BarChart3, TrendingUp, TrendingDown, Clock, Users, Download, Code, Copy, Check,
   Plus, Lock, Unlock, X, AlertCircle, Eye, EyeOff, Trash2, Receipt, RefreshCw,
   QrCode, Bell, MessageCircle, Zap, UserCog, History, StickyNote, ShoppingBag,
-  PauseCircle,
+  PauseCircle, Save,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Card, Badge, Btn, Avatar, SectionTitle } from '../../components/UI'
@@ -47,7 +47,8 @@ import ModificacionesClienteCard from '../../components/subs/ModificacionesClien
 import FamiliaresClienteCard from '../../components/subs/FamiliaresClienteCard'
 import { clienteFechas, getRoundIdentity, notifPorCliente, notifEnvioCreate,
          bajaProgramadaGet, bajaProgramadaCreate, bajaProgramadaCancel,
-         temporalInactivoGet, temporalInactivoCreate, temporalInactivoCancel } from '../../utils/configApi'
+         temporalInactivoGet, temporalInactivoCreate, temporalInactivoCancel,
+         temporalInactivoUpdate } from '../../utils/configApi'
 import { NOTIF_SECCIONES, NOTIF_TIPOS, tiposDeSeccion } from '../../utils/notifCatalog'
 
 const ERP_PASSWORD = 'Cambiamos!2026'
@@ -397,6 +398,13 @@ export default function ClientProfile() {
   const [pausaMotivo, setPausaMotivo] = useState('')
   const [pausaDetalle, setPausaDetalle] = useState('')
   const [confirmCancelarPausa, setConfirmCancelarPausa] = useState(false)
+  // Edición de fechas de la pausa. Gate por permiso configurable en el perfil
+  // (`clientes.editar_pausa`): el manager decide qué perfiles pueden hacerlo.
+  const canEditarPausa = useCan('clientes.editar_pausa')
+  const [editFinOpen, setEditFinOpen] = useState(false)
+  const [editFinValue, setEditFinValue] = useState('')
+  const [editInicioValue, setEditInicioValue] = useState('')
+  const [editFinSaving, setEditFinSaving] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
   // Modo "Alta de cliente" del trainer al que pertenece este cliente.
   // Si modo='centro', el QR de la ficha NO se muestra (solo el del centro
@@ -635,6 +643,43 @@ export default function ClientProfile() {
       toast.error('Error al cancelar la pausa: ' + (e.body?.error || e.message))
     } finally {
       setActionLoading('')
+    }
+  }
+
+  const abrirEditFin = () => {
+    if (!pausaActiva) return
+    setEditFinValue((pausaActiva.fecha_fin || '').slice(0, 10))
+    setEditInicioValue((pausaActiva.fecha_inicio || '').slice(0, 10))
+    setEditFinOpen(true)
+  }
+
+  const doEditarFin = async () => {
+    if (!editFinValue) { toast.error('Indica la nueva fecha fin'); return }
+    const programada = pausaActiva?.estado === 'programada'
+    const inicioEfectivo = programada ? editInicioValue : (pausaActiva.fecha_inicio || '').slice(0, 10)
+    if (editFinValue < inicioEfectivo) {
+      toast.error('La fecha fin debe ser igual o posterior al inicio'); return
+    }
+    setEditFinSaving(true)
+    try {
+      const datos = { fecha_fin: editFinValue }
+      if (programada && editInicioValue) datos.fecha_inicio = editInicioValue
+      const r = await temporalInactivoUpdate(identity, cliente.id, datos)
+      setPausaActiva(r.pausa)
+      setEditFinOpen(false)
+      const nAnulados = r.recibos_anulados || 0
+      let msg = 'Fechas de la pausa actualizadas.'
+      if (nAnulados > 0) msg += ` ${nAnulados} recibo(s) sin pagar anulado(s).`
+      if (r.meses_destapados?.length) {
+        msg += ` Revisa los meses ${r.meses_destapados.join(', ')}: sus recibos anulados NO se restauran solos.`
+        toast.warning(msg)
+      } else {
+        toast.success(msg)
+      }
+    } catch (e) {
+      toast.error('Error al modificar la pausa: ' + (e.body?.error || e.message))
+    } finally {
+      setEditFinSaving(false)
     }
   }
 
@@ -913,6 +958,67 @@ export default function ClientProfile() {
             {' → '}
             {(() => { try { return new Date(pausaActiva.fecha_fin).toLocaleDateString('es-ES') } catch { return pausaActiva.fecha_fin } })()}
           </span>
+          {canEditarPausa && (
+            <button onClick={abrirEditFin}
+                    title="Modificar fecha fin de la inactividad"
+                    style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5,
+                             background: 'none', border: '1px solid rgba(251,191,36,0.5)', borderRadius: 8,
+                             padding: '5px 10px', cursor: 'pointer', color: 'var(--amber, #d97706)',
+                             fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}>
+              <Pencil size={12} aria-hidden="true" /> Editar fecha
+            </button>
+          )}
+        </div>
+      )}
+
+      {editFinOpen && (
+        <div role="dialog" aria-modal="true"
+             onMouseDown={e => { if (e.target === e.currentTarget && !editFinSaving) setEditFinOpen(false) }}
+             style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.55)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: 'var(--bg-1)', borderRadius: 14, width: '100%', maxWidth: 440,
+                        border: '1px solid var(--line)', boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
+                        color: 'var(--text-0)' }}>
+            <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)' }}>
+              <strong style={{ fontSize: 15 }}>Modificar inactividad temporal</strong>
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4, lineHeight: 1.5 }}>
+                {pausaActiva?.estado === 'en_curso'
+                  ? 'La pausa ya empezó: solo puedes cambiar la fecha fin.'
+                  : 'Ajusta las fechas de la pausa programada.'}
+                {' '}Ampliar la ventana anula los recibos sin pagar de los meses nuevos.
+              </div>
+            </div>
+            <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {pausaActiva?.estado === 'programada' && (
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-3)' }}>
+                  Fecha inicio
+                  <input type="date" value={editInicioValue}
+                         onChange={e => setEditInicioValue(e.target.value)}
+                         style={{ padding: 8, borderRadius: 8, fontSize: 13, background: 'var(--bg-2)',
+                                  border: '1px solid var(--line)', color: 'var(--text-0)' }} />
+                </label>
+              )}
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-3)' }}>
+                Fecha fin
+                <input type="date" value={editFinValue}
+                       min={pausaActiva?.estado === 'programada' ? editInicioValue : (pausaActiva?.fecha_inicio || '').slice(0, 10)}
+                       onChange={e => setEditFinValue(e.target.value)}
+                       style={{ padding: 8, borderRadius: 8, fontSize: 13, background: 'var(--bg-2)',
+                                border: '1px solid var(--line)', color: 'var(--text-0)' }} />
+              </label>
+            </div>
+            <div style={{ padding: '12px 20px', borderTop: '1px solid var(--line)',
+                          display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Btn variant="secondary" onClick={() => setEditFinOpen(false)} disabled={editFinSaving}>
+                Cancelar
+              </Btn>
+              <Btn variant="primary" onClick={doEditarFin} disabled={editFinSaving}>
+                {editFinSaving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                {' '}Guardar
+              </Btn>
+            </div>
+          </div>
         </div>
       )}
 

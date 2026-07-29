@@ -297,6 +297,82 @@ def crear(cliente_id):
     return jsonify(payload)
 
 
+# ── PATCH: editar fechas de la pausa (solo ADMIN) ──────────────────────────
+@bp.route('/<int:cliente_id>/inactivo-temporal', methods=['PATCH'])
+@auth_required
+@require_permission('clientes.editar_pausa')
+def editar(cliente_id):
+    """Modifica la pausa activa (programada|en_curso). Pensado para corregir la
+    FECHA FIN (ampliar/acortar la inactividad). Requiere el permiso
+    `clientes.editar_pausa` (el manager decide qué perfiles lo tienen).
+
+    - `fecha_inicio` solo es editable si la pausa aún NO ha empezado (programada).
+    - Al ampliar la ventana se anulan los recibos NO pagados de los meses recién
+      cubiertos (idempotente sobre los ya anulados).
+    - Al acortar, los recibos ya anulados de meses que quedan fuera NO se
+      restauran automáticamente (se avisa en `meses_destapados`)."""
+    if not cliente_pertenece_a_trainer(cliente_id):
+        return jsonify({'ok': False, 'error': 'not_found'}), 404
+    d = request.get_json() or {}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT * FROM cliente_inactivo_temporal
+                        WHERE id_manager=%s AND cliente_idnoofit=%s
+                          AND estado IN ('programada','en_curso')
+                        ORDER BY id DESC LIMIT 1""",
+                    (str(g.id_manager), str(cliente_id)))
+        row = cur.fetchone()
+    if not row:
+        return jsonify({'ok': False, 'error': 'sin_pausa_activa'}), 404
+
+    fi = row['fecha_inicio']
+    nueva_fi = _parse_fecha(d.get('fecha_inicio')) if 'fecha_inicio' in d else None
+    if nueva_fi is not None:
+        if row['estado'] != 'programada':
+            return jsonify({'ok': False, 'error': 'inicio_no_editable_en_curso',
+                            'detalle': 'La pausa ya empezó; solo puede cambiarse la fecha fin.'}), 400
+        fi = nueva_fi
+    ff = _parse_fecha(d.get('fecha_fin')) if 'fecha_fin' in d else row['fecha_fin']
+    if not ff:
+        return jsonify({'ok': False, 'error': 'fecha_fin_invalida'}), 400
+    if ff < fi:
+        return jsonify({'ok': False, 'error': 'fin_antes_de_inicio'}), 400
+
+    sets, vals = ['fecha_fin=%s'], [ff]
+    if nueva_fi is not None:
+        sets.append('fecha_inicio=%s'); vals.append(fi)
+    if 'motivo' in d:
+        motivo = (d.get('motivo') or '').strip()
+        if motivo not in MOTIVOS:
+            return jsonify({'ok': False, 'error': 'motivo_invalido'}), 400
+        sets.append('motivo=%s'); vals.append(motivo)
+    if 'motivo_detalle' in d:
+        sets.append('motivo_detalle=%s')
+        vals.append((d.get('motivo_detalle') or '').strip() or None)
+    vals.append(row['id'])
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f"UPDATE cliente_inactivo_temporal SET {', '.join(sets)} WHERE id=%s RETURNING *", vals)
+        updated = cur.fetchone()
+
+    # Ampliación → anular recibos no pagados de los meses de la nueva ventana.
+    anulados, revision = _anular_recibos_no_pagados(g.id_manager, cliente_id, fi, ff)
+    old_per = set(_periodos_cubiertos(row['fecha_inicio'], row['fecha_fin']))
+    new_per = set(_periodos_cubiertos(fi, ff))
+    destapados = sorted(old_per - new_per)
+
+    log_action(actor_from_request(), entidad='cliente_inactivo_temporal',
+               entidad_id=row['id'], accion='editar',
+               resumen=(f'cliente={cliente_id} fin {row["fecha_fin"]}→{ff} '
+                        f'inicio {row["fecha_inicio"]}→{fi} recibos_anulados={anulados}'),
+               cambios={'fecha_inicio': {'antes': str(row['fecha_inicio']), 'despues': fi.isoformat()},
+                        'fecha_fin': {'antes': str(row['fecha_fin']), 'despues': ff.isoformat()}})
+    payload = {'ok': True, 'pausa': _serialize(updated), 'recibos_anulados': anulados}
+    if revision:
+        payload['recibos_odoo_revision_manual'] = revision
+    if destapados:
+        payload['meses_destapados'] = destapados
+    return jsonify(payload)
+
+
 # ── DELETE: cancelar (programada) o terminar+reactivar (en_curso) ──────────
 @bp.route('/<int:cliente_id>/inactivo-temporal', methods=['DELETE'])
 @auth_required
