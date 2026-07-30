@@ -328,49 +328,34 @@ def update_recibo(rid):
             if 'metodo_pago' in d and d['metodo_pago'] not in METODOS_VALIDOS:
                 return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
         elif estado in ('pagado', 'facturado'):
-            campos_importe_en_d = [f for f in importe_fields if f in d]
-            # La FECHA FIN (fecha_hasta) define cuándo vuelve a tocar cobrar
-            # (cobertura, auditoría #24) y NO es un cambio contable: no altera el
-            # importe ni la factura Odoo. Por eso se PERMITE editarla también en
-            # recibos cobrados/facturados (es el caso típico: ajustar el próximo
-            # cobro del último recibo, que casi siempre está pagado). El resto de
-            # importe_fields siguen inmovilizados. La fecha fin se RECALCULA más
-            # abajo en función de periodicidad + fecha de emisión.
+            # La fecha fin (próximo cobro) y la periodicidad se pueden ajustar
+            # aunque esté cobrado (no es contable): editables por cualquiera con
+            # permiso de modificar recibo.
             for _campo in ('fecha_hasta', 'periodicidad'):
                 if _campo in d:
                     allowed += [_campo]
-            # ADMIN — además puede corregir la FECHA DE COBRO (fecha_pago) de un
-            # recibo ya cobrado (registrar la fecha real del cobro). No toca
-            # importes ni el pago/journal de Odoo; corrige el dato Round.
-            if es_admin and 'fecha_pago' in d:
-                allowed += ['fecha_pago']
-            otros_importe = [f for f in campos_importe_en_d
-                             if f not in ('fecha_hasta', 'periodicidad')]
-            # Excepción ADMIN — corregir SOLO la forma de pago (error de
-            # registro), indicando el motivo. NO toca importes ni el pago/
-            # journal de Odoo (el cobro ya ocurrió); corrige el dato Round
-            # para informes/SEPA futuros. Requiere ser admin (usuario_web
-            # is_admin) o el manager NoofitPro (perfil None).
-            if es_admin and otros_importe == ['metodo_pago']:
-                if d['metodo_pago'] not in METODOS_VALIDOS:
+            if es_admin:
+                # ADMIN — edición COMPLETA de un recibo cobrado: importe
+                # (base/iva/total/iva_pct), fechas (inicio/fin/emisión/cobro),
+                # método y periodo. ⚠ SOLO toca la tabla `recibo` de Round; NO
+                # propaga a Odoo (la factura/pago Odoo conservan el importe
+                # anterior → posible divergencia que la reconciliación marca).
+                # Cada cambio contable genera incidencia con el diff (abajo).
+                allowed += importe_fields + ['fecha_pago']
+                if 'metodo_pago' in d and d['metodo_pago'] not in METODOS_VALIDOS:
                     return jsonify({'ok': False, 'error': 'metodo_pago_invalid'}), 400
-                motivo = (d.get('motivo') or '').strip()
-                if not motivo:
-                    return jsonify({'ok': False, 'error': 'motivo_requerido',
-                                    'detalle': 'Indica el motivo de la corrección de forma de pago.'}), 400
-                allowed += ['metodo_pago']
-                # Traza dentro del propio recibo (además de log_action + incidencia).
-                d['notas'] = (r.get('notas') or '') + (
-                    f"\n[CORRECCIÓN forma de pago {dt.date.today().isoformat()}] "
-                    f"{r.get('metodo_pago')} → {d['metodo_pago']} · {motivo} ({actor_label})")
-            elif otros_importe:
-                return jsonify({
-                    'ok': False, 'error': 'estado_no_permite_modificar_importes',
-                    'detalle': f'Recibo {estado}: solo se pueden editar notas/descripciones, '
-                               f'la fecha fin (próximo cobro) o la forma de pago (admin). '
-                               f'Para cambios contables: anula y recrea.',
-                    'campos_bloqueados': otros_importe,
-                }), 400
+            else:
+                campos_importe_en_d = [f for f in importe_fields if f in d]
+                otros_importe = [f for f in campos_importe_en_d
+                                 if f not in ('fecha_hasta', 'periodicidad')]
+                if otros_importe:
+                    return jsonify({
+                        'ok': False, 'error': 'estado_no_permite_modificar_importes',
+                        'detalle': f'Recibo {estado}: solo se pueden editar notas/descripciones '
+                                   f'o la fecha fin. El importe y las fechas de un recibo cobrado '
+                                   f'solo los modifica un administrador.',
+                        'campos_bloqueados': otros_importe,
+                    }), 400
         else:
             return jsonify({'ok': False, 'error': 'estado_no_editable',
                             'detalle': f'Estado actual: {estado}'}), 400

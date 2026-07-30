@@ -60,6 +60,10 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // backend (recibos.update_recibo permite fecha_hasta en pagado/facturado).
   const esCobrado = ['pagado', 'facturado'].includes((r.estado_bd || r.estado || '').toLowerCase())
   const editableFechaHasta = editableFull || esCobrado
+  // EDICIÓN COMPLETA (importe + todas las fechas + método): recibos no cobrados
+  // (cualquiera con permiso) o recibos cobrados SOLO si es admin. Espejo del
+  // backend (rama pagado/facturado con es_admin en recibos.update_recibo).
+  const fullEdit = editableFull || (esAdmin && esCobrado)
   // Aviso informativo (no bloquea) si el no-cobrado arrastra factura Odoo legacy.
   const avisoLegacyOdoo = editableFull && tieneMoveOdoo
 
@@ -102,7 +106,9 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
       // Fecha fin manual del admin (si tocó el campo). Si no, se deriva.
       const fechaFinEsManual = esAdmin && fechaFinManual != null
       const periodicidadCambiada = (f.periodicidad || '') !== (r.periodicidad || '')
-      if (editableFull) {
+      if (fullEdit) {
+        // Edición completa: importe + fechas + método. En cobrados esto solo
+        // llega aquí si es admin (el backend re-valida).
         Object.assign(payload, {
           fecha_desde: f.fecha_desde || null,
           periodicidad: f.periodicidad || null,
@@ -120,20 +126,16 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
         } else {
           payload.fecha_hasta = fechaHastaCalc || null   // derivada (emisión + periodicidad)
         }
+        // Fecha de cobro: solo tiene sentido en recibos cobrados (admin).
+        if (esAdmin && esCobrado && f.fecha_pago) payload.fecha_pago = f.fecha_pago
         // Eliminar las claves undefined para que el backend ignore esos campos
         Object.keys(payload).forEach(k => {
           if (payload[k] === undefined) delete payload[k]
         })
       } else if (esCobrado) {
-        // Recibo cobrado/facturado. Solo se envían los cambios reales para no
-        // pisar datos: periodicidad (recalcula fecha fin en backend), fecha fin
-        // manual (admin) y/o fecha de cobro (admin).
+        // Recibo cobrado, usuario NO admin: solo periodicidad (recalcula la
+        // fecha fin en backend). El importe queda inmovilizado.
         if (periodicidadCambiada && f.periodicidad) payload.periodicidad = f.periodicidad
-        if (fechaFinEsManual) {
-          payload.fecha_hasta = fechaFinManual || null
-          payload.fecha_hasta_manual = true
-        }
-        if (esAdmin && f.fecha_pago) payload.fecha_pago = f.fecha_pago
       }
       await reciboUpdate(getRoundIdentity(user), r.id_bd, payload)
       toast.success('Recibo modificado')
@@ -161,14 +163,19 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           <strong style={{ fontSize: 15 }}>
             Modificar recibo #{r.id_bd} ({r.estado_bd || r.estado})
           </strong>
-          {!editableFull && (
+          {!editableFull && esAdmin && (
             <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4, lineHeight: 1.5 }}>
-              ⚠ Recibo cobrado/facturado: puedes ajustar la <strong>periodicidad</strong> y la{' '}
-              <strong>fecha fin</strong> (define el próximo cobro), además de descripciones/notas.
-              {esAdmin && <> Como <strong>administrador</strong>, además puedes corregir la{' '}
-                <strong>fecha de cobro</strong> y fijar la <strong>fecha fin a mano</strong>.</>}
-              {' '}El <strong>importe ya cobrado NO cambia</strong> — solo cambia la cobertura, no lo
-              pagado.
+              ⚠ Recibo cobrado/facturado. Como <strong>administrador</strong> puedes editar{' '}
+              <strong>todo</strong>: importe, fechas de <strong>inicio/fin/cobro</strong>, método y
+              periodicidad. Ojo: el cambio afecta <strong>solo a Round</strong>, NO se propaga a Odoo
+              (la factura/pago de Odoo conservan el importe anterior → la reconciliación lo marcará).
+            </div>
+          )}
+          {!editableFull && !esAdmin && (
+            <div style={{ fontSize: 11, color: 'var(--amber)', marginTop: 4, lineHeight: 1.5 }}>
+              ⚠ Recibo cobrado/facturado: solo puedes ajustar la <strong>periodicidad</strong> y la{' '}
+              <strong>fecha fin</strong> (próximo cobro), además de descripciones/notas. El{' '}
+              <strong>importe y las fechas de un recibo cobrado solo los modifica un administrador</strong>.
             </div>
           )}
           {avisoLegacyOdoo && (
@@ -204,20 +211,20 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           {/* Periodo / fechas — solo si editable_full */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
             <Fld label="Periodo (AAAA-MM)">
-              <input value={f.periodo || ''} disabled={!editableFull}
+              <input value={f.periodo || ''} disabled={!fullEdit}
                      onChange={e => set('periodo', e.target.value)}
                      placeholder="2026-06"
                      style={{ ...inp, fontFamily: 'var(--font-mono)' }} />
             </Fld>
             <Fld label="Fecha emisión">
               <input type="date" value={(f.fecha_emision || '').slice(0, 10)}
-                     disabled={!editableFull}
+                     disabled={!fullEdit}
                      onChange={e => set('fecha_emision', e.target.value)}
                      style={inp} />
             </Fld>
             <Fld label="Periodo desde">
               <input type="date" value={(f.fecha_desde || '').slice(0, 10)}
-                     disabled={!editableFull}
+                     disabled={!fullEdit}
                      onChange={e => set('fecha_desde', e.target.value)}
                      style={inp} />
             </Fld>
@@ -264,7 +271,7 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           {/* Método + periodicidad */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <Fld label="Método de pago">
-              <select value={f.metodo_pago || ''} disabled={!editableFull}
+              <select value={f.metodo_pago || ''} disabled={!fullEdit}
                       onChange={e => set('metodo_pago', e.target.value)}
                       style={inp}>
                 {METODOS.map(m =>
@@ -291,12 +298,12 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
             <Fld label="Base imponible (€)">
               <input type="number" step="0.01" value={f.importe_base ?? ''}
-                     disabled={!editableFull}
+                     disabled={!fullEdit}
                      onChange={e => recalcular(setF, 'importe_base', e.target.value)}
                      style={{ ...inp, fontFamily: 'var(--font-mono)', textAlign: 'right' }} />
             </Fld>
             <Fld label="IVA %">
-              <select value={f.iva_pct ?? 21} disabled={!editableFull}
+              <select value={f.iva_pct ?? 21} disabled={!fullEdit}
                       onChange={e => recalcular(setF, 'iva_pct', e.target.value)}
                       style={inp}>
                 <option value="0">0%</option>
@@ -307,13 +314,13 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
             </Fld>
             <Fld label="IVA importe (€)">
               <input type="number" step="0.01" value={f.importe_iva ?? ''}
-                     disabled={!editableFull}
+                     disabled={!fullEdit}
                      onChange={e => set('importe_iva', e.target.value)}
                      style={{ ...inp, fontFamily: 'var(--font-mono)', textAlign: 'right' }} />
             </Fld>
             <Fld label="Total (€) *">
               <input type="number" step="0.01" value={f.importe_total ?? ''}
-                     disabled={!editableFull}
+                     disabled={!fullEdit}
                      onChange={e => set('importe_total', e.target.value)}
                      style={{ ...inp, fontFamily: 'var(--font-mono)', textAlign: 'right',
                               fontWeight: 700, fontSize: 16 }} />
