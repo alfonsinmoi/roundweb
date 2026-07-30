@@ -724,7 +724,7 @@ export default function ClientProfile() {
   const edad = (cliente.age && cliente.age > 0) ? cliente.age : calcEdad(cliente.birthdate)
 
   return (
-    <div style={{ maxWidth: 1000 }}>
+    <div style={{ width: '100%' }}>
       {/* Back */}
       <button onClick={() => navigate('/clientes')}
               aria-label="Volver a la lista de clientes"

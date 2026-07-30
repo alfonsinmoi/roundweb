@@ -16,8 +16,15 @@ import { useTrainerFilter } from '../contexts/TrainerFilterContext'
 import { invalidateCache } from '../utils/api'
 
 export default function Layout() {
-  const { pathname } = useLocation()
+  const location = useLocation()
+  const { pathname } = location
+  // Key de remontaje: `location.key` cambia en CUALQUIER navegación (incluido
+  // re-entrar al menú activo, que cambia el hash/entrada aunque el pathname sea
+  // el mismo). Las pestañas internas usan history.replaceState → no cambian
+  // location.key → no remontan. `+ trainer` fuerza remontaje al cambiar de
+  // trainer (que no es navegación).
   const { selectedTrainerId } = useTrainerFilter()
+  const remountKey = (location.key || pathname) + ':' + (selectedTrainerId || 'all')
   // Prefetch en idle de chunks + datos de las rutas más visitadas
   // (clientes, crm, clases, cuotas) → el primer click al menú es instantáneo.
   useEffect(() => { prefetchPopularRoutes() }, [])
@@ -86,10 +93,10 @@ export default function Layout() {
           // page actually reaches the TOP of the scroll viewport, so content
           // scrolling underneath is fully hidden behind it.
           padding: '0 clamp(20px, 4vw, 48px) clamp(20px, 4vw, 48px)',
-        }} key={pathname + ':' + (selectedTrainerId || 'all')}>
+        }} key={remountKey}>
           <div className="anim-enter" style={{ maxWidth: 1760, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
             <Breadcrumbs />
-            <ErrorBoundary key={pathname + ':' + (selectedTrainerId || 'all')}>
+            <ErrorBoundary key={remountKey}>
               <Outlet />
             </ErrorBoundary>
           </div>

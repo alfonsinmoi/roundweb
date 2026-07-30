@@ -1,18 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { QRCodeSVG } from 'qrcode.react'
 import {
   Zap, LogOut, Settings, ChevronDown, ChevronRight,
-  PanelLeftClose, PanelLeftOpen, QrCode, ChevronUp,
+  PanelLeftClose, PanelLeftOpen, ChevronUp,
   ArrowLeftRight, Loader2, Eye, EyeOff, X, KeyRound,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { navItems, managerItems, configItems } from '../config/routes'
 import { canAccessSection } from '../config/permissions'
 import { useOdooStatus } from '../hooks/useOdooStatus'
-import { useClaseEnCurso } from '../hooks/useClaseEnCurso'
 import { useIncidenciasCount } from '../hooks/useIncidenciasCount'
-import { formatHora } from '../utils/formatters'
 import { Avatar } from './UI'
 import { requestResetUsuarioWeb } from '../utils/authUsuarioApi'
 import { useToast } from './Toast'
@@ -65,7 +62,6 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
   const { pathname } = useLocation()
   const navigate     = useNavigate()
   const [configOpen, setConfigOpen] = useState(true)
-  const claseEnCurso = useClaseEnCurso()
   const { features } = useOdooStatus()
   // Badges (contadores en items del menú). Por ahora solo 'incidencias'.
   const incidenciasPendientes = useIncidenciasCount()
@@ -187,7 +183,7 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
                 const cActive = pathname === c.to || (c.to !== '/dashboard' && pathname.startsWith(c.to))
                 return (
                   <NavLink key={c.to} to={c.to}
-                    onClick={e => { if (cActive) e.preventDefault(); else onNavigate() }}
+                    onClick={() => onNavigate()}
                     onMouseEnter={() => prefetchRoute(c.to)}
                     style={{
                       padding: '8px 16px 8px 24px', borderRadius: 10, fontSize: 13,
@@ -210,7 +206,7 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
     return (
       <NavLink
         to={to}
-        onClick={e => { if (active) e.preventDefault(); else onNavigate() }}
+        onClick={() => onNavigate()}
         onMouseEnter={() => prefetchRoute(to)}
         onFocus={() => prefetchRoute(to)}
         onTouchStart={() => prefetchRoute(to)}
@@ -557,33 +553,6 @@ export default function Sidebar({ onNavigate, collapsed, onToggleCollapse }) {
           )}
         </div>}
       </nav>
-
-      {/* ── QR clase en curso ────────────────────────────────────────────── */}
-      {!collapsed && claseEnCurso && (
-        <div aria-label="QR de la clase en curso" style={{
-          margin: '8px 10px 0', padding: '10px 10px 8px',
-          borderRadius: 14, background: 'var(--bg-3)', border: '1px solid var(--line)',
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, width: '100%', justifyContent: 'center' }}>
-            <QrCode size={10} style={{ color: 'var(--green)', flexShrink: 0 }} aria-hidden="true" />
-            <p style={{ fontFamily: 'Outfit', fontSize: 11, fontWeight: 700, color: 'var(--text-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-               title={claseEnCurso.name || claseEnCurso.nameTraining}>
-              {claseEnCurso.name || claseEnCurso.nameTraining}
-            </p>
-            <p style={{ fontSize: 10, color: 'var(--text-3)', flexShrink: 0 }}>
-              {formatHora(claseEnCurso.dateStart)}
-            </p>
-          </div>
-          <div style={{ background: '#fff', borderRadius: 8, padding: 5, width: '100%' }}>
-            <QRCodeSVG value={String(claseEnCurso.idEspejo ?? claseEnCurso.id)} size={256} level="M"
-              style={{ width: '100%', height: 'auto', display: 'block' }} />
-          </div>
-          <p style={{ fontSize: 10, color: 'var(--text-3)', margin: 0 }}>
-            Escanea con <strong style={{ color: 'var(--text-2)' }}>mynoofit</strong>
-          </p>
-        </div>
-      )}
 
       {/* ── Footer ──────────────────────────────────────────────────────── */}
       <div style={{ padding: '0 10px', marginTop: 8, paddingTop: 10, borderTop: '1px solid var(--line)', position: 'relative' }}>
