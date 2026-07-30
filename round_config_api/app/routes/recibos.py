@@ -383,6 +383,11 @@ def update_recibo(rid):
                 if 'fecha_hasta' not in allowed:
                     allowed += ['fecha_hasta']
 
+        # Dedup preservando orden: varias ramas pueden añadir el mismo campo
+        # (p.ej. fecha_hasta llega por el bucle de cobrado Y por importe_fields
+        # en la edición admin) → sin esto el UPDATE asigna la columna 2 veces.
+        allowed = list(dict.fromkeys(allowed))
+
         sets, vals = [], []
         for f in allowed:
             if f in d:
