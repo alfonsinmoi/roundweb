@@ -67,14 +67,15 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
   // Aviso informativo (no bloquea) si el no-cobrado arrastra factura Odoo legacy.
   const avisoLegacyOdoo = editableFull && tieneMoveOdoo
 
-  // FECHA FIN AUTOMÁTICA — se deriva de la periodicidad elegida y la fecha de
-  // emisión (último día cubierto = emisión + periodicidad − 1 día). NO se teclea
-  // a mano: define cuándo vuelve a tocar cobrar (cobertura). Mismo cálculo que
+  // FECHA FIN AUTOMÁTICA — se deriva de la periodicidad elegida y el PERIODO
+  // DESDE (inicio de la cobertura): último día cubierto = fecha_desde +
+  // periodicidad − 1 día. NO se basa en la fecha de emisión (que puede ser
+  // distinta, p.ej. recibos reemitidos/reconstruidos). Mismo cálculo que
   // recalcula el backend (recibos.update_recibo).
-  const baseEmisionISO = (f.fecha_emision || f.fecha_desde || '').slice(0, 10)
+  const baseDesdeISO = (f.fecha_desde || f.fecha_emision || '').slice(0, 10)
   const perMeses = PERIOD_MESES[(f.periodicidad || 'mensual').toLowerCase()] || 1
-  const fechaHastaCalc = baseEmisionISO
-    ? addDaysISO(addMonthsISO(baseEmisionISO, perMeses), -1) : ''
+  const fechaHastaCalc = baseDesdeISO
+    ? addDaysISO(addMonthsISO(baseDesdeISO, perMeses), -1) : ''
 
   if (!canModificar) return null
   if (!isBd) return null
@@ -243,9 +244,9 @@ export default function ModificarReciboBtn({ r, onReload, size = 'sm' }) {
                                      color: 'var(--green)', cursor: 'pointer', font: 'inherit',
                                      textDecoration: 'underline' }}>
                       usar automática
-                    </button>{' '}(emisión + {f.periodicidad || 'mensual'})</>
+                    </button>{' '}(periodo desde + {f.periodicidad || 'mensual'})</>
                 ) : (
-                  <>Automática = emisión + {f.periodicidad || 'mensual'}
+                  <>Automática = periodo desde + {f.periodicidad || 'mensual'}
                     {esAdmin ? ' · editable' : ''}
                     {esCobrado && !editableFull ? ' · define el próximo cobro' : ''}</>
                 )}

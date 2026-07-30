@@ -370,13 +370,16 @@ def update_recibo(rid):
         # El admin puede FIJAR la fecha fin a mano (fecha_hasta_manual): en ese
         # caso NO se recalcula y se respeta el valor tecleado.
         _toca_fechafin = (('periodicidad' in allowed or 'fecha_hasta' in allowed)
-                          and ('periodicidad' in d or 'fecha_hasta' in d or 'fecha_emision' in d)
+                          and ('periodicidad' in d or 'fecha_hasta' in d
+                               or 'fecha_desde' in d or 'fecha_emision' in d)
                           and not _manual_fechafin)
         if _toca_fechafin:
             per = str(d.get('periodicidad') or r.get('periodicidad') or 'mensual').lower()
             meses = _PERIOD_MESES.get(per, 1)
-            base_raw = (d.get('fecha_emision') or r.get('fecha_emision')
-                        or d.get('fecha_desde') or r.get('fecha_desde'))
+            # Base = PERIODO DESDE (inicio de cobertura), no la emisión: el último
+            # día cubierto = fecha_desde + periodicidad − 1 día.
+            base_raw = (d.get('fecha_desde') or r.get('fecha_desde')
+                        or d.get('fecha_emision') or r.get('fecha_emision'))
             if base_raw:
                 base = dt.date.fromisoformat(str(base_raw)[:10])
                 d['fecha_hasta'] = (_add_months(base, meses) - dt.timedelta(days=1)).isoformat()
