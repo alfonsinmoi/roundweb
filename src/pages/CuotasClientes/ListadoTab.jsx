@@ -419,12 +419,12 @@ function Row({ r, onReload }) {
     (r.payment_state === 'not_paid' || r.payment_state === 'reversed')
   const isCobrado = isPosted && r.payment_state === 'paid'
   const isBd = r._source === 'bd'
-  // Junio 2026: modificar disponible para BD en estados no cerrados.
-  // El backend re-valida; el botón se oculta para Odoo (sin id_bd).
+  // Modificar disponible para CUALQUIER recibo BD no cancelado (incluye
+  // cobrados/facturados: el admin puede editar importe y fechas; el no-admin
+  // solo periodicidad/fecha fin). El backend re-valida según rol y estado; el
+  // botón se oculta solo para Odoo puro (sin id_bd) y para cancelados.
   const isDevuelto = r.payment_state === 'reversed'
-  const isModificable = isBd && (isImpagado || isDevuelto ||
-                                  r.estado_bd === 'pendiente' ||
-                                  r.estado_bd === 'borrador_remesa')
+  const isModificable = isBd && (r.estado_bd || '').toLowerCase() !== 'cancelado'
   // Pagable: impagado/devuelto en Odoo, O recibo BD en estado abierto
   // (pendiente/impagado/devuelto/borrador). Los BD llevan su estado en
   // `estado_bd`, que isImpagado (campos Odoo) no captura → por eso el botón
