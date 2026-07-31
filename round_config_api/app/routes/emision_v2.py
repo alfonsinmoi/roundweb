@@ -40,6 +40,23 @@ def _company_id():
 @require_permission('economico.cuotas_mensuales.emitir_mes')
 def emitir(mes):
     """Crea account.payment para los recibos pagados (sepa, tarjeta_token)."""
+    # ── Guard: NO se puede emitir sin una PRE-EMISIÓN previa del mes ─────────
+    # La emisión definitiva (payments/remesa) exige que antes se hayan generado
+    # los recibos del mes ("Generar recibos"). Sin recibos cron_emision del mes,
+    # se rechaza para evitar emitir un mes vacío o por error.
+    _tr_g = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+    _gq = ("SELECT count(*) AS n FROM recibo WHERE id_manager=%s AND periodo=%s "
+           "AND origen='cron_emision'")
+    _gv = [str(g.id_manager), mes]
+    if _tr_g:
+        _gq += " AND id_trainer=%s"; _gv.append(_tr_g)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(_gq, _gv)
+        if int((cur.fetchone() or {}).get('n') or 0) == 0:
+            return jsonify({'ok': False, 'error': 'sin_preemision',
+                            'detalle': f'No hay pre-emisión para {mes}. Genera primero los '
+                                       f'recibos del mes ("Generar recibos") antes de emitir.'}), 400
+
     company_id = _company_id()
     o = _odoo()
 

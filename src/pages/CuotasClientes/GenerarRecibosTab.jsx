@@ -60,7 +60,7 @@ export default function GenerarRecibosTab({ identity }) {
   useEffect(() => { reload() }, [mes])
 
   async function generar() {
-    if (!confirm(`¿Generar recibos para ${mes}? Se creará un recibo por cliente con cuotas activas.`)) return
+    if (!confirm(`PRE-EMISIÓN del mes ${mes}\n\nSe creará un recibo por cada cliente con cuotas activas del mes ${mes}. Revísalo antes de emitir.\n\n¿Generar los recibos de ${mes}?`)) return
     setGenerating(true)
     try {
       const r = await preemisionV2Generar(identity, mes)
@@ -71,7 +71,11 @@ export default function GenerarRecibosTab({ identity }) {
   }
 
   async function emitir() {
-    if (!confirm(`Emitir ${recibos.filter(r => r.estado === 'pagado').length} recibos pagados (crear payments en Odoo)?`)) return
+    const nPag = recibos.filter(r => r.estado === 'pagado').length
+    // Doble confirmación: es la EMISIÓN DEFINITIVA del mes (crea cobros/remesa
+    // SEPA y se envía al banco). Requiere pre-emisión previa (guard backend).
+    if (!confirm(`⚠ EMISIÓN DEFINITIVA del mes ${mes}\n\nSe van a EMITIR ${nPag} recibos: se crean los cobros (payments) en Odoo y la remesa SEPA que se envía al banco.\n\nEsta es la emisión definitiva del mes ${mes}. ¿Continuar?`)) return
+    if (!confirm(`Confírmalo OTRA VEZ.\n\nVas a lanzar la EMISIÓN DEFINITIVA de ${mes} (${nPag} recibos). Es una acción difícil de revertir.\n\n¿Seguro que quieres emitir ${mes} ahora?`)) return
     setEmitting(true)
     try {
       const r = await emitirV2(identity, mes)
