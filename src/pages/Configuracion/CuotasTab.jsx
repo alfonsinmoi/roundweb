@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Plus, Pencil, Trash2, Check, X, RefreshCw, Download, Loader2 } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Plus, Pencil, Trash2, Check, X, RefreshCw, Download, Loader2,
+         UserCheck, AlertTriangle, CreditCard, Tag, Receipt } from 'lucide-react'
 import { Card, Btn, Badge } from '../../components/UI'
 import { useToast } from '../../components/Toast'
 import {
-  cuotasList, cuotaCreate, cuotaUpdate, cuotaDelete, cuotaAdoptar,
+  cuotasList, cuotaCreate, cuotaUpdate, cuotaDelete, cuotaAdoptar, comprobarClientes,
   FORMAS_PAGO, PERIODICIDADES, TIPOS_CUOTA,
 } from '../../utils/configApi'
 import { getActividades } from '../../utils/api'
@@ -29,6 +31,7 @@ export default function CuotasTab({ identity }) {
   const [loading, setLoading] = useState(true)
   const [actividades, setActividades] = useState([])
   const [editing, setEditing] = useState(null)  // null = ninguno; objeto = nuevo/edit
+  const [comprobarOpen, setComprobarOpen] = useState(false)
 
   const isTrainer = !!identity.trainerId
 
@@ -73,7 +76,11 @@ export default function CuotasTab({ identity }) {
         <span style={{ fontSize: 13, color: 'var(--text-2)' }}>
           {loading ? 'Cargando…' : `${cuotas.length} cuota${cuotas.length !== 1 ? 's' : ''}`}
         </span>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn variant="secondary" size="sm" onClick={() => setComprobarOpen(true)}
+               title="Detecta clientes activos sin cuota, sin forma de pago o sin categoría">
+            <UserCheck size={13} /> Comprobar clientes
+          </Btn>
           <Btn variant="secondary" size="sm" onClick={reload}>
             <RefreshCw size={13} /> Refrescar
           </Btn>
@@ -128,9 +135,175 @@ export default function CuotasTab({ identity }) {
                    onSaved={() => { setEditing(null); reload() }}
                    identity={identity} />
       )}
+
+      {/* Modal comprobar clientes */}
+      {comprobarOpen && (
+        <ComprobarClientesModal identity={identity} onClose={() => setComprobarOpen(false)} />
+      )}
     </div>
   )
 }
+
+
+// ── Comprobación de clientes (sin cuota / sin forma de pago / sin categoría) ──
+function ComprobarClientesModal({ identity, onClose }) {
+  const toast = useToast()
+  const overlay = useOverlayClose(onClose)
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    comprobarClientes(identity)
+      .then(d => { if (alive) setData(d) })
+      .catch(e => { toast.error('Error al comprobar: ' + e.message); onClose() })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [])
+
+  const GRUPOS = data ? [
+    { key: 'sin_cuota', label: 'Sin cuota (sin suscripción activa)', icon: Receipt,
+      color: 'var(--red)', items: data.sin_cuota || [],
+      aviso: data.odoo_ok === false ? 'No se pudo comprobar (Odoo no disponible).' : null },
+    { key: 'sin_forma_pago', label: 'Sin forma de pago', icon: CreditCard,
+      color: 'var(--amber)', items: data.sin_forma_pago || [] },
+    { key: 'sin_categoria', label: 'Sin categoría asignada', icon: Tag,
+      color: 'var(--blue)', items: data.sin_categoria || [] },
+  ] : []
+
+  async function exportar() {
+    if (!data) return
+    const XLSX = await import('xlsx')
+    const wb = XLSX.utils.book_new()
+    // Hoja resumen
+    const resumen = [
+      { Incidencia: 'Clientes activos', 'Nº': data.total_activos },
+      { Incidencia: 'Sin cuota', 'Nº': (data.sin_cuota || []).length },
+      { Incidencia: 'Sin forma de pago', 'Nº': (data.sin_forma_pago || []).length },
+      { Incidencia: 'Sin categoría', 'Nº': (data.sin_categoria || []).length },
+    ]
+    const wsR = XLSX.utils.json_to_sheet(resumen, { header: ['Incidencia', 'Nº'] })
+    wsR['!cols'] = [{ wch: 26 }, { wch: 8 }]
+    XLSX.utils.book_append_sheet(wb, wsR, 'Resumen')
+    const hojas = [
+      ['Sin cuota', data.sin_cuota || []],
+      ['Sin forma de pago', data.sin_forma_pago || []],
+      ['Sin categoría', data.sin_categoria || []],
+    ]
+    for (const [nombre, items] of hojas) {
+      const rows = items.map(c => ({
+        'ID NoofitPro': c.id, 'Cliente': c.nombre, 'Email': c.email,
+        'Centro': c.centro, 'Categoría': c.categoria,
+      }))
+      const ws = XLSX.utils.json_to_sheet(rows,
+        { header: ['ID NoofitPro', 'Cliente', 'Email', 'Centro', 'Categoría'] })
+      ws['!cols'] = [{ wch: 12 }, { wch: 28 }, { wch: 30 }, { wch: 22 }, { wch: 16 }]
+      XLSX.utils.book_append_sheet(wb, ws, nombre.slice(0, 31))
+    }
+    const hoy = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `comprobacion_clientes_${hoy}.xlsx`)
+  }
+
+  return createPortal((
+    <div role="dialog" aria-modal="true" {...overlay}
+         style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.6)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: 'var(--bg-1)', borderRadius: 14, width: '100%', maxWidth: 760,
+                    maxHeight: '90vh', display: 'flex', flexDirection: 'column',
+                    border: '1px solid var(--line)', boxShadow: '0 12px 40px rgba(0,0,0,0.35)',
+                    color: 'var(--text-0)' }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--line)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <strong style={{ fontSize: 16 }}>Comprobación de clientes</strong>
+            {data && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+                {data.total_activos} clientes activos revisados
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {data && (
+              <Btn variant="secondary" size="sm" onClick={exportar}
+                   disabled={(data.sin_cuota?.length || 0) + (data.sin_forma_pago?.length || 0) + (data.sin_categoria?.length || 0) === 0}>
+                <Download size={13} /> Exportar Excel
+              </Btn>
+            )}
+            <button onClick={onClose} aria-label="Cerrar"
+                    style={{ width: 30, height: 30, borderRadius: 8, border: '1px solid var(--line)',
+                             background: 'var(--bg-3)', color: 'var(--text-2)', cursor: 'pointer' }}>
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding: 16, overflowY: 'auto' }}>
+          {loading ? (
+            <div style={{ padding: 40, textAlign: 'center' }}>
+              <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} />
+              <p style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>Comprobando clientes…</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {GRUPOS.map(g => <GrupoIncidencia key={g.key} {...g} />)}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  ), document.body)
+}
+
+function GrupoIncidencia({ label, icon: Icon, color, items, aviso }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div style={{ border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden' }}>
+      <button onClick={() => setOpen(o => !o)}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px',
+                       background: 'var(--bg-2)', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+        <Icon size={16} style={{ color, flexShrink: 0 }} aria-hidden="true" />
+        <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, color: 'var(--text-0)' }}>{label}</span>
+        <Badge color={items.length ? 'red' : 'green'}>{items.length}</Badge>
+      </button>
+      {aviso && (
+        <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--amber)',
+                      display: 'flex', alignItems: 'center', gap: 6 }}>
+          <AlertTriangle size={13} aria-hidden="true" /> {aviso}
+        </div>
+      )}
+      {open && items.length > 0 && (
+        <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-3)', background: 'var(--bg-1)' }}>
+                <th style={thC}>Cliente</th><th style={thC}>Email</th>
+                <th style={thC}>Centro</th><th style={thC}>Categoría</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map(c => (
+                <tr key={c.id} style={{ borderTop: '1px solid var(--line-decorative)' }}>
+                  <td style={tdC}>{c.nombre}</td>
+                  <td style={{ ...tdC, color: 'var(--text-2)' }}>{c.email || '—'}</td>
+                  <td style={{ ...tdC, color: 'var(--text-3)' }}>{c.centro || '—'}</td>
+                  <td style={{ ...tdC, color: 'var(--text-3)' }}>{c.categoria || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {open && items.length === 0 && (
+        <p style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-3)', margin: 0 }}>
+          Sin incidencias en este grupo. 👍
+        </p>
+      )}
+    </div>
+  )
+}
+const thC = { padding: '6px 10px', fontSize: 10.5, fontWeight: 600, textTransform: 'uppercase',
+              letterSpacing: '0.04em', whiteSpace: 'nowrap' }
+const tdC = { padding: '6px 10px', color: 'var(--text-1)', verticalAlign: 'top' }
 
 
 function Section({ titulo, children }) {

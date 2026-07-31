@@ -356,6 +356,10 @@ export const reciboCreate = (identity, payload) =>
 
 // GET /api/recibos/facturacion-resumen — resumen agrupable año/trimestre/mes ×
 // tipo de cobro (cobrado/impagado/pendiente). Devuelve filas planas.
+// Health-check de clientes activos: sin cuota / sin forma de pago / sin categoría.
+export const comprobarClientes = (identity) =>
+  _requestRoot('GET', '/api/cuotas/preemision-v2/comprobar-clientes', identity)
+
 export const facturacionResumen = (identity, params = {}) => {
   const qs = new URLSearchParams()
   if (params.anio) qs.set('anio', params.anio)

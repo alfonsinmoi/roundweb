@@ -691,3 +691,63 @@ def borrar_recibo(mes, rid):
                     (str(g.id_manager), rid))
     log_action(actor_from_request(), entidad='recibo', entidad_id=rid, accion='delete_preemision')
     return jsonify({'ok': True})
+
+
+# ── Comprobación de clientes (health-check) ─────────────────────────────────
+@bp.route('/comprobar-clientes', methods=['GET'])
+@auth_required
+def comprobar_clientes():
+    """Revisa los clientes ACTIVOS y los agrupa por incidencia:
+      - sin_cuota       : sin suscripción activa (round.subscription en Odoo)
+      - sin_forma_pago  : sin forma_pago_cliente en estado 'activa'
+      - sin_categoria   : sin fila en cliente_categoria
+    Respeta el scope por trainer (si g.id_trainer está fijado)."""
+    idm = str(g.id_manager)
+    tr = str(g.id_trainer) if getattr(g, 'id_trainer', None) else None
+    with get_conn() as conn, conn.cursor() as cur:
+        q = ("SELECT id, id_trainer, name, surname, email FROM cliente_cache "
+             "WHERE id_manager=%s AND enabled=true")
+        v = [idm]
+        if tr:
+            q += " AND id_trainer=%s"; v.append(tr)
+        q += " ORDER BY surname, name"
+        cur.execute(q, v)
+        activos = cur.fetchall()
+        cur.execute("SELECT DISTINCT cliente_idnoofit FROM forma_pago_cliente "
+                    "WHERE id_manager=%s AND estado='activa'", (idm,))
+        con_fp = {r['cliente_idnoofit'] for r in cur.fetchall()}
+        cur.execute("SELECT cc.cliente_idnoofit, cat.nombre FROM cliente_categoria cc "
+                    "JOIN categoria cat ON cat.id=cc.categoria_id WHERE cc.id_manager=%s", (idm,))
+        cat_by_cli = {r['cliente_idnoofit']: r['nombre'] for r in cur.fetchall()}
+        cur.execute("SELECT id_trainer, nombre_centro FROM centro_contacto WHERE id_manager=%s", (idm,))
+        centros = {str(t['id_trainer']): t['nombre_centro'] for t in cur.fetchall() if t.get('id_trainer')}
+
+    # sin cuota → partners con suscripción activa en Odoo
+    con_cuota = set()
+    odoo_ok = True
+    try:
+        o = _odoo(); company_id = _company_id()
+        subs = o._call('round.subscription', 'search_read',
+                       [('estado', '=', 'activa'), ('company_id', '=', company_id)], ['partner_id'])
+        pids = list({s['partner_id'][0] for s in subs if s.get('partner_id')})
+        partners = o._call('res.partner', 'read', pids, ['id_noofit']) if pids else []
+        con_cuota = {str(p.get('id_noofit')) for p in partners if p.get('id_noofit')}
+    except Exception as e:
+        odoo_ok = False
+        log.warning(f'comprobar_clientes odoo: {e}')
+
+    def row(c):
+        return {
+            'id': c['id'],
+            'nombre': (f"{c.get('name') or ''} {c.get('surname') or ''}").strip() or f"#{c['id']}",
+            'email': c.get('email') or '',
+            'centro': centros.get(str(c.get('id_trainer')), str(c.get('id_trainer') or '')),
+            'categoria': cat_by_cli.get(str(c['id']), ''),
+        }
+
+    sin_fp = [row(c) for c in activos if str(c['id']) not in con_fp]
+    sin_cat = [row(c) for c in activos if str(c['id']) not in cat_by_cli]
+    sin_cuota = [row(c) for c in activos if str(c['id']) not in con_cuota] if odoo_ok else []
+
+    return jsonify({'ok': True, 'total_activos': len(activos), 'odoo_ok': odoo_ok,
+                    'sin_cuota': sin_cuota, 'sin_forma_pago': sin_fp, 'sin_categoria': sin_cat})
