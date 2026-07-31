@@ -27,6 +27,7 @@ import { useCategoriasMap } from '../../hooks/useCategoriasMap'
 import { listarNotasCliente } from '../../utils/notasApi'
 import { useOdooStatus } from '../../hooks/useOdooStatus'
 import { useCan } from '../../hooks/useCan'
+import { useSetBreadcrumbsExtra } from '../../contexts/BreadcrumbsContext'
 import AltaClienteModal from '../../components/AltaClienteModal'
 import GenerarReciboModal from '../../components/GenerarReciboModal'
 import CrearUsuarioWebDesdeClienteModal from '../../components/CrearUsuarioWebDesdeClienteModal'
@@ -319,6 +320,9 @@ export default function ClientProfile() {
   const [searchParams] = useSearchParams()
   const initialTab = searchParams.get('tab') || 'personal'
   const [tab, setTab] = useState(initialTab)
+  // Publica la pestaña activa como crumb: "Clientes › Detalle › Recibos".
+  useSetBreadcrumbsExtra([{ label: tabs.find(t => t.id === tab)?.label || 'Detalle',
+                            onClick: () => setTab(tab) }])
   const [cliente, setCliente] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)

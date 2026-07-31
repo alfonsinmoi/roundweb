@@ -4,6 +4,7 @@ import Sidebar from './Sidebar'
 import Header from './Header'
 import Breadcrumbs from './Breadcrumbs'
 import ErrorBoundary from './ErrorBoundary'
+import { BreadcrumbsProvider } from '../contexts/BreadcrumbsContext'
 import BannerNuevosClientes from './BannerNuevosClientes'
 import BannerNoRegistrado from './BannerNoRegistrado'
 import UpdateAvailableBanner from './UpdateAvailableBanner'
@@ -94,12 +95,14 @@ export default function Layout() {
           // scrolling underneath is fully hidden behind it.
           padding: '0 clamp(20px, 4vw, 48px) clamp(20px, 4vw, 48px)',
         }} key={remountKey}>
-          <div className="anim-enter" style={{ maxWidth: 1760, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
-            <Breadcrumbs />
-            <ErrorBoundary key={remountKey}>
-              <Outlet />
-            </ErrorBoundary>
-          </div>
+          <BreadcrumbsProvider>
+            <div className="anim-enter" style={{ maxWidth: 1760, paddingTop: 'clamp(20px, 4vw, 48px)' }}>
+              <Breadcrumbs />
+              <ErrorBoundary key={remountKey}>
+                <Outlet />
+              </ErrorBoundary>
+            </div>
+          </BreadcrumbsProvider>
         </main>
       </div>
     </div>
