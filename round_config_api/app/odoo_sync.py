@@ -307,6 +307,51 @@ class OdooSync:
                        {'descuentos_activos_ids': [(3, descuento_odoo_id)]})
         return sub_ids
 
+    # ── Pausa / reactivación de suscripciones (inactividad temporal / archivo) ─
+    # Regla (ago 2026): un cliente inactivo o en pausa temporal NO pierde su
+    # suscripción — se PAUSA (estado='suspendida'), nunca se cancela. Así, al
+    # volver, basta reactivarla (suspendida → activa). Esto sustituye al viejo
+    # comportamiento del cron sync_nf_subs, que cancelaba y dejaba al cliente
+    # sin cuota al reactivarse (caso Emilio Vílchez, jul 2026).
+    def subs_pausar(self, cliente_idnoofit):
+        """Pausa (estado='suspendida') TODAS las subs ACTIVAS del cliente.
+        Idempotente. Devuelve la lista de ids pausados (o [] si nada)."""
+        if not cfg.ODOO_SYNC_ENABLED or not cliente_idnoofit:
+            return []
+        sub_ids = self._find_subscriptions_active(cliente_idnoofit)
+        if sub_ids:
+            self._call('round.subscription', 'write', sub_ids, {'estado': 'suspendida'})
+            log.info(f'subs_pausar: cliente {cliente_idnoofit} → {len(sub_ids)} subs suspendidas')
+        return sub_ids
+
+    def subs_reactivar(self, cliente_idnoofit):
+        """Reactiva (suspendida → activa) las subs suspendidas del cliente.
+        Idempotente. Respeta el índice único (partner, cuota) WHERE activa: si
+        ya hay otra sub ACTIVA para la misma cuota, esa suspendida NO se
+        reactiva (evita el error de constraint). Devuelve ids reactivados."""
+        if not cfg.ODOO_SYNC_ENABLED or not cliente_idnoofit:
+            return []
+        partner_ids = self._call('res.partner', 'search',
+                                 [('id_noofit', '=', str(cliente_idnoofit))], limit=1)
+        if not partner_ids:
+            return []
+        pid = partner_ids[0]
+        susp = self._call('round.subscription', 'search_read',
+                          [('partner_id', '=', pid), ('estado', '=', 'suspendida')],
+                          ['id', 'cuota_id']) or []
+        if not susp:
+            return []
+        activas = self._call('round.subscription', 'search_read',
+                             [('partner_id', '=', pid), ('estado', '=', 'activa')],
+                             ['cuota_id']) or []
+        cuotas_activas = {a['cuota_id'][0] for a in activas if a.get('cuota_id')}
+        to_react = [s['id'] for s in susp
+                    if not (s.get('cuota_id') and s['cuota_id'][0] in cuotas_activas)]
+        if to_react:
+            self._call('round.subscription', 'write', to_react, {'estado': 'activa'})
+            log.info(f'subs_reactivar: cliente {cliente_idnoofit} → {len(to_react)} subs reactivadas')
+        return to_react
+
 
 # Cache de instancias por manager — ver get_cuotas() para detalles.
 _instances = {}

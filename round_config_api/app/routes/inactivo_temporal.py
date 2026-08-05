@@ -185,6 +185,14 @@ def aplicar_inicio(row):
                motivo_archivado, notas)
             VALUES (%s, %s, 'archivado', 'activo', %s, %s)
         """, (idm, int(cid), motivo_txt, f'inactivo_temporal id={row["id"]}'))
+    # PAUSAR (no cancelar) las suscripciones Odoo del cliente. Reversible: al
+    # finalizar la pausa se reactivan (aplicar_fin). Si Odoo falla, el cron
+    # nocturno `sync_nf_subs` lo reconcilia (cliente enabled=False → suspender).
+    try:
+        from ..odoo_sync import get_sync
+        get_sync(idm).subs_pausar(cid)
+    except Exception as e:
+        log.warning(f'aplicar_inicio: no se pudieron pausar subs de {cid}: {e}')
     return True, None
 
 
@@ -213,6 +221,15 @@ def aplicar_fin(row):
                   (id_manager, cliente_id, estado_nuevo, estado_anterior, notas)
                 VALUES (%s, %s, 'activo', 'archivado', %s)
             """, (idm, int(cid), f'fin inactivo_temporal id={row["id"]}'))
+    # REACTIVAR las suscripciones que se pausaron al inicio (suspendida→activa),
+    # solo si el cliente vuelve a estar activo. Si Odoo falla, el cron nocturno
+    # `sync_nf_subs` lo reconcilia (cliente enabled=True → reactivar suspendidas).
+    if enabled_prev is None or enabled_prev:
+        try:
+            from ..odoo_sync import get_sync
+            get_sync(idm).subs_reactivar(cid)
+        except Exception as e:
+            log.warning(f'aplicar_fin: no se pudieron reactivar subs de {cid}: {e}')
     return True, None
 
 

@@ -1,7 +1,11 @@
-"""Sync NoofitPro → round.subscription Odoo.
+"""Sync NoofitPro → round.subscription Odoo (bidireccional).
 
-Lee NoofitPro: para cada cliente con enabled=False, cancela TODAS sus
-subscriptions activas en Odoo (fecha_fin=hoy, estado=cancelada).
+Regla (ago 2026): un cliente inactivo/pausado NUNCA pierde su suscripción.
+  - cliente con enabled=False → PAUSA sus subs activas (estado='suspendida').
+  - cliente con enabled=True  → REACTIVA sus subs suspendidas (→ 'activa').
+Así, al volver un cliente (fin de pausa temporal, reactivación en NF), su
+cuota se recupera sola. (Antes se CANCELABA y el cliente quedaba sin cuota
+al reactivarse — caso Emilio Vílchez, jul 2026.)
 
 Itera TODOS los managers activos (manager_config) y todos sus trainers
 (trainer_noofit_creds) para obtener una lista completa de clientes. Cada
@@ -9,7 +13,9 @@ manager/trainer en NoofitPro tiene su propio espacio de clientes; sin
 iterar nos perdemos los clientes que pertenecen al espacio del trainer
 hijo y no del manager parent.
 
-Idempotente: subs ya canceladas no se tocan.
+Idempotente en ambos sentidos. La reactivación respeta el índice único
+(partner, cuota) WHERE estado='activa': no reactiva una suspendida si ya
+hay otra activa de la misma cuota.
 
 Modo:
   CONFIRM=1 para aplicar
@@ -81,66 +87,103 @@ def get_clientes_nf():
 clientes = get_clientes_nf()
 print(f'Clientes NoofitPro: {len(clientes)}')
 
-# IDs de inactivos
+# IDs por estado NoofitPro
 inactivos = [str(c['id']) for c in clientes if c.get('enabled') is False]
-print(f'Inactivos (enabled=False): {len(inactivos)}')
+activos   = [str(c['id']) for c in clientes if c.get('enabled') is True]
+print(f'Inactivos (enabled=False): {len(inactivos)}  ·  Activos (enabled=True): {len(activos)}')
 
 # Conectar Odoo
 o = OdooAlta(); o._connect()
 
-# Mapping idnoofit → partner_id
-partners = o._call('res.partner', 'search_read',
-    [('id_noofit', 'in', inactivos)], ['id', 'name', 'id_noofit'])
-print(f'Partners Odoo encontrados (de los inactivos): {len(partners)}')
 
-partner_ids = [p['id'] for p in partners]
-if not partner_ids:
-    print('No hay partners en Odoo a los que cancelar subs.')
-    exit()
+def _partner_ids_de(idnoofits):
+    if not idnoofits:
+        return []
+    ps = o._call('res.partner', 'search_read',
+                 [('id_noofit', 'in', idnoofits)], ['id']) or []
+    return [p['id'] for p in ps]
 
-subs = o._call('round.subscription', 'search_read',
-    [('partner_id', 'in', partner_ids), ('estado', '=', 'activa'),
+
+# ── 1) Clientes INACTIVOS → PAUSAR sus subs activas (estado='suspendida') ─────
+# Regla (ago 2026): NUNCA cancelar. Se pausa para conservar la suscripción;
+# al reactivarse el cliente (pass 2) se devuelve a 'activa'. Esto evita que un
+# cliente en pausa temporal / archivado pierda su cuota para siempre (caso
+# Emilio Vílchez: la pausa de julio archivó al cliente y el cron canceló sus
+# 4 subs → al volver, quedó sin cuota).
+pausar_pids = _partner_ids_de(inactivos)
+subs_pausar = o._call('round.subscription', 'search_read',
+    [('partner_id', 'in', pausar_pids), ('estado', '=', 'activa'),
      ('company_id', '=', COMPANY_ID)],
-    ['id', 'partner_id', 'cuota_id', 'estado'])
-print(f'Subs activas a cancelar: {len(subs)}')
+    ['id', 'partner_id', 'cuota_id']) if pausar_pids else []
+print(f'Subs a PAUSAR (activa→suspendida): {len(subs_pausar)}')
 
-if not subs:
-    print('Nada que cancelar.')
+# ── 2) Clientes ACTIVOS → REACTIVAR sus subs suspendidas (suspendida→activa) ──
+# Reconciliador general: cualquier cliente que vuelva a estar enabled=True en
+# NoofitPro recupera automáticamente su suscripción. Respeta el índice único
+# (partner, cuota) WHERE activa: si ya hay otra sub activa de esa cuota, la
+# suspendida no se reactiva.
+react_pids = _partner_ids_de(activos)
+subs_susp = o._call('round.subscription', 'search_read',
+    [('partner_id', 'in', react_pids), ('estado', '=', 'suspendida'),
+     ('company_id', '=', COMPANY_ID)],
+    ['id', 'partner_id', 'cuota_id']) if react_pids else []
+# (partner, cuota) que YA tienen una activa → no reactivar duplicado
+subs_act = o._call('round.subscription', 'search_read',
+    [('partner_id', 'in', react_pids), ('estado', '=', 'activa'),
+     ('company_id', '=', COMPANY_ID)],
+    ['partner_id', 'cuota_id']) if react_pids else []
+ya_activa = {(a['partner_id'][0], a['cuota_id'][0]) for a in subs_act
+             if a.get('partner_id') and a.get('cuota_id')}
+subs_reactivar = [s for s in subs_susp
+                  if not (s.get('partner_id') and s.get('cuota_id')
+                          and (s['partner_id'][0], s['cuota_id'][0]) in ya_activa)]
+print(f'Subs a REACTIVAR (suspendida→activa): {len(subs_reactivar)}')
+
+if not subs_pausar and not subs_reactivar:
+    print('Nada que pausar ni reactivar.')
     exit()
 
 if not CONFIRM:
-    print('\n[DRY-RUN] Sample 5:')
-    for s in subs[:5]:
+    print('\n[DRY-RUN] Pausar (sample 5):')
+    for s in subs_pausar[:5]:
+        cuota = s.get('cuota_id', [None, '?'])[1] if s.get('cuota_id') else '?'
+        print(f'  sub id={s["id"]} partner={s["partner_id"][1]} cuota={cuota}')
+    print('[DRY-RUN] Reactivar (sample 5):')
+    for s in subs_reactivar[:5]:
         cuota = s.get('cuota_id', [None, '?'])[1] if s.get('cuota_id') else '?'
         print(f'  sub id={s["id"]} partner={s["partner_id"][1]} cuota={cuota}')
     print('\nCONFIRM=1 para aplicar.')
     exit()
 
-# Aplicar
-hoy = datetime.date.today().isoformat()
-sub_ids = [s['id'] for s in subs]
-# FIX 2026-07-02: _call(model, 'write', ids, vals) espera la LISTA de ids
-# directamente (convención de odoo_alta: `[partner_id]` = lista con ints).
-# Antes se pasaba `[sub_ids]` → ids anidados [[...]] → Odoo mail_thread
-# reventaba con "unhashable type: list" y el cron llevaba días fallando.
-o._call('round.subscription', 'write', sub_ids,
-    {'fecha_fin': hoy, 'estado': 'cancelada'})
+# Aplicar. NOTA _call(model,'write',ids,vals) espera la LISTA de ids directa
+# (convención odoo_alta). NO envolver en otra lista (rompía con "unhashable
+# type: list").
+if subs_pausar:
+    o._call('round.subscription', 'write', [s['id'] for s in subs_pausar],
+            {'estado': 'suspendida'})
+if subs_reactivar:
+    o._call('round.subscription', 'write', [s['id'] for s in subs_reactivar],
+            {'estado': 'activa'})
 
-# Audit log: id_manager por suscripción (vía company → manager).
-# Para simplicidad: usamos el primer manager activo como label, pero el
-# resumen indica el partner_id real para trazabilidad.
+# Audit log
 with get_conn() as conn, conn.cursor() as cur:
     cur.execute("""SELECT id_manager FROM manager_config
                     WHERE activo=TRUE ORDER BY id_manager LIMIT 1""")
     row = cur.fetchone()
     actor_mgr = str(row['id_manager']) if row else ''
-    for s in subs:
+    for s in subs_pausar:
         cur.execute("""
             INSERT INTO accion_log
               (id_manager, actor_kind, actor_label, entidad, entidad_id, accion, resumen)
-            VALUES (%s, 'cron', 'sync_nf_subs', 'subscription', %s, 'cancel',
-                    %s)
+            VALUES (%s, 'cron', 'sync_nf_subs', 'subscription', %s, 'pausar', %s)
         """, (actor_mgr, str(s['id']),
-              f'Cancelada por cron — cliente NF inactivo (partner_id={s["partner_id"][0]})'))
+              f'Pausada por cron — cliente NF inactivo (partner_id={s["partner_id"][0]})'))
+    for s in subs_reactivar:
+        cur.execute("""
+            INSERT INTO accion_log
+              (id_manager, actor_kind, actor_label, entidad, entidad_id, accion, resumen)
+            VALUES (%s, 'cron', 'sync_nf_subs', 'subscription', %s, 'reactivar', %s)
+        """, (actor_mgr, str(s['id']),
+              f'Reactivada por cron — cliente NF activo de nuevo (partner_id={s["partner_id"][0]})'))
 
-print(f'\n✓ {len(sub_ids)} subs canceladas.')
+print(f'\n✓ {len(subs_pausar)} subs pausadas · {len(subs_reactivar)} subs reactivadas.')

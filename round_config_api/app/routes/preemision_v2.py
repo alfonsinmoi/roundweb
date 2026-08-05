@@ -279,6 +279,11 @@ def generar(mes):
         skipped_inactivo_nf = 0
         skipped_desvinculado = 0
         skipped_otro_trainer = 0   # scope por trainer (auditoría #22)
+        # Subs a PAUSAR (ago 2026): cliente inactivo en NF o en pausa temporal
+        # → su sub no se emite ESTE mes Y se pausa (estado='suspendida') para
+        # que no vuelva a intentar emitir hasta que el cliente regrese. Nunca
+        # se cancela: al volver se reactiva (regla "no borrar suscripciones").
+        subs_a_pausar = set()
         for s in subs:
             if not _toca_emitir(s, mes): continue
             pid = s['partner_id'][0] if s.get('partner_id') else None
@@ -291,6 +296,7 @@ def generar(mes):
                 continue
             if idnoofit in inactivos_temporal:
                 skipped_temporal += 1
+                subs_a_pausar.add(s['id'])       # pausa temporal → suspender sub
                 continue
             # Cliente_cache: comprueba estado real en NoofitPro.
             if idnoofit not in cache_idnoofit_enabled:
@@ -300,6 +306,7 @@ def generar(mes):
             if not cache_idnoofit_enabled[idnoofit]:
                 # enabled=False en NoofitPro = archivado/inactivo.
                 skipped_inactivo_nf += 1
+                subs_a_pausar.add(s['id'])        # inactivo en NF → suspender sub
                 continue
             # Scope por trainer (auditoría #22): si la sesión actúa como un
             # trainer concreto, NO emitir clientes de otros trainers del manager.
@@ -323,6 +330,19 @@ def generar(mes):
             log.info(f'preemision {mes}: {skipped_inactivo_nf} subs saltadas por cliente inactivo en NoofitPro')
         if skipped_desvinculado:
             log.info(f'preemision {mes}: {skipped_desvinculado} subs saltadas por cliente desvinculado (no en cache)')
+
+        # PAUSAR (no cancelar) las subs de clientes inactivos/pausados que
+        # tocaban este mes. estado='activa' → 'suspendida'. Idempotente y
+        # reversible: cuando el cliente vuelve (fin de pausa o reactivado en
+        # NF) el cron sync_nf_subs / aplicar_fin las devuelve a 'activa'.
+        if subs_a_pausar:
+            try:
+                o._call('round.subscription', 'write', list(subs_a_pausar),
+                        {'estado': 'suspendida'})
+                log.info(f'preemision {mes}: {len(subs_a_pausar)} subs pausadas '
+                         f'(suspendida) por cliente inactivo/pausa temporal')
+            except Exception as _e:
+                log.warning(f'preemision {mes}: no se pudieron pausar subs: {_e}')
 
         # Pre-cómputo para descuentos "familiares":
         #   1) cuotas activas (de TODAS las subs activas, no solo las que tocan)

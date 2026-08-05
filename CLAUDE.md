@@ -302,6 +302,16 @@ desde qué IP. No es opcional: forma parte de "endpoint terminado".
   ventana: no reserva/asiste (enabled=false NF) y no se emite cuota (guard en
   `preemision_v2`, regla "no cobrar ningún mes que la pausa toque"). Al crear,
   anula recibos BD no pagados de los meses cubiertos (account_move_id IS NULL).
+  ⚠️ REGLA (ago 2026): un cliente inactivo/pausado NUNCA pierde su
+  suscripción Odoo — se **PAUSA** (`round.subscription.estado='suspendida'`),
+  jamás se cancela. `aplicar_inicio` suspende las subs al empezar la pausa;
+  `aplicar_fin` las reactiva (`suspendida→activa`) al volver. La emisión
+  (`preemision_v2`) también suspende las subs de inactivos/pausados que
+  tocaban ese mes. Reconciliador general nocturno: `scripts/sync_nf_subs.py`
+  (timer `round_sync_nf_subs`, 03:30) → `enabled=False`→suspender,
+  `enabled=True`→reactivar (respeta índice único `(partner,cuota) WHERE activa`).
+  Helpers `OdooSync.subs_pausar/subs_reactivar`. (Antes el cron CANCELABA →
+  el cliente quedaba sin cuota al reactivarse; caso Emilio Vílchez jul-2026.)
   Endpoints `/api/clientes/<id>/inactivo-temporal` (POST/DELETE/GET) +
   `/api/clientes/inactivo-temporal` (GET lista). Mutuamente excluyente con
   baja programada. Filtro de listado "Temporal inactivo".
