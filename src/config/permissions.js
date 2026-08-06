@@ -715,6 +715,13 @@ export function canAccessSection(perfil, sectionPath) {
     if (!cat || !cat[p]) return false
     cat = cat[p].children || cat[p]
   }
+  // El path puede apuntar a una ACCIÓN hoja (action:true), no solo a una
+  // sección. Es el caso del menú TPV, cuyos items usan permisos finos
+  // (`tpv.ventas.cobrar`, `tpv.proveedores.ver`, `tpv.dashboard.ver`). Para
+  // una hoja no hay hijos que aplanar → se comprueba ese permiso directo.
+  // (Sin esto, canAccessSection devolvía SIEMPRE false para paths hoja y el
+  // grupo TPV quedaba oculto aunque el perfil tuviera el permiso concedido.)
+  if (cat && cat.action === true) return hasPermission(perfil, sectionPath)
   // Recorrer hijos: si alguno está true en el JSONB, acceso permitido
   const flat = flattenPermissions(cat, sectionPath)
   return flat.some(it => it.leaf && hasPermission(perfil, it.path))
