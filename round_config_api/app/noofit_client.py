@@ -37,6 +37,43 @@ def _md5_upper(s):
     return hashlib.md5(s.encode()).hexdigest().upper()
 
 
+def _ip_de_la_persona():
+    """IP real de quien está haciendo login, o None si no hay nadie detrás.
+
+    NoofitPro limita a 10 POST por IP cada 15 minutos CUALQUIER ruta que
+    contenga `/account/login` — o sea `loginEasy` y también `loginMobile`—,
+    y el contador no distingue aciertos de fallos (backend, 02/09/2026).
+    Como estas llamadas salen del VPS, sin esta cabecera TODOS los logins de
+    la web comparten un único cupo: el undécimo de cada cuarto de hora
+    recibiría un 429 aunque las credenciales fueran correctas.
+
+    NoofitPro lee `X-Forwarded-For` y se queda con la primera IP, así que
+    reenviando la del usuario el límite vuelve a ser por persona, que es lo
+    que tiene sentido.
+
+    Solo se rellena cuando hay una petición HTTP real detrás, es decir, una
+    persona. Los crones y los scripts no mandan cabecera a propósito: su
+    cupo es el del servidor, que es lo que son. Inventarles una IP sería
+    saltarse un límite que existe por algo.
+    """
+    try:
+        from flask import has_request_context, request
+        if not has_request_context():
+            return None
+        return ((request.headers.get('X-Forwarded-For', '') or '')
+                .split(',')[0].strip() or request.remote_addr or None)
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def _cabeceras_login():
+    h = {'Content-Type': 'application/json'}
+    ip = _ip_de_la_persona()
+    if ip:
+        h['X-Forwarded-For'] = ip
+    return h
+
+
 def _login(email, password):
     """Autentica contra NoofitPro y devuelve (token, manager_id_o_true).
 
@@ -47,7 +84,7 @@ def _login(email, password):
     r = requests.post(f'{BASE}/account/loginEasy',
         json={'email': email, 'appVersion': APP_VERSION,
               'password': _md5_upper(password)},
-        headers={'Content-Type': 'application/json'},
+        headers=_cabeceras_login(),
         timeout=15, verify=False)
     r.raise_for_status()
     token = r.headers.get('X-CustomToken')
@@ -73,7 +110,7 @@ def login_cliente_final(email, password):
     r = requests.post(f'{BASE}/account/loginMobile',
         json={'email': email, 'appVersion': APP_VERSION,
               'password': _md5_upper(password)},
-        headers={'Content-Type': 'application/json'},
+        headers=_cabeceras_login(),
         timeout=15, verify=False)
     r.raise_for_status()
     token = r.headers.get('X-CustomToken')
