@@ -23,7 +23,7 @@ import requests
 import urllib3
 from flask import Blueprint, request, jsonify, g
 
-from ..auth import auth_required
+from ..auth import auth_required, resolve_trainer_target
 from ..db import get_conn
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -490,12 +490,23 @@ def list_sessions_cliente(id_cliente):
 def dashboard():
     """KPIs del dashboard global. Lee de BD local + dispara SIEMPRE sync
     background (anti-stampede 60 s). Próxima carga tendrá los nuevos
-    tests del día."""
-    sessions = _read_sessions_local(g.id_manager, g.id_trainer)
+    tests del día.
+
+    Acepta ?id_trainer=<id> para que un manager pueda ver el dashboard
+    de uno de sus trainers (o el consolidado si no lo pasa). Los usuarios
+    con scope de trainer (usuario_web ligado a un centro) no pueden
+    saltarse su scope — resolve_trainer_target lo aplica.
+    """
+    id_trainer_q, forbidden = resolve_trainer_target(request.args.get('id_trainer'))
+    if forbidden:
+        return jsonify({'ok': False, 'error': 'trainer_forbidden'}), 403
+    id_trainer = id_trainer_q or g.id_trainer
+    sessions = _read_sessions_local(g.id_manager, id_trainer)
     state = _sync_state(g.id_manager)
-    _sync_background(g.id_manager, g.id_trainer)
+    _sync_background(g.id_manager, id_trainer)
     return jsonify({'ok': True, **_compute_dashboard(sessions, g.id_manager),
                     'sync': state, 'fuente': 'local',
+                    'id_trainer': id_trainer,
                     'sample_session_keys': list(sessions[0].keys()) if sessions else []})
 
 

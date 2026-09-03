@@ -435,8 +435,11 @@ export const retosSnapshot = (identity) =>
   _requestRoot('POST', '/api/retos/snapshot', identity)
 
 // ── Estado físico (test sessions agregado vía NoofitPro) ───────────────
-export const estadoFisicoDashboard = (identity, force = false) => {
-  const q = force ? '?force=1' : ''
+export const estadoFisicoDashboard = (identity, force = false, idTrainer = '') => {
+  const qs = new URLSearchParams()
+  if (force) qs.set('force', '1')
+  if (idTrainer) qs.set('id_trainer', idTrainer)
+  const q = qs.toString() ? `?${qs}` : ''
   return _requestRoot('GET', `/api/estado-fisico/dashboard${q}`, identity)
 }
 export const estadoFisicoSessions = (identity, force = false) => {

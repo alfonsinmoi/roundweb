@@ -1692,7 +1692,8 @@ export default function InformeAsistencia() {
 
       {/* Tab: Estado físico (dashboard de tests NoofitPro) */}
       {tab === 'estado_fisico' && (
-        <EstadoFisicoDashboard onVerPerfil={(cid) => navigate(`/clientes/${cid}`)} />
+        <EstadoFisicoDashboard onVerPerfil={(cid) => navigate(`/clientes/${cid}`)}
+                               idTrainer={idTrainerFilter} />
       )}
 
       {/* Modal: clases no asistidas del cliente */}

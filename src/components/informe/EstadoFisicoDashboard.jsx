@@ -25,7 +25,7 @@ const fmtFecha = (epoch) => {
   })
 }
 
-export default function EstadoFisicoDashboard({ onVerPerfil }) {
+export default function EstadoFisicoDashboard({ onVerPerfil, idTrainer = '' }) {
   const toast = useToast()
   const { user } = useAuth()
   const identity = useMemo(() => getRoundIdentity(user), [user])
@@ -36,7 +36,7 @@ export default function EstadoFisicoDashboard({ onVerPerfil }) {
   const load = (force = false) => {
     if (force) setRefreshing(true)
     else setLoading(true)
-    estadoFisicoDashboard(identity, force)
+    estadoFisicoDashboard(identity, force, idTrainer)
       .then(setData)
       .catch(e => toast.error('Error cargando dashboard: ' + e.message))
       .finally(() => { setLoading(false); setRefreshing(false) })
@@ -45,7 +45,7 @@ export default function EstadoFisicoDashboard({ onVerPerfil }) {
   useEffect(() => {
     if (identity?.managerId) load(false)
   // eslint-disable-next-line
-  }, [identity?.managerId])
+  }, [identity?.managerId, idTrainer])
 
   if (loading) return (
     <div role="tabpanel" style={{ marginTop: 8, padding: 40, textAlign: 'center' }}>
