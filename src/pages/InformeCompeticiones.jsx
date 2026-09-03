@@ -9,13 +9,14 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Award, Loader2, RefreshCw, Users, Trophy, CalendarDays,
+  ChevronUp, ChevronDown, ChevronsUpDown, Tag, VenusAndMars,
 } from 'lucide-react'
 import { Card, Btn } from '../components/UI'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 import {
   getRoundIdentity, informeCompeticiones, informeCompeticionesEstado,
-  informeCompeticionesSync,
+  informeCompeticionesSync, categoriasList,
 } from '../utils/configApi'
 import { formatDate } from '../utils/formatters'
 
@@ -33,6 +34,11 @@ const MODALIDADES = [
   { key: 'wod',     label: 'WOD' },
 ]
 const MOD_LABEL = { oficial: 'Oficial', mygym: 'MyGym', wod: 'WOD' }
+const SEXOS = [
+  { key: '',  label: 'Ambos' },
+  { key: 'M', label: 'Hombres' },
+  { key: 'F', label: 'Mujeres' },
+]
 // Colores del badge por modalidad (variables CSS del tema)
 const MOD_COLOR = {
   oficial: { bg: 'rgba(251,191,36,0.15)', fg: '#fbbf24' },   // oro
@@ -48,11 +54,18 @@ export default function InformeCompeticiones() {
   const [desde, setDesde] = useState(isoDaysAgo(90))
   const [hasta, setHasta] = useState(HOY)
   const [modalidad, setModalidad] = useState('')
+  const [sexo, setSexo] = useState('')
+  const [categoriaId, setCategoriaId] = useState('')
 
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [estado, setEstado] = useState(null)
   const [syncing, setSyncing] = useState(false)
+  const [categorias, setCategorias] = useState([])
+
+  // Sort de tablas
+  const [sortComp, setSortComp] = useState({ col: 'fecha', dir: 'desc' })
+  const [sortTop,  setSortTop]  = useState({ col: 'competiciones', dir: 'desc' })
 
   const cargar = useCallback(async () => {
     if (!identity?.managerId) return
@@ -61,12 +74,14 @@ export default function InformeCompeticiones() {
       const d = await informeCompeticiones(identity, {
         desde, hasta, limit: 200,
         ...(modalidad ? { modalidad } : {}),
+        ...(sexo ? { sexo } : {}),
+        ...(categoriaId ? { categoria: categoriaId } : {}),
       })
       setData(d)
     } catch (e) {
       toast.error(`Error cargando informe: ${e.message}`)
     } finally { setLoading(false) }
-  }, [identity?.managerId, desde, hasta, modalidad])
+  }, [identity?.managerId, desde, hasta, modalidad, sexo, categoriaId])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -85,6 +100,20 @@ export default function InformeCompeticiones() {
     return () => { active = false }
   }, [identity?.managerId])
 
+  // Catálogo de categorías del manager (para el filtro).
+  useEffect(() => {
+    if (!identity?.managerId) return
+    let active = true
+    ;(async () => {
+      try {
+        const cats = await categoriasList(identity)
+        if (!active) return
+        setCategorias((cats || []).filter(c => c.activa !== false))
+      } catch { /* opcional */ }
+    })()
+    return () => { active = false }
+  }, [identity?.managerId])
+
   const handleSyncAhora = async () => {
     setSyncing(true)
     try {
@@ -94,9 +123,44 @@ export default function InformeCompeticiones() {
     setSyncing(false)
   }
 
-  const competiciones = data?.competiciones || []
-  const topClientes = data?.top_clientes || []
+  const rawCompeticiones = data?.competiciones || []
+  const rawTopClientes = data?.top_clientes || []
   const totalComp = Number(data?.totales?.competiciones || 0)
+
+  const competiciones = useMemo(() => {
+    const arr = [...rawCompeticiones]
+    const { col, dir } = sortComp
+    const mul = dir === 'asc' ? 1 : -1
+    return arr.sort((a, b) => {
+      const av = a?.[col]; const bv = b?.[col]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (col === 'fecha') return (String(av) < String(bv) ? -1 : String(av) > String(bv) ? 1 : 0) * mul
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mul
+      return String(av).localeCompare(String(bv), 'es') * mul
+    })
+  }, [rawCompeticiones, sortComp])
+
+  const topClientes = useMemo(() => {
+    const arr = [...rawTopClientes]
+    const { col, dir } = sortTop
+    const mul = dir === 'asc' ? 1 : -1
+    return arr.sort((a, b) => {
+      const av = a?.[col]; const bv = b?.[col]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mul
+      return String(av).localeCompare(String(bv), 'es') * mul
+    })
+  }, [rawTopClientes, sortTop])
+
+  const toggleSort = (state, setState, col) => {
+    setState(s => (s.col === col
+      ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+      : { col, dir: col === 'nombre' ? 'asc' : 'desc' }))
+  }
   const porModalidad = useMemo(() => {
     // Rellenamos siempre las tres modalidades para que las tarjetas se vean
     // aunque una esté vacía (cuando no hay filtro activo).
@@ -168,6 +232,39 @@ export default function InformeCompeticiones() {
                  onClick={() => setModalidad(m.key)}>{m.label}</Btn>
           ))}
         </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center',
+                      marginTop: 10 }}>
+          <VenusAndMars size={14} style={{ color: 'var(--text-3)' }} aria-hidden="true" />
+          <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase',
+                         letterSpacing: '0.04em', marginRight: 4 }}>Sexo</span>
+          {SEXOS.map((s) => (
+            <Btn key={s.key || 'all'} size="sm"
+                 variant={sexo === s.key ? 'primary' : 'secondary'}
+                 onClick={() => setSexo(s.key)}>{s.label}</Btn>
+          ))}
+          <div style={{ width: 1, height: 20, background: 'var(--line)', margin: '0 4px' }} />
+          <Tag size={14} style={{ color: 'var(--text-3)' }} aria-hidden="true" />
+          <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase',
+                         letterSpacing: '0.04em', marginRight: 4 }}>Categoría</span>
+          <select
+            value={categoriaId}
+            onChange={e => setCategoriaId(e.target.value)}
+            style={{ ...inputStyle, minWidth: 160 }}
+          >
+            <option value="">Todas</option>
+            {categorias.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.nombre}
+              </option>
+            ))}
+          </select>
+          {(sexo || categoriaId) && (
+            <Btn size="sm" variant="secondary"
+                 onClick={() => { setSexo(''); setCategoriaId('') }}>
+              Limpiar
+            </Btn>
+          )}
+        </div>
       </Card>
 
       {/* ── KPIs globales del filtro ──────────────────────────────────── */}
@@ -228,11 +325,26 @@ export default function InformeCompeticiones() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-                    <th style={{ ...thStyle, textAlign: 'left' }}>Competición</th>
-                    <th style={{ ...thStyle, textAlign: 'left' }}>Modalidad</th>
-                    <th style={{ ...thStyle, textAlign: 'left' }}>Última</th>
-                    <th style={thStyle}>Participaciones</th>
-                    <th style={thStyle}>Clientes</th>
+                    <SortHeader align="left" state={sortComp}
+                                col="nombre" onClick={c => toggleSort(sortComp, setSortComp, c)}>
+                      Competición
+                    </SortHeader>
+                    <SortHeader align="left" state={sortComp}
+                                col="modalidad" onClick={c => toggleSort(sortComp, setSortComp, c)}>
+                      Modalidad
+                    </SortHeader>
+                    <SortHeader align="left" state={sortComp}
+                                col="fecha" onClick={c => toggleSort(sortComp, setSortComp, c)}>
+                      Última
+                    </SortHeader>
+                    <SortHeader state={sortComp}
+                                col="participantes" onClick={c => toggleSort(sortComp, setSortComp, c)}>
+                      Participaciones
+                    </SortHeader>
+                    <SortHeader state={sortComp}
+                                col="clientes_distintos" onClick={c => toggleSort(sortComp, setSortComp, c)}>
+                      Clientes
+                    </SortHeader>
                   </tr>
                 </thead>
                 <tbody>
@@ -272,9 +384,18 @@ export default function InformeCompeticiones() {
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
                       <th style={thStyle}>#</th>
-                      <th style={{ ...thStyle, textAlign: 'left' }}>Cliente</th>
-                      <th style={thStyle}>Competiciones</th>
-                      <th style={thStyle}>Participaciones</th>
+                      <SortHeader align="left" state={sortTop}
+                                  col="nombre" onClick={c => toggleSort(sortTop, setSortTop, c)}>
+                        Cliente
+                      </SortHeader>
+                      <SortHeader state={sortTop}
+                                  col="competiciones" onClick={c => toggleSort(sortTop, setSortTop, c)}>
+                        Competiciones
+                      </SortHeader>
+                      <SortHeader state={sortTop}
+                                  col="participaciones" onClick={c => toggleSort(sortTop, setSortTop, c)}>
+                        Participaciones
+                      </SortHeader>
                     </tr>
                   </thead>
                   <tbody>
@@ -299,8 +420,10 @@ export default function InformeCompeticiones() {
       {data && !loading && totalComp > 0 && (
         <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 10 }}>
           Periodo {data.desde} → {data.hasta}
-          {modalidad ? ` · modalidad ${MOD_LABEL[modalidad]}` : ''}.
-          Se sincronizan cada noche (y al abrir esta página, de forma incremental).
+          {modalidad ? ` · modalidad ${MOD_LABEL[modalidad]}` : ''}
+          {sexo ? ` · ${sexo === 'M' ? 'hombres' : 'mujeres'}` : ''}
+          {categoriaId ? ` · categoría ${categorias.find(c => String(c.id) === String(categoriaId))?.nombre || categoriaId}` : ''}
+          . Se sincronizan cada noche (y al abrir esta página, de forma incremental).
         </p>
       )}
     </div>
@@ -359,6 +482,27 @@ function ModCard({ modalidad, row, onClick }) {
         <MiniStat label="Clientes" value={fmtNum(row?.clientes)} />
       </div>
     </Card>
+  )
+}
+
+function SortHeader({ state, col, onClick, align = 'right', children }) {
+  const active = state.col === col
+  const Icon = active
+    ? (state.dir === 'asc' ? ChevronUp : ChevronDown)
+    : ChevronsUpDown
+  return (
+    <th
+      onClick={() => onClick(col)}
+      style={{ ...thStyle, textAlign: align, cursor: 'pointer',
+               color: active ? 'var(--text-0)' : 'var(--text-3)', userSelect: 'none' }}
+    >
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
+                     justifyContent: align === 'left' ? 'flex-start' : 'flex-end',
+                     width: '100%' }}>
+        {children}
+        <Icon size={12} style={{ opacity: active ? 1 : 0.5 }} aria-hidden="true" />
+      </span>
+    </th>
   )
 }
 

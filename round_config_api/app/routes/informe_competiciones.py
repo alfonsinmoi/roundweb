@@ -206,12 +206,42 @@ def _upsert_ediciones(id_manager, ediciones):
     return n
 
 
-def _upsert_participaciones(id_manager, participaciones, map_mod, map_nombre):
+def _resolve_circuito_ondemand(id_manager, cid, headers, map_mod, map_nombre, cache_fallidos):
+    """Si `cid` no está en el catálogo local, lo pide a NoofitPro
+    (GET /circuitos/{cid}) y lo guarda en `competicion_circuito`. Rellena
+    los maps in-place. Idempotente por (id_manager, id_circuito).
+
+    `cache_fallidos` es un set con los cids que ya fallaron para no reintentar.
+    """
+    if not cid or cid in map_mod or cid in cache_fallidos:
+        return
+    try:
+        r = requests.get(f'{NF_BASE}/api/competicion/circuitos/{cid}',
+                         headers=headers, verify=False, timeout=10)
+        if r.status_code != 200 or not r.text:
+            cache_fallidos.add(cid)
+            return
+        c = r.json()
+        if not isinstance(c, dict):
+            cache_fallidos.add(cid)
+            return
+    except Exception:
+        cache_fallidos.add(cid)
+        return
+    _upsert_circuitos(id_manager, [c])
+    map_mod[int(cid)] = _modalidad(c)
+    map_nombre[int(cid)] = c.get('nombre') or ''
+
+
+def _upsert_participaciones(id_manager, participaciones, map_mod, map_nombre,
+                            headers=None, cache_fallidos=None):
     """UPSERT participaciones de un cliente. Devuelve nº guardadas."""
     if not participaciones:
         return 0
     import json
     n = 0
+    if cache_fallidos is None:
+        cache_fallidos = set()
     with get_conn() as conn, conn.cursor() as cur:
         for p in participaciones:
             pid = p.get('id')
@@ -219,7 +249,13 @@ def _upsert_participaciones(id_manager, participaciones, map_mod, map_nombre):
             if not pid or not cli:
                 continue
             cid = p.get('idCircuito')
+            if cid and headers is not None:
+                _resolve_circuito_ondemand(id_manager, int(cid), headers,
+                                           map_mod, map_nombre, cache_fallidos)
             mod = map_mod.get(int(cid)) if cid else None
+            # Fallback: participación con idEdicion es siempre 'oficial'
+            if not mod and p.get('idEdicion'):
+                mod = 'oficial'
             circ_nombre = map_nombre.get(int(cid)) if cid else None
             cur.execute("""
                 INSERT INTO competicion_participacion (
@@ -360,6 +396,7 @@ def _sync_all(id_manager, id_trainer=None, only_stale=True, desde=None, hasta=No
 
         n_part = 0
         errores = 0
+        cache_fallidos = set()
         for cid in cliente_ids:
             try:
                 r = requests.get(
@@ -371,7 +408,9 @@ def _sync_all(id_manager, id_trainer=None, only_stale=True, desde=None, hasta=No
                 if not isinstance(parts, list) or not parts:
                     continue
                 n_part += _upsert_participaciones(id_manager, parts,
-                                                  map_mod, map_nombre)
+                                                  map_mod, map_nombre,
+                                                  headers=H,
+                                                  cache_fallidos=cache_fallidos)
             except Exception as e:
                 errores += 1
                 if errores <= 3:
@@ -424,6 +463,13 @@ def informe_competiciones():
     modalidad = (request.args.get('modalidad') or '').strip().lower()
     if modalidad and modalidad not in ('oficial', 'mygym', 'wod'):
         modalidad = ''
+    sexo = (request.args.get('sexo') or '').strip().upper()
+    if sexo not in ('M', 'F'):
+        sexo = ''
+    try:
+        categoria_id = int(request.args.get('categoria') or 0) or None
+    except (TypeError, ValueError):
+        categoria_id = None
 
     where = ["p.id_manager = %s",
              "p.fecha_realizado >= %s",
@@ -444,6 +490,20 @@ def informe_competiciones():
     if modalidad:
         where.append("p.modalidad = %s")
         vals.append(modalidad)
+
+    if sexo:
+        where.append("p.sexo_snapshot = %s")
+        vals.append(sexo)
+
+    if categoria_id:
+        # categoría de cliente Round (tabla cliente_categoria). El campo
+        # cliente_idnoofit está como VARCHAR, id_cliente en la participación
+        # es BIGINT, por eso el CAST.
+        where.append("""p.id_cliente::text IN (
+            SELECT cliente_idnoofit FROM cliente_categoria
+             WHERE id_manager = %s AND categoria_id = %s
+        )""")
+        vals.extend([str(g.id_manager), categoria_id])
 
     base = f"FROM competicion_participacion p WHERE {' AND '.join(where)}"
 
@@ -496,6 +556,8 @@ def informe_competiciones():
     return jsonify({'ok': True,
                     'desde': desde.isoformat(), 'hasta': hasta.isoformat(),
                     'modalidad': modalidad or None,
+                    'sexo': sexo or None,
+                    'categoria_id': categoria_id,
                     'totales': totales,
                     'por_modalidad': por_modalidad,
                     'competiciones': competiciones,
