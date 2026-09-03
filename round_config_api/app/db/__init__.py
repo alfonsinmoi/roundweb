@@ -1134,6 +1134,90 @@ CREATE TABLE IF NOT EXISTS competicion_sync (
   n_participaciones INTEGER NOT NULL DEFAULT 0,
   ultima_falla      TEXT
 );
+ALTER TABLE competicion_sync ADD COLUMN IF NOT EXISTS n_circuitos INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE competicion_sync ADD COLUMN IF NOT EXISTS n_ediciones INTEGER NOT NULL DEFAULT 0;
+
+
+-- ─── COMPETICIONES v2 (sep 2026) — catálogos + participaciones reales ──
+-- Rediseño: la fuente correcta NO es `getSalasByManagerByRange` con flag
+-- `competicion` (0 salas la usan). Es `/api/competicion/*`:
+--   GET /circuitos/all      → catálogo local `competicion_circuito`
+--   GET /ediciones/all      → catálogo local `competicion_edicion`
+--   GET /participaciones/cliente/{id}  → filas en `competicion_participacion`
+-- Modalidad derivada del circuito: oficial=true→'oficial', wod=true→'wod',
+-- resto→'mygym'. `competicion_realizada` (arriba) queda deprecated y vacía.
+
+CREATE TABLE IF NOT EXISTS competicion_circuito (
+  id_manager       VARCHAR(64) NOT NULL,
+  id_circuito      BIGINT NOT NULL,               -- circuito.id
+  nombre           VARCHAR(240),
+  descripcion      TEXT,
+  oficial          BOOLEAN NOT NULL DEFAULT FALSE,
+  wod              BOOLEAN NOT NULL DEFAULT FALSE,
+  modalidad        VARCHAR(16),                   -- derivada: oficial|wod|mygym
+  dificultad       INTEGER,
+  num_estaciones   INTEGER,
+  rondas           INTEGER,
+  descanso_ronda   INTEGER,
+  fecha_creacion   TIMESTAMPTZ,
+  raw_data         JSONB,
+  synced_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id_circuito)
+);
+CREATE INDEX IF NOT EXISTS idx_comp_circ_modalidad
+  ON competicion_circuito(id_manager, modalidad);
+
+CREATE TABLE IF NOT EXISTS competicion_edicion (
+  id_manager       VARCHAR(64) NOT NULL,
+  id_edicion       BIGINT NOT NULL,               -- edicion.id
+  nombre           VARCHAR(240),
+  id_circuito      BIGINT,                        -- edicion.idCircuito
+  estado           VARCHAR(32),                   -- ABIERTA|CERRADA|PLANIFICADA
+  fecha_inicio     TIMESTAMPTZ,
+  fecha_fin        TIMESTAMPTZ,
+  fecha_cierre     TIMESTAMPTZ,
+  ambito           VARCHAR(64),
+  tipo             VARCHAR(64),
+  escala_por_sexo  BOOLEAN,
+  raw_data         JSONB,
+  synced_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, id_edicion)
+);
+CREATE INDEX IF NOT EXISTS idx_comp_edi_circuito
+  ON competicion_edicion(id_manager, id_circuito);
+
+CREATE TABLE IF NOT EXISTS competicion_participacion (
+  id_manager        VARCHAR(64) NOT NULL,
+  participacion_id  BIGINT NOT NULL,              -- participacion.id
+  id_cliente        BIGINT NOT NULL,              -- participacion.idCliente
+  cliente_nombre    VARCHAR(240),                 -- snapshot (nombreClienteSnapshot)
+  id_circuito       BIGINT,                       -- participacion.idCircuito
+  id_edicion        BIGINT,                       -- participacion.idEdicion (null si MyGym/WOD)
+  circuito_nombre   VARCHAR(240),                 -- snapshot para ranking sin join
+  modalidad         VARCHAR(16),                  -- oficial|mygym|wod (derivada del circuito)
+  fecha_realizado   TIMESTAMPTZ,                  -- participacion.fechaRealizado
+  completado        BOOLEAN NOT NULL DEFAULT FALSE,
+  publicado         BOOLEAN,
+  sexo_snapshot     VARCHAR(2),
+  edad_snapshot     INTEGER,
+  grupo_edad_snapshot VARCHAR(32),
+  categoria_snapshot INTEGER,
+  num_estaciones_snapshot INTEGER,
+  rondas_snapshot   INTEGER,
+  dificultad_snapshot INTEGER,
+  id_manager_snapshot VARCHAR(64),                -- idManagerSnapshot (NF)
+  raw_data          JSONB,
+  synced_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id_manager, participacion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_comp_part_fecha
+  ON competicion_participacion(id_manager, fecha_realizado DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_comp_part_cliente
+  ON competicion_participacion(id_manager, id_cliente);
+CREATE INDEX IF NOT EXISTS idx_comp_part_circuito
+  ON competicion_participacion(id_manager, id_circuito);
+CREATE INDEX IF NOT EXISTS idx_comp_part_modalidad
+  ON competicion_participacion(id_manager, modalidad, fecha_realizado DESC NULLS LAST);
 
 
 -- ─── Fase 4: multi-trainer con analytic accounts ────────────────────────

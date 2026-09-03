@@ -1,27 +1,30 @@
-"""Informe de COMPETICIONES realizadas por los clientes.
+"""Informe de COMPETICIONES realizadas por los clientes (v2 — sep 2026).
 
-Fuente: NoofitPro `POST /api/dispositivos/getSalasByManagerByRange` (instancias
-de clase en un rango de fechas). Una "competición" es una sala con
-`competicion=true`; sus participantes vienen embebidos en `sala.users[]`
-(cada uno con `idClient`, `nameClient`, `personalRank`, `globalRank`, `verify`).
+Fuente REAL en NoofitPro: el namespace `/api/competicion/*` (no las salas):
 
-Se cachea en local (`competicion_realizada`, 1 fila por participación) mediante
-un BARRIDO por ventana de fechas (no incremental por cliente, porque el dato es
-por sala). Idempotente por `(id_manager, participacion_id)` = `user.id` del join
-sala↔cliente. Estado del barrido en `competicion_sync` (1 fila por manager).
+  GET /api/competicion/ediciones/all      → ediciones oficiales (cada una con idCircuito)
+  GET /api/competicion/circuitos/all      → 42 circuitos (oficial + wod + mygym)
+                                            separables por flags `oficial` y `wod`.
+  GET /api/competicion/participaciones/cliente/{idCliente}  → fila por participación,
+                                            fuente autoritativa (una llamada por cliente).
 
-Reutiliza el login/token cacheado de estado_fisico (no pasa por noofit_client).
-Espejo del feature Ejercicios (routes/informe_ejercicios.py).
+Modalidad derivada del circuito:
+  circuito.oficial=true → 'oficial'
+  circuito.wod=true     → 'wod'
+  resto                 → 'mygym'
 
-Endpoints (bajo /informes y /api/informes):
-  GET  /competiciones                 → agregado (totales + ranking + top clientes)
-  GET  /competiciones/estado          → estado del barrido
-  GET  /competiciones/cliente/<idn>   → competiciones de un cliente (historial)
-  POST /competiciones/sync            → fuerza barrido (?force=1 bloqueante)
+Cache local en tres tablas:
+  competicion_circuito         (id_manager, id_circuito)
+  competicion_edicion          (id_manager, id_edicion)
+  competicion_participacion    (id_manager, participacion_id)
 
-NOTA (jul 2026): hoy Round no usa la modalidad competición (0 salas con el flag).
-El módulo queda listo: en cuanto se creen clases de competición en NoofitPro, el
-barrido las recogerá y el informe/ficha las mostrará. Estados vacíos por diseño.
+Estado del barrido en competicion_sync (1 fila por manager).
+
+La versión anterior (v1) consultaba `getSalasByManagerByRange` filtrando por
+un flag `sala.competicion=true` que en la práctica nadie usa (0 salas con el
+flag), por lo que el informe salía siempre vacío aunque hubiese cientos de
+participaciones registradas en el namespace `/competicion/*`. La tabla
+`competicion_realizada` de la v1 queda deprecated (0 filas).
 """
 import datetime as dt
 import logging
@@ -43,11 +46,9 @@ log = logging.getLogger(__name__)
 NF_BASE = 'https://pro.wiemspro.com/wiemspro'
 APP_VER = '1.8.39'
 
-# Ventana de barrido por defecto (días hacia atrás). Las competiciones, cuando
-# se activen, serán recientes; ampliable vía ?desde/?hasta en /sync.
-VENTANA_DIAS = 540
 SYNC_MASIVO_MIN_INTERVALO_SEG = 60
 SYNC_TTL_HORAS = 12
+PARTICIPACIONES_TIMEOUT = 15   # segundos por cliente
 
 _bg_lock = threading.Lock()
 _bg_running = set()
@@ -89,77 +90,212 @@ def _epoch_to_ts(v):
     return None
 
 
-def _iso(d):
-    return d.strftime('%Y-%m-%dT00:00:00+00:00')
+def _parse_dt(v):
+    """Parsea 'YYYY-MM-DD HH:MM:SS' o epoch ms a datetime UTC-aware."""
+    if not v:
+        return None
+    if isinstance(v, (int, float)):
+        return _epoch_to_ts(v)
+    if isinstance(v, str):
+        try:
+            # Formato NoofitPro: 'YYYY-MM-DD HH:MM:SS'
+            return dt.datetime.strptime(v[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=dt.timezone.utc)
+        except Exception:
+            return None
+    return None
 
 
-# ── Sync (barrido por rango) ──────────────────────────────────────────────────
+def _modalidad(circuito):
+    """Deriva la modalidad de un dict de circuito."""
+    if circuito.get('oficial'):
+        return 'oficial'
+    if circuito.get('wod'):
+        return 'wod'
+    return 'mygym'
 
-def _upsert_participaciones(id_manager, salas, id_trainer_filter=None):
-    """UPSERT de las participaciones de las salas tipo competición.
-    Devuelve (n_competiciones, n_participaciones)."""
-    n_comp = n_part = 0
+
+# ── Sync ────────────────────────────────────────────────────────────────────
+
+def _upsert_circuitos(id_manager, circuitos):
+    """UPSERT del catálogo de circuitos. Devuelve dict id→modalidad para el
+    barrido de participaciones."""
+    map_mod = {}
+    map_nombre = {}
+    if not circuitos:
+        return map_mod, map_nombre
+    import json
     with get_conn() as conn, conn.cursor() as cur:
-        for s in salas:
-            if not s.get('competicion'):
+        for c in circuitos:
+            cid = c.get('id')
+            if not cid:
                 continue
-            s_trainer = s.get('idTrainer')
-            if id_trainer_filter and str(s_trainer or '') != str(id_trainer_filter):
-                continue
-            n_comp += 1
-            sala_id = s.get('id')
-            nombre = (s.get('name') or '').strip()[:240] or '(competición)'
-            fecha = _epoch_to_ts(s.get('dateStart'))
-            for u in (s.get('users') or []):
-                pid = u.get('id')
-                cli = u.get('idClient')
-                if not pid or not cli:
-                    continue
-                cur.execute("""
-                    INSERT INTO competicion_realizada (
-                        id_manager, id_trainer, participacion_id, sala_id,
-                        cliente_idnoofit, cliente_nombre, competicion_nombre,
-                        fecha, personal_rank, global_rank, verify
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (id_manager, participacion_id) DO UPDATE SET
-                        id_trainer         = EXCLUDED.id_trainer,
-                        sala_id            = EXCLUDED.sala_id,
-                        cliente_idnoofit   = EXCLUDED.cliente_idnoofit,
-                        cliente_nombre     = EXCLUDED.cliente_nombre,
-                        competicion_nombre = EXCLUDED.competicion_nombre,
-                        fecha              = EXCLUDED.fecha,
-                        personal_rank      = EXCLUDED.personal_rank,
-                        global_rank        = EXCLUDED.global_rank,
-                        verify             = EXCLUDED.verify,
-                        synced_at          = NOW()
-                """, (str(id_manager), str(s_trainer or '') or None, int(pid),
-                      int(sala_id) if sala_id else None, int(cli),
-                      (u.get('nameClient') or '').strip()[:240] or None,
-                      nombre, fecha, u.get('personalRank'), u.get('globalRank'),
-                      bool(u.get('verify'))))
-                n_part += 1
-    return n_comp, n_part
+            mod = _modalidad(c)
+            map_mod[int(cid)] = mod
+            map_nombre[int(cid)] = c.get('nombre') or ''
+            cur.execute("""
+                INSERT INTO competicion_circuito (
+                    id_manager, id_circuito, nombre, descripcion,
+                    oficial, wod, modalidad, dificultad, num_estaciones,
+                    rondas, descanso_ronda, fecha_creacion, raw_data
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                ON CONFLICT (id_manager, id_circuito) DO UPDATE SET
+                    nombre           = EXCLUDED.nombre,
+                    descripcion      = EXCLUDED.descripcion,
+                    oficial          = EXCLUDED.oficial,
+                    wod              = EXCLUDED.wod,
+                    modalidad        = EXCLUDED.modalidad,
+                    dificultad       = EXCLUDED.dificultad,
+                    num_estaciones   = EXCLUDED.num_estaciones,
+                    rondas           = EXCLUDED.rondas,
+                    descanso_ronda   = EXCLUDED.descanso_ronda,
+                    fecha_creacion   = EXCLUDED.fecha_creacion,
+                    raw_data         = EXCLUDED.raw_data,
+                    synced_at        = NOW()
+            """, (str(id_manager), int(cid),
+                  (c.get('nombre') or '').strip()[:240] or None,
+                  c.get('descripcion') or None,
+                  bool(c.get('oficial')), bool(c.get('wod')), mod,
+                  c.get('dificultad'), c.get('numEstaciones'),
+                  c.get('rondas'), c.get('descansoRonda'),
+                  _parse_dt(c.get('fechaCreacion')),
+                  json.dumps(c, ensure_ascii=False)))
+    return map_mod, map_nombre
 
 
-def _marcar_sync(id_manager, *, n_comp=0, n_part=0, falla=None):
+def _upsert_ediciones(id_manager, ediciones):
+    """UPSERT del catálogo de ediciones. Devuelve nº guardadas."""
+    if not ediciones:
+        return 0
+    import json
+    n = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for e in ediciones:
+            eid = e.get('id')
+            if not eid:
+                continue
+            cur.execute("""
+                INSERT INTO competicion_edicion (
+                    id_manager, id_edicion, nombre, id_circuito, estado,
+                    fecha_inicio, fecha_fin, fecha_cierre, ambito, tipo,
+                    escala_por_sexo, raw_data
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                ON CONFLICT (id_manager, id_edicion) DO UPDATE SET
+                    nombre           = EXCLUDED.nombre,
+                    id_circuito      = EXCLUDED.id_circuito,
+                    estado           = EXCLUDED.estado,
+                    fecha_inicio     = EXCLUDED.fecha_inicio,
+                    fecha_fin        = EXCLUDED.fecha_fin,
+                    fecha_cierre     = EXCLUDED.fecha_cierre,
+                    ambito           = EXCLUDED.ambito,
+                    tipo             = EXCLUDED.tipo,
+                    escala_por_sexo  = EXCLUDED.escala_por_sexo,
+                    raw_data         = EXCLUDED.raw_data,
+                    synced_at        = NOW()
+            """, (str(id_manager), int(eid),
+                  (e.get('nombre') or '').strip()[:240] or None,
+                  int(e['idCircuito']) if e.get('idCircuito') else None,
+                  (e.get('estado') or '').strip()[:32] or None,
+                  _parse_dt(e.get('fechaInicio')),
+                  _parse_dt(e.get('fechaFin')),
+                  _parse_dt(e.get('fechaCierre')),
+                  (e.get('ambito') or '').strip()[:64] or None,
+                  (e.get('tipo') or '').strip()[:64] or None,
+                  bool(e.get('escalaPorSexo')) if e.get('escalaPorSexo') is not None else None,
+                  json.dumps(e, ensure_ascii=False)))
+            n += 1
+    return n
+
+
+def _upsert_participaciones(id_manager, participaciones, map_mod, map_nombre):
+    """UPSERT participaciones de un cliente. Devuelve nº guardadas."""
+    if not participaciones:
+        return 0
+    import json
+    n = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for p in participaciones:
+            pid = p.get('id')
+            cli = p.get('idCliente')
+            if not pid or not cli:
+                continue
+            cid = p.get('idCircuito')
+            mod = map_mod.get(int(cid)) if cid else None
+            circ_nombre = map_nombre.get(int(cid)) if cid else None
+            cur.execute("""
+                INSERT INTO competicion_participacion (
+                    id_manager, participacion_id, id_cliente, cliente_nombre,
+                    id_circuito, id_edicion, circuito_nombre, modalidad,
+                    fecha_realizado, completado, publicado,
+                    sexo_snapshot, edad_snapshot, grupo_edad_snapshot,
+                    categoria_snapshot, num_estaciones_snapshot,
+                    rondas_snapshot, dificultad_snapshot, id_manager_snapshot,
+                    raw_data
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                ON CONFLICT (id_manager, participacion_id) DO UPDATE SET
+                    id_cliente             = EXCLUDED.id_cliente,
+                    cliente_nombre         = EXCLUDED.cliente_nombre,
+                    id_circuito            = EXCLUDED.id_circuito,
+                    id_edicion             = EXCLUDED.id_edicion,
+                    circuito_nombre        = EXCLUDED.circuito_nombre,
+                    modalidad              = EXCLUDED.modalidad,
+                    fecha_realizado        = EXCLUDED.fecha_realizado,
+                    completado             = EXCLUDED.completado,
+                    publicado              = EXCLUDED.publicado,
+                    sexo_snapshot          = EXCLUDED.sexo_snapshot,
+                    edad_snapshot          = EXCLUDED.edad_snapshot,
+                    grupo_edad_snapshot    = EXCLUDED.grupo_edad_snapshot,
+                    categoria_snapshot     = EXCLUDED.categoria_snapshot,
+                    num_estaciones_snapshot= EXCLUDED.num_estaciones_snapshot,
+                    rondas_snapshot        = EXCLUDED.rondas_snapshot,
+                    dificultad_snapshot    = EXCLUDED.dificultad_snapshot,
+                    id_manager_snapshot    = EXCLUDED.id_manager_snapshot,
+                    raw_data               = EXCLUDED.raw_data,
+                    synced_at              = NOW()
+            """, (str(id_manager), int(pid), int(cli),
+                  (p.get('nombreClienteSnapshot') or '').strip()[:240] or None,
+                  int(cid) if cid else None,
+                  int(p['idEdicion']) if p.get('idEdicion') else None,
+                  (circ_nombre or '')[:240] or None,
+                  mod,
+                  _parse_dt(p.get('fechaRealizado')),
+                  bool(p.get('completado')),
+                  bool(p.get('publicado')) if p.get('publicado') is not None else None,
+                  (p.get('sexoSnapshot') or '')[:2] or None,
+                  p.get('edadSnapshot'),
+                  (p.get('grupoEdadSnapshot') or '').strip()[:32] or None,
+                  p.get('categoriaSnapshot'),
+                  p.get('numEstacionesSnapshot'),
+                  p.get('rondasSnapshot'),
+                  p.get('dificultadSnapshot'),
+                  str(p.get('idManagerSnapshot') or '') or None,
+                  json.dumps(p, ensure_ascii=False)))
+            n += 1
+    return n
+
+
+def _marcar_sync(id_manager, *, n_circ=0, n_edi=0, n_comp=0, n_part=0, falla=None):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             INSERT INTO competicion_sync
-                (id_manager, synced_at, n_competiciones, n_participaciones, ultima_falla)
-            VALUES (%s, NOW(), %s, %s, %s)
+                (id_manager, synced_at, n_circuitos, n_ediciones,
+                 n_competiciones, n_participaciones, ultima_falla)
+            VALUES (%s, NOW(), %s, %s, %s, %s, %s)
             ON CONFLICT (id_manager) DO UPDATE SET
                 synced_at         = NOW(),
+                n_circuitos       = EXCLUDED.n_circuitos,
+                n_ediciones       = EXCLUDED.n_ediciones,
                 n_competiciones   = EXCLUDED.n_competiciones,
                 n_participaciones = EXCLUDED.n_participaciones,
                 ultima_falla      = EXCLUDED.ultima_falla
-        """, (str(id_manager), n_comp, n_part,
+        """, (str(id_manager), n_circ, n_edi, n_comp, n_part,
               (str(falla)[:300] if falla else None)))
 
 
 def _sync_all(id_manager, id_trainer=None, only_stale=True, desde=None, hasta=None):
-    """Barre las salas del grupo en la ventana [desde, hasta] y persiste las
-    participaciones de las que son competición. getSalasByManagerByRange
-    devuelve TODO el grupo con un solo login (basta la 1ª credencial)."""
+    """Barre circuitos + ediciones + participaciones. Los rangos `desde/hasta`
+    se ignoran (el endpoint /participaciones/cliente/{id} no acepta ventana);
+    se persisten TODAS las participaciones históricas del cliente y luego el
+    endpoint agregado filtra en SQL."""
     key = (str(id_manager), str(id_trainer or ''))
     now = time.time()
     with _bg_lock:
@@ -170,8 +306,6 @@ def _sync_all(id_manager, id_trainer=None, only_stale=True, desde=None, hasta=No
             return {'skipped': True, 'reason': 'too_recent'}
         _bg_running.add(key)
     try:
-        hasta = hasta or dt.date.today()
-        desde = desde or (hasta - dt.timedelta(days=VENTANA_DIAS))
         creds = list(_trainers_creds(id_manager, None))
         if not creds:
             _marcar_sync(id_manager, falla='sin_credenciales_trainer')
@@ -183,26 +317,83 @@ def _sync_all(id_manager, id_trainer=None, only_stale=True, desde=None, hasta=No
             _marcar_sync(id_manager, falla=e)
             log.warning(f'competiciones login manager={id_manager}: {e}')
             return {'ok': False, 'error': 'login'}
+
+        H = _headers(tok, mgr_h)
+
+        # 1) Circuitos
         try:
-            r = requests.post(f'{NF_BASE}/api/dispositivos/getSalasByManagerByRange',
-                              json={'fechaDesde': _iso(desde), 'fechaHasta': _iso(hasta)},
-                              headers=_headers(tok, mgr_h), verify=False, timeout=60)
-            salas = (r.json() if r.text else {}).get('salas') or []
+            r = requests.get(f'{NF_BASE}/api/competicion/circuitos/all',
+                             headers=H, verify=False, timeout=30)
+            circuitos = r.json() if r.text else []
+            if not isinstance(circuitos, list):
+                circuitos = []
         except Exception as e:
-            _marcar_sync(id_manager, falla=e)
-            log.warning(f'competiciones getSalas manager={id_manager}: {e}')
-            return {'ok': False, 'error': 'fetch'}
-        n_comp, n_part = _upsert_participaciones(id_manager, salas, id_trainer)
-        # totales acumulados en BD para el estado
+            _marcar_sync(id_manager, falla=f'circuitos:{e}')
+            return {'ok': False, 'error': 'fetch_circuitos'}
+        map_mod, map_nombre = _upsert_circuitos(id_manager, circuitos)
+        n_circ = len(circuitos)
+
+        # 2) Ediciones
+        try:
+            r = requests.get(f'{NF_BASE}/api/competicion/ediciones/all',
+                             headers=H, verify=False, timeout=30)
+            ediciones = r.json() if r.text else []
+            if not isinstance(ediciones, list):
+                ediciones = []
+        except Exception as e:
+            log.warning(f'competiciones ediciones/all manager={id_manager}: {e}')
+            ediciones = []
+        n_edi = _upsert_ediciones(id_manager, ediciones)
+
+        # 3) Participaciones: barrer todos los clientes del manager (o del
+        # trainer si se filtró). El endpoint por cliente devuelve el histórico
+        # completo — el rango se aplica en SQL al leer.
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""SELECT COUNT(DISTINCT sala_id) c, COUNT(*) p
-                             FROM competicion_realizada WHERE id_manager=%s""",
+            if id_trainer:
+                cur.execute("SELECT id FROM cliente_cache "
+                            "WHERE id_manager=%s AND id_trainer::text=%s",
+                            (str(id_manager), str(id_trainer)))
+            else:
+                cur.execute("SELECT id FROM cliente_cache WHERE id_manager=%s",
+                            (str(id_manager),))
+            cliente_ids = [r['id'] for r in cur.fetchall()]
+
+        n_part = 0
+        errores = 0
+        for cid in cliente_ids:
+            try:
+                r = requests.get(
+                    f'{NF_BASE}/api/competicion/participaciones/cliente/{cid}',
+                    headers=H, verify=False, timeout=PARTICIPACIONES_TIMEOUT)
+                if r.status_code != 200:
+                    continue
+                parts = r.json() if r.text else []
+                if not isinstance(parts, list) or not parts:
+                    continue
+                n_part += _upsert_participaciones(id_manager, parts,
+                                                  map_mod, map_nombre)
+            except Exception as e:
+                errores += 1
+                if errores <= 3:
+                    log.warning(f'competiciones part cliente={cid} mgr={id_manager}: {e}')
+                if errores > 20:
+                    break
+
+        # Contadores totales acumulados para el estado
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT COUNT(DISTINCT id_circuito) c, COUNT(*) p
+                             FROM competicion_participacion
+                            WHERE id_manager=%s""",
                         (str(id_manager),))
             row = cur.fetchone() or {}
-        _marcar_sync(id_manager, n_comp=row.get('c') or 0, n_part=row.get('p') or 0)
-        return {'ok': True, 'competiciones_barridas': n_comp,
-                'participaciones': n_part,
-                'ventana': [desde.isoformat(), hasta.isoformat()]}
+        _marcar_sync(id_manager, n_circ=n_circ, n_edi=n_edi,
+                     n_comp=row.get('c') or 0, n_part=row.get('p') or 0)
+        return {'ok': True,
+                'circuitos_barridos': n_circ,
+                'ediciones_barridas': n_edi,
+                'clientes_barridos': len(cliente_ids),
+                'participaciones_upsert': n_part,
+                'errores_por_cliente': errores}
     finally:
         with _bg_lock:
             _bg_running.discard(key)
@@ -230,49 +421,84 @@ def informe_competiciones():
     desde = _parse_fecha(request.args.get('desde'), hoy - dt.timedelta(days=365))
     hasta = _parse_fecha(request.args.get('hasta'), hoy)
     limit = min(int(request.args.get('limit', 100) or 100), 500)
+    modalidad = (request.args.get('modalidad') or '').strip().lower()
+    if modalidad and modalidad not in ('oficial', 'mygym', 'wod'):
+        modalidad = ''
 
-    where = ["cr.id_manager = %s", "cr.fecha >= %s", "cr.fecha < %s::date + 1"]
+    where = ["p.id_manager = %s",
+             "p.fecha_realizado >= %s",
+             "p.fecha_realizado < %s::date + 1"]
     vals = [str(g.id_manager), desde, hasta]
 
     id_trainer, forbidden = resolve_trainer_target(request.args.get('id_trainer'))
     if forbidden:
         return jsonify({'ok': False, 'error': 'trainer_forbidden'}), 403
     if id_trainer:
-        where.append("cr.id_trainer = %s")
-        vals.append(str(id_trainer))
+        # participacion no tiene id_trainer; filtramos por clientes del trainer
+        where.append("""p.id_cliente IN (
+            SELECT id FROM cliente_cache
+             WHERE id_manager = %s AND id_trainer::text = %s
+        )""")
+        vals.extend([str(g.id_manager), str(id_trainer)])
 
-    base = f"FROM competicion_realizada cr WHERE {' AND '.join(where)}"
+    if modalidad:
+        where.append("p.modalidad = %s")
+        vals.append(modalidad)
+
+    base = f"FROM competicion_participacion p WHERE {' AND '.join(where)}"
+
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(f"""SELECT COUNT(DISTINCT cr.sala_id) AS competiciones,
+        # Totales globales del filtro
+        cur.execute(f"""SELECT COUNT(DISTINCT p.id_circuito) AS competiciones,
                                COUNT(*) AS participaciones,
-                               COUNT(DISTINCT cr.cliente_idnoofit) AS clientes
+                               COUNT(DISTINCT p.id_cliente) AS clientes
                         {base}""", vals)
         totales = dict(cur.fetchone() or {})
-        # Ranking de competiciones (cada sala) por nº de participantes
-        cur.execute(f"""SELECT cr.sala_id, MAX(cr.competicion_nombre) AS nombre,
-                               MAX(cr.fecha) AS fecha,
-                               COUNT(*) AS participantes
+
+        # Totales por modalidad
+        cur.execute(f"""SELECT p.modalidad,
+                               COUNT(DISTINCT p.id_circuito) AS competiciones,
+                               COUNT(*) AS participaciones,
+                               COUNT(DISTINCT p.id_cliente) AS clientes
                         {base}
-                        GROUP BY cr.sala_id
+                        GROUP BY p.modalidad""", vals)
+        por_modalidad = [dict(r) for r in cur.fetchall()]
+
+        # Ranking de competiciones (cada circuito) por participaciones
+        cur.execute(f"""SELECT p.id_circuito,
+                               MAX(p.circuito_nombre) AS nombre,
+                               MAX(p.modalidad)       AS modalidad,
+                               MAX(p.fecha_realizado) AS fecha,
+                               COUNT(*)               AS participantes,
+                               COUNT(DISTINCT p.id_cliente) AS clientes_distintos
+                        {base}
+                        GROUP BY p.id_circuito
                         ORDER BY fecha DESC NULLS LAST
                         LIMIT %s""", vals + [limit])
         competiciones = [dict(r) for r in cur.fetchall()]
-        # Top clientes por nº de competiciones
-        cur.execute(f"""SELECT cr.cliente_idnoofit,
-                               MAX(cr.cliente_nombre) AS nombre,
-                               COUNT(DISTINCT cr.sala_id) AS competiciones,
-                               MIN(cr.personal_rank) AS mejor_puesto
+
+        # Top clientes por nº de circuitos participados
+        cur.execute(f"""SELECT p.id_cliente,
+                               MAX(p.cliente_nombre) AS nombre,
+                               COUNT(DISTINCT p.id_circuito) AS competiciones,
+                               COUNT(*)                       AS participaciones
                         {base}
-                        GROUP BY cr.cliente_idnoofit
-                        ORDER BY competiciones DESC
+                        GROUP BY p.id_cliente
+                        ORDER BY competiciones DESC, participaciones DESC
                         LIMIT %s""", vals + [limit])
         top_clientes = [dict(r) for r in cur.fetchall()]
+
     for coll in (competiciones,):
         for r in coll:
             if isinstance(r.get('fecha'), dt.datetime):
                 r['fecha'] = r['fecha'].isoformat()
-    return jsonify({'ok': True, 'desde': desde.isoformat(), 'hasta': hasta.isoformat(),
-                    'totales': totales, 'competiciones': competiciones,
+
+    return jsonify({'ok': True,
+                    'desde': desde.isoformat(), 'hasta': hasta.isoformat(),
+                    'modalidad': modalidad or None,
+                    'totales': totales,
+                    'por_modalidad': por_modalidad,
+                    'competiciones': competiciones,
                     'top_clientes': top_clientes})
 
 
@@ -281,13 +507,27 @@ def informe_competiciones():
 def estado_sync():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""SELECT COUNT(*) AS filas,
-                              COUNT(DISTINCT sala_id) AS competiciones,
-                              COUNT(DISTINCT cliente_idnoofit) AS clientes,
-                              MIN(fecha) AS fecha_min, MAX(fecha) AS fecha_max
-                         FROM competicion_realizada WHERE id_manager=%s""",
+                              COUNT(DISTINCT id_circuito) AS competiciones,
+                              COUNT(DISTINCT id_cliente)  AS clientes,
+                              MIN(fecha_realizado) AS fecha_min,
+                              MAX(fecha_realizado) AS fecha_max
+                         FROM competicion_participacion
+                        WHERE id_manager=%s""",
                     (str(g.id_manager),))
         datos = dict(cur.fetchone() or {})
-        cur.execute("""SELECT synced_at AS ultimo_sync, ultima_falla
+        cur.execute("""SELECT modalidad,
+                              COUNT(DISTINCT id_circuito) AS competiciones,
+                              COUNT(*) AS participaciones,
+                              COUNT(DISTINCT id_cliente) AS clientes
+                         FROM competicion_participacion
+                        WHERE id_manager=%s
+                        GROUP BY modalidad""",
+                    (str(g.id_manager),))
+        por_modalidad = [dict(r) for r in cur.fetchall()]
+        cur.execute("""SELECT synced_at AS ultimo_sync,
+                              n_circuitos, n_ediciones,
+                              n_competiciones, n_participaciones,
+                              ultima_falla
                          FROM competicion_sync WHERE id_manager=%s""",
                     (str(g.id_manager),))
         sync = dict(cur.fetchone() or {})
@@ -295,7 +535,8 @@ def estado_sync():
         for k, v in list(d.items()):
             if isinstance(v, dt.datetime):
                 d[k] = v.isoformat()
-    return jsonify({'ok': True, **datos, **sync})
+    return jsonify({'ok': True, 'por_modalidad': por_modalidad,
+                    **datos, **sync})
 
 
 @bp.route('/competiciones/cliente/<int:idnoofit>', methods=['GET'])
@@ -304,16 +545,20 @@ def competiciones_cliente(idnoofit):
     """Historial de competiciones de un cliente (lee BD; dispara barrido bg si stale)."""
     _sync_background(g.id_manager, g.id_trainer)
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT sala_id, competicion_nombre, fecha,
-                              personal_rank, global_rank, verify, id_trainer
-                         FROM competicion_realizada
-                        WHERE id_manager=%s AND cliente_idnoofit=%s
-                        ORDER BY fecha DESC NULLS LAST""",
+        cur.execute("""SELECT participacion_id, id_circuito, id_edicion,
+                              circuito_nombre, modalidad,
+                              fecha_realizado, completado,
+                              sexo_snapshot, edad_snapshot,
+                              grupo_edad_snapshot, categoria_snapshot
+                         FROM competicion_participacion
+                        WHERE id_manager=%s AND id_cliente=%s
+                        ORDER BY fecha_realizado DESC NULLS LAST""",
                     (str(g.id_manager), int(idnoofit)))
         rows = [dict(r) for r in cur.fetchall()]
     for r in rows:
-        if isinstance(r.get('fecha'), dt.datetime):
-            r['fecha'] = r['fecha'].isoformat()
+        for k in ('fecha_realizado',):
+            if isinstance(r.get(k), dt.datetime):
+                r[k] = r[k].isoformat()
     return jsonify({'ok': True, 'competiciones': rows, 'total': len(rows),
                     'fuente': 'local'})
 
@@ -322,13 +567,10 @@ def competiciones_cliente(idnoofit):
 @either_auth
 def forzar_sync():
     force = (request.args.get('force') or '') in ('1', 'true')
-    desde = _parse_fecha(request.args.get('desde'), None)
-    hasta = _parse_fecha(request.args.get('hasta'), None)
-    log_action(actor_from_request(), 'competicion_realizada', 'sync',
-               resumen=f'Sync informe competiciones (force={force})')
+    log_action(actor_from_request(), 'competicion_participacion', 'sync',
+               resumen=f'Sync informe competiciones v2 (force={force})')
     if force:
-        res = _sync_all(g.id_manager, g.id_trainer, only_stale=False,
-                        desde=desde, hasta=hasta)
+        res = _sync_all(g.id_manager, g.id_trainer, only_stale=False)
         return jsonify({'ok': True, **(res or {})})
     _sync_background(g.id_manager, g.id_trainer)
     return jsonify({'ok': True, 'background': True})
