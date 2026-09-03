@@ -486,7 +486,7 @@ export const informeEjerciciosSync = (identity, force = false) =>
 // sincronizada desde NoofitPro (clases de tipo competición).
 export const informeCompeticiones = (identity, params = {}) => {
   const qs = new URLSearchParams()
-  for (const k of ['desde', 'hasta', 'id_trainer', 'limit']) {
+  for (const k of ['desde', 'hasta', 'id_trainer', 'limit', 'modalidad']) {
     if (params[k]) qs.set(k, params[k])
   }
   const suffix = qs.toString() ? `?${qs}` : ''
