@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from collections import Counter
 from flask import Blueprint, request, jsonify, g, send_file
 
-from ..auth import auth_required
+from ..auth import auth_required, resolve_trainer_target
 from ..db import get_conn
 from .. import noofit_client as nc
 
@@ -47,22 +47,43 @@ def _trainers_de_manager(id_manager):
     return out
 
 
-def _calcular_fantasmas(id_manager, dias):
-    """Calcula el diff en vivo. Devuelve dict con totales + lista de fantasmas."""
+def _calcular_fantasmas(id_manager, dias, id_trainer=None):
+    """Calcula el diff en vivo. Devuelve dict con totales + lista de fantasmas.
+
+    Si se pasa `id_trainer` (str/int), tanto la cache local como las reservas
+    NoofitPro se restringen a ese centro (útil para el manager que quiere
+    ver el informe sólo de uno de sus trainers)."""
     id_manager = str(id_manager)
+    id_trainer_s = str(id_trainer) if id_trainer else None
+    try:
+        id_trainer_i = int(id_trainer_s) if id_trainer_s else None
+    except (TypeError, ValueError):
+        id_trainer_i = None
 
     # 1) Cache local — qué clientes vemos
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, raw_data->>'name' AS nombre, raw_data->>'surname' AS apellidos, "
-            "raw_data->>'email' AS email, raw_data->>'dni' AS dni "
-            "FROM cliente_cache WHERE id_manager=%s",
-            (id_manager,))
+        if id_trainer_s:
+            cur.execute(
+                "SELECT id, raw_data->>'name' AS nombre, raw_data->>'surname' AS apellidos, "
+                "raw_data->>'email' AS email, raw_data->>'dni' AS dni "
+                "FROM cliente_cache "
+                "WHERE id_manager=%s AND id_trainer::text=%s",
+                (id_manager, id_trainer_s))
+        else:
+            cur.execute(
+                "SELECT id, raw_data->>'name' AS nombre, raw_data->>'surname' AS apellidos, "
+                "raw_data->>'email' AS email, raw_data->>'dni' AS dni "
+                "FROM cliente_cache WHERE id_manager=%s",
+                (id_manager,))
         cache_rows = cur.fetchall()
     cache_ids = {int(r['id']) for r in cache_rows}
 
-    # 2) Trainers de este manager (para filtrar las salas)
-    trainers = _trainers_de_manager(id_manager)
+    # 2) Trainers de este manager (para filtrar las salas). Si se pide un
+    # trainer concreto, sólo ese; si no, todos los del manager.
+    if id_trainer_i is not None:
+        trainers = {id_trainer_i}
+    else:
+        trainers = _trainers_de_manager(id_manager)
 
     # 3) Reservas confirmadas EN VIVO (NoofitPro)
     hoy = date.today()
@@ -129,6 +150,7 @@ def _calcular_fantasmas(id_manager, dias):
 
     return {
         'id_manager': id_manager,
+        'id_trainer': id_trainer_s,
         'dias': int(dias),
         'cache_total': len(cache_ids),
         'reservas_total': len(reservas_mgr),
@@ -148,8 +170,11 @@ def reservas_sin_cliente():
     dias = request.args.get('dias', '90')
     try: dias = max(1, min(365, int(dias)))
     except ValueError: dias = 90
+    id_trainer, forbidden = resolve_trainer_target(request.args.get('id_trainer'))
+    if forbidden:
+        return jsonify({'ok': False, 'error': 'trainer_forbidden'}), 403
     try:
-        data = _calcular_fantasmas(g.id_manager, dias)
+        data = _calcular_fantasmas(g.id_manager, dias, id_trainer=id_trainer)
         return jsonify({'ok': True, **data})
     except Exception as e:
         log.exception('reservas_sin_cliente')
@@ -168,8 +193,11 @@ def reservas_sin_cliente_excel():
     dias = request.args.get('dias', '90')
     try: dias = max(1, min(365, int(dias)))
     except ValueError: dias = 90
+    id_trainer, forbidden = resolve_trainer_target(request.args.get('id_trainer'))
+    if forbidden:
+        return jsonify({'ok': False, 'error': 'trainer_forbidden'}), 403
 
-    data = _calcular_fantasmas(g.id_manager, dias)
+    data = _calcular_fantasmas(g.id_manager, dias, id_trainer=id_trainer)
 
     wb = Workbook()
     ws = wb.active

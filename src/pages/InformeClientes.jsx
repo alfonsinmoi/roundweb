@@ -13,6 +13,7 @@ import {
 import { Card, Btn, Badge, SectionTitle } from '../components/UI'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
+import CentroSelector from '../components/CentroSelector'
 import { getRoundIdentity, centrosList } from '../utils/configApi'
 import { coincideTexto, igualTexto } from '../utils/texto'
 
@@ -193,6 +194,9 @@ export default function InformeClientes() {
       </div>
 
       <Card style={{ padding: 18, marginBottom: 16 }}>
+        <CentroSelector value={filtroCentro} onChange={setFiltroCentro}
+                        style={{ marginBottom: 12, paddingBottom: 12,
+                                 borderBottom: '1px solid var(--line)' }} />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, alignItems: 'end' }}>
           <Field label="Buscar">
             <div style={{ position: 'relative' }}>
@@ -203,16 +207,8 @@ export default function InformeClientes() {
                      style={{ ...inputStyle, paddingLeft: 32 }} />
             </div>
           </Field>
-          <Field label="Centro (trainer)">
-            <select value={filtroCentro} onChange={e => setFiltroCentro(e.target.value)} style={inputStyle}>
-              <option value="">— Todos los centros —</option>
-              {centros.map(c => (
-                <option key={c.id_trainer} value={c.id_trainer}>
-                  {c.nombre_centro || `Centro ${c.id_trainer}`}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {/* Selector de centro: para trainers viene fijado a su centro;
+              para el manager se pinta como chips arriba (CentroSelector). */}
           <Field label="Estado">
             <select value={solo} onChange={e => setSolo(e.target.value)} style={inputStyle}>
               <option value="activos">Solo activos</option>

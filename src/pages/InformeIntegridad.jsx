@@ -9,6 +9,7 @@ import { useToast } from '../components/Toast'
 import { useAuth } from '../contexts/AuthContext'
 import { getRoundIdentity } from '../utils/configApi'
 import { coincideTexto } from '../utils/texto'
+import CentroSelector from '../components/CentroSelector'
 
 const TOKEN = import.meta.env.VITE_CONFIG_API_TOKEN || ''
 
@@ -21,6 +22,7 @@ export default function InformeIntegridad() {
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [tipoFiltro, setTipoFiltro] = useState('todos') // todos|verdadero_fantasma|cross_manager
+  const [idTrainer, setIdTrainer] = useState('')
 
   function headers() {
     const h = { 'X-Round-Token': TOKEN }
@@ -33,17 +35,19 @@ export default function InformeIntegridad() {
     if (!identity?.managerId) return
     setLoading(true)
     try {
-      const r = await fetch(`/api/integridad/reservas-sin-cliente?dias=${dias}`, { headers: headers() })
+      const qs = idTrainer ? `&id_trainer=${encodeURIComponent(idTrainer)}` : ''
+      const r = await fetch(`/api/integridad/reservas-sin-cliente?dias=${dias}${qs}`, { headers: headers() })
       const j = await r.json()
       if (!j.ok) throw new Error(j.error || 'Error')
       setData(j)
     } catch (e) { toast.error(e.message) }
     setLoading(false)
   }
-  useEffect(() => { reload() }, [identity?.managerId, identity?.trainerId])
+  useEffect(() => { reload() }, [identity?.managerId, identity?.trainerId, idTrainer])
 
   function descargarExcel() {
-    const url = `/api/integridad/reservas-sin-cliente/excel?dias=${dias}`
+    const qs = idTrainer ? `&id_trainer=${encodeURIComponent(idTrainer)}` : ''
+    const url = `/api/integridad/reservas-sin-cliente/excel?dias=${dias}${qs}`
     // Para enviar headers no podemos abrir en pestaña simple. Hacemos fetch + blob.
     fetch(url, { headers: headers() })
       .then(r => r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`)))
@@ -98,6 +102,10 @@ export default function InformeIntegridad() {
           </Btn>
         </div>
       </div>
+
+      {/* Filtro por centro (solo se pinta si es manager sin impersonar) */}
+      <CentroSelector value={idTrainer} onChange={setIdTrainer}
+                      style={{ marginBottom: 14 }} />
 
       {/* Resumen */}
       {data && (
