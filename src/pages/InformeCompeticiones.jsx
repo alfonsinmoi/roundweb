@@ -11,6 +11,10 @@ import {
   Award, Loader2, RefreshCw, Users, Trophy, CalendarDays,
   ChevronUp, ChevronDown, ChevronsUpDown, Tag, VenusAndMars,
 } from 'lucide-react'
+import {
+  ResponsiveContainer, LineChart, Line, BarChart, Bar,
+  XAxis, YAxis, Tooltip, CartesianGrid,
+} from 'recharts'
 import { Card, Btn } from '../components/UI'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
@@ -293,28 +297,130 @@ export default function InformeCompeticiones() {
             <Loader2 size={22} className="animate-spin" style={{ color: 'var(--green)' }} />
           </div>
         </Card>
-      ) : totalComp === 0 ? (
-        <Card style={{ padding: 40, textAlign: 'center' }}>
-          <div style={{ width: 48, height: 48, borderRadius: 14, margin: '0 auto 14px',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        background: 'var(--green-bg)' }}>
-            <Trophy size={22} style={{ color: 'var(--green)' }} aria-hidden="true" />
-          </div>
-          <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-0)', margin: 0 }}>
-            {modalidad
-              ? `Sin competiciones de tipo ${MOD_LABEL[modalidad]} en el periodo`
-              : 'Aún no hay competiciones'}
-          </p>
-          <p style={{ fontSize: 13, color: 'var(--text-2)', margin: '8px auto 0', maxWidth: 460 }}>
-            {modalidad
-              ? 'Prueba a ampliar el rango de fechas o cambiar de modalidad.'
-              : (estado && !estado.filas
-                  ? 'Se registrarán automáticamente cuando se creen competiciones (Oficial, MyGym o WOD) en NoofitPro.'
-                  : 'No hay competiciones en el periodo seleccionado.')}
-          </p>
-        </Card>
-      ) : (
+      ) : totalComp === 0 ? (() => {
+        const filtros = []
+        if (modalidad) filtros.push(`modalidad ${MOD_LABEL[modalidad]}`)
+        if (sexo) filtros.push(sexo === 'M' ? 'hombres' : 'mujeres')
+        if (categoriaId) {
+          const nom = categorias.find(c => String(c.id) === String(categoriaId))?.nombre
+          filtros.push(`categoría ${nom || categoriaId}`)
+        }
+        const hayFiltro = filtros.length > 0
+        const sinDatosGlobales = estado && !estado.filas
+        return (
+          <Card style={{ padding: 40, textAlign: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 14, margin: '0 auto 14px',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          background: 'var(--green-bg)' }}>
+              <Trophy size={22} style={{ color: 'var(--green)' }} aria-hidden="true" />
+            </div>
+            <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-0)', margin: 0 }}>
+              {hayFiltro
+                ? `Sin competiciones para ${filtros.join(' · ')} en el periodo`
+                : 'Aún no hay competiciones'}
+            </p>
+            <p style={{ fontSize: 13, color: 'var(--text-2)', margin: '8px auto 0', maxWidth: 480 }}>
+              {hayFiltro
+                ? 'Prueba a ampliar el rango de fechas, cambiar de modalidad o quitar algún filtro (sexo / categoría).'
+                : (sinDatosGlobales
+                    ? 'Se registrarán automáticamente cuando se creen competiciones (Oficial, MyGym o WOD) en NoofitPro.'
+                    : 'No hay competiciones en el periodo seleccionado.')}
+            </p>
+            {hayFiltro && (sexo || categoriaId) && (
+              <Btn size="sm" variant="secondary" style={{ marginTop: 14 }}
+                   onClick={() => { setSexo(''); setCategoriaId('') }}>
+                Limpiar sexo y categoría
+              </Btn>
+            )}
+          </Card>
+        )
+      })() : (
         <div style={{ display: 'grid', gap: 16 }}>
+          {/* ── Gráficos ──────────────────────────────────────────────── */}
+          <div style={{ display: 'grid', gap: 16,
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
+            <Card style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
+                            fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)',
+                            fontSize: 15 }}>
+                Participaciones por día
+                <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400,
+                               marginLeft: 8 }}>
+                  serie diaria en el periodo
+                </span>
+              </div>
+              <div style={{ padding: 12, height: 260 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data?.serie_diaria || []}
+                             margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                    <XAxis
+                      dataKey="dia"
+                      tickFormatter={(v) => v?.slice(5) || ''}
+                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                      minTickGap={20}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                      width={36}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
+                                      borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: 'var(--text-0)' }}
+                      labelFormatter={(v) => formatDate(v)}
+                    />
+                    <Line type="monotone" dataKey="participaciones"
+                          stroke="var(--green)" strokeWidth={2}
+                          dot={false} name="Participaciones" />
+                    <Line type="monotone" dataKey="clientes"
+                          stroke="#5b9cf6" strokeWidth={2}
+                          strokeDasharray="4 3" dot={false} name="Clientes" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+
+            <Card style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
+                            fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)',
+                            fontSize: 15 }}>
+                Participaciones por día de la semana
+                <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400,
+                               marginLeft: 8 }}>
+                  acumulado del periodo
+                </span>
+              </div>
+              <div style={{ padding: 12, height: 260 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={data?.por_dia_semana || []}
+                            margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                    <XAxis
+                      dataKey="nombre"
+                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
+                      width={36}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
+                                      borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: 'var(--text-0)' }}
+                      cursor={{ fill: 'rgba(45,212,168,0.08)' }}
+                    />
+                    <Bar dataKey="participaciones"
+                         fill="var(--green)" radius={[6, 6, 0, 0]}
+                         name="Participaciones" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </Card>
+          </div>
+
           {/* ── Tabla de competiciones ────────────────────────────────── */}
           <Card style={{ padding: 0, overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',

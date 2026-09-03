@@ -548,10 +548,62 @@ def informe_competiciones():
                         LIMIT %s""", vals + [limit])
         top_clientes = [dict(r) for r in cur.fetchall()]
 
+        # Serie diaria (día → participaciones + clientes distintos)
+        cur.execute(f"""SELECT DATE(p.fecha_realizado) AS dia,
+                               COUNT(*) AS participaciones,
+                               COUNT(DISTINCT p.id_cliente) AS clientes
+                        {base}
+                        GROUP BY DATE(p.fecha_realizado)
+                        ORDER BY dia""", vals)
+        serie_diaria_raw = [dict(r) for r in cur.fetchall()]
+
+        # Por día de la semana (DOW en Postgres: 0=domingo … 6=sábado).
+        cur.execute(f"""SELECT EXTRACT(DOW FROM p.fecha_realizado)::int AS dow,
+                               COUNT(*) AS participaciones,
+                               COUNT(DISTINCT p.id_cliente) AS clientes
+                        {base}
+                        GROUP BY EXTRACT(DOW FROM p.fecha_realizado)
+                        ORDER BY dow""", vals)
+        pdw_raw = {int(r['dow']): dict(r) for r in cur.fetchall()}
+
     for coll in (competiciones,):
         for r in coll:
             if isinstance(r.get('fecha'), dt.datetime):
                 r['fecha'] = r['fecha'].isoformat()
+
+    # Serie diaria: relleno de días sin participaciones con 0 (para pintar
+    # una línea continua sin huecos raros).
+    serie_por_dia = {}
+    for r in serie_diaria_raw:
+        d = r.get('dia')
+        if isinstance(d, dt.date):
+            serie_por_dia[d.isoformat()] = r
+    serie_diaria = []
+    if desde and hasta:
+        cur_dia = desde
+        while cur_dia <= hasta:
+            iso = cur_dia.isoformat()
+            row = serie_por_dia.get(iso)
+            serie_diaria.append({
+                'dia': iso,
+                'participaciones': int(row['participaciones']) if row else 0,
+                'clientes': int(row['clientes']) if row else 0,
+            })
+            cur_dia += dt.timedelta(days=1)
+
+    # Por día de la semana: normalizado a lunes-primero.
+    # dow_map: entero PostgreSQL (0=dom … 6=sáb) → índice lunes-primero (0..6)
+    DIAS_ES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+    PG_TO_LUN = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 0: 6}
+    por_dia_semana = [{'dow': i, 'nombre': DIAS_ES[i],
+                       'participaciones': 0, 'clientes': 0}
+                      for i in range(7)]
+    for pg_dow, r in pdw_raw.items():
+        idx = PG_TO_LUN.get(pg_dow)
+        if idx is None:
+            continue
+        por_dia_semana[idx]['participaciones'] = int(r['participaciones'])
+        por_dia_semana[idx]['clientes'] = int(r['clientes'])
 
     return jsonify({'ok': True,
                     'desde': desde.isoformat(), 'hasta': hasta.isoformat(),
@@ -561,7 +613,9 @@ def informe_competiciones():
                     'totales': totales,
                     'por_modalidad': por_modalidad,
                     'competiciones': competiciones,
-                    'top_clientes': top_clientes})
+                    'top_clientes': top_clientes,
+                    'serie_diaria': serie_diaria,
+                    'por_dia_semana': por_dia_semana})
 
 
 @bp.route('/competiciones/estado', methods=['GET'])
