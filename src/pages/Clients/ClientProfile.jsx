@@ -347,6 +347,10 @@ export default function ClientProfile() {
   // TODO(perms): "Desvincular cliente" sigue sin clave de permiso fino.
 
   const [confirmArchivar, setConfirmArchivar] = useState(false)
+  // Aviso posterior a reactivar un cliente inactivo: se muestra un diálogo
+  // recordando al operador que revise/asigne la cuota mensual y la forma
+  // de pago. Sin esto los recibos del mes no se generarían.
+  const [avisoCuotaTrasReactivar, setAvisoCuotaTrasReactivar] = useState(false)
   const [confirmDesvincular, setConfirmDesvincular] = useState(false)
   const [motivoModal, setMotivoModal] = useState(false)
   const [motivo, setMotivo] = useState('')
@@ -540,6 +544,10 @@ export default function ClientProfile() {
       await postClientes([updated])
       setCliente(updated)
       toast.success('Cliente reactivado')
+      // Recordatorio: al reactivar, hay que asegurarse de que el cliente
+      // vuelva a tener cuota y forma de pago activas — si no, no se
+      // generarán recibos el próximo cierre.
+      setAvisoCuotaTrasReactivar(true)
     } catch {
       toast.error('Error al reactivar el cliente')
     } finally {
@@ -1092,6 +1100,21 @@ export default function ClientProfile() {
         variant="primary"
         onConfirm={() => doArchivar(null)}
         onCancel={() => setConfirmArchivar(false)}
+      />
+      {/* Aviso tras reactivar: recuerda asignar cuota / forma de pago. */}
+      <ConfirmDialog
+        open={avisoCuotaTrasReactivar}
+        title="Recuerda asignar la cuota"
+        message={
+          `${cliente.name} ${cliente.surname} ha sido reactivado. Revisa que ` +
+          `tiene una cuota mensual asignada y una forma de pago activa ` +
+          `(SEPA, tarjeta, efectivo o enlace) — si no, no se le generarán ` +
+          `los próximos recibos.`
+        }
+        confirmText="Ir a Recibos"
+        variant="primary"
+        onConfirm={() => { setAvisoCuotaTrasReactivar(false); setTab('cuotas') }}
+        onCancel={() => setAvisoCuotaTrasReactivar(false)}
       />
       {/* Desvincular: doble confirmación tipo "type to confirm". El usuario
           debe tipear DESVINCULAR (sin acentos, case-insensitive) para que
