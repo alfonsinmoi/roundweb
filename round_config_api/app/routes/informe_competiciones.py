@@ -537,16 +537,24 @@ def informe_competiciones():
                         LIMIT %s""", vals + [limit])
         competiciones = [dict(r) for r in cur.fetchall()]
 
-        # Top clientes por nº de circuitos participados
+        # Clientes participantes (TODOS los que aparecen en el filtro).
+        # Ordenación por defecto: competiciones desc, participaciones desc.
+        # El frontend permite reordenar client-side.
         cur.execute(f"""SELECT p.id_cliente,
                                MAX(p.cliente_nombre) AS nombre,
+                               MAX(p.sexo_snapshot)  AS sexo,
+                               MAX(p.grupo_edad_snapshot) AS grupo_edad,
                                COUNT(DISTINCT p.id_circuito) AS competiciones,
-                               COUNT(*)                       AS participaciones
+                               COUNT(*)                       AS participaciones,
+                               MAX(p.fecha_realizado)         AS ultima_fecha
                         {base}
                         GROUP BY p.id_cliente
-                        ORDER BY competiciones DESC, participaciones DESC
-                        LIMIT %s""", vals + [limit])
+                        ORDER BY competiciones DESC, participaciones DESC""",
+                    vals)
         top_clientes = [dict(r) for r in cur.fetchall()]
+        for r in top_clientes:
+            if isinstance(r.get('ultima_fecha'), dt.datetime):
+                r['ultima_fecha'] = r['ultima_fecha'].isoformat()
 
         # Serie diaria (día → participaciones + clientes distintos)
         cur.execute(f"""SELECT DATE(p.fecha_realizado) AS dia,
@@ -665,7 +673,14 @@ def competiciones_cliente(idnoofit):
                               circuito_nombre, modalidad,
                               fecha_realizado, completado,
                               sexo_snapshot, edad_snapshot,
-                              grupo_edad_snapshot, categoria_snapshot
+                              grupo_edad_snapshot, categoria_snapshot,
+                              num_estaciones_snapshot,
+                              COALESCE(
+                                  (raw_data->>'tiempoTotalMs')::bigint,
+                                  ((raw_data->>'tiempoTotalSegundos')::float * 1000)::bigint
+                              ) AS tiempo_total_ms,
+                              (raw_data->>'puntosTotales')::float AS puntos_totales,
+                              (raw_data->>'repsValidasTotales')::int AS reps_validas
                          FROM competicion_participacion
                         WHERE id_manager=%s AND id_cliente=%s
                         ORDER BY fecha_realizado DESC NULLS LAST""",
@@ -677,6 +692,128 @@ def competiciones_cliente(idnoofit):
                 r[k] = r[k].isoformat()
     return jsonify({'ok': True, 'competiciones': rows, 'total': len(rows),
                     'fuente': 'local'})
+
+
+# ── Detalle expandible: participaciones filtradas ─────────────────────────
+# Se usan desde las tablas del informe (drilldown al desplegar una fila).
+# Reciben los mismos filtros (fechas, modalidad, sexo, categoría, id_trainer)
+# para que el detalle sea coherente con la vista agregada.
+
+def _filtro_where_participaciones(id_manager, args, extra_where=None, extra_vals=None):
+    """Construye WHERE + values comunes a los endpoints de detalle."""
+    hoy = dt.date.today()
+    desde = _parse_fecha(args.get('desde'), hoy - dt.timedelta(days=365))
+    hasta = _parse_fecha(args.get('hasta'), hoy)
+    modalidad = (args.get('modalidad') or '').strip().lower()
+    if modalidad and modalidad not in ('oficial', 'mygym', 'wod'):
+        modalidad = ''
+    sexo = (args.get('sexo') or '').strip().upper()
+    if sexo not in ('M', 'F'):
+        sexo = ''
+    try:
+        categoria_id = int(args.get('categoria') or 0) or None
+    except (TypeError, ValueError):
+        categoria_id = None
+
+    where = ["p.id_manager = %s",
+             "p.fecha_realizado >= %s",
+             "p.fecha_realizado < %s::date + 1"]
+    vals = [str(id_manager), desde, hasta]
+
+    id_trainer, forbidden = resolve_trainer_target(args.get('id_trainer'))
+    if forbidden:
+        return None, None, 'trainer_forbidden'
+    if id_trainer:
+        where.append("""p.id_cliente IN (
+            SELECT id FROM cliente_cache
+             WHERE id_manager = %s AND id_trainer::text = %s
+        )""")
+        vals.extend([str(id_manager), str(id_trainer)])
+
+    if modalidad:
+        where.append("p.modalidad = %s"); vals.append(modalidad)
+    if sexo:
+        where.append("p.sexo_snapshot = %s"); vals.append(sexo)
+    if categoria_id:
+        where.append("""p.id_cliente::text IN (
+            SELECT cliente_idnoofit FROM cliente_categoria
+             WHERE id_manager = %s AND categoria_id = %s
+        )""")
+        vals.extend([str(id_manager), categoria_id])
+
+    if extra_where:
+        where.append(extra_where)
+        vals.extend(extra_vals or [])
+    return where, vals, None
+
+
+@bp.route('/competiciones/detalle-cliente/<int:id_cliente>', methods=['GET'])
+@either_auth
+def detalle_participaciones_cliente(id_cliente):
+    """Participaciones detalladas de un cliente en el rango+filtros actuales.
+    Se llama al desplegar una fila del listado de clientes del informe."""
+    where, vals, err = _filtro_where_participaciones(
+        g.id_manager, request.args,
+        extra_where="p.id_cliente = %s", extra_vals=[int(id_cliente)])
+    if err:
+        return jsonify({'ok': False, 'error': err}), 403
+    sql = f"""
+        SELECT p.participacion_id, p.id_circuito, p.id_edicion,
+               p.circuito_nombre, p.modalidad,
+               p.fecha_realizado, p.completado,
+               p.num_estaciones_snapshot,
+               COALESCE(
+                   (p.raw_data->>'tiempoTotalMs')::bigint,
+                   ((p.raw_data->>'tiempoTotalSegundos')::float * 1000)::bigint
+               ) AS tiempo_total_ms,
+               (p.raw_data->>'puntosTotales')::float AS puntos_totales,
+               (p.raw_data->>'repsValidasTotales')::int AS reps_validas
+          FROM competicion_participacion p
+         WHERE {' AND '.join(where)}
+         ORDER BY p.fecha_realizado DESC NULLS LAST
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, vals)
+        rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        if isinstance(r.get('fecha_realizado'), dt.datetime):
+            r['fecha_realizado'] = r['fecha_realizado'].isoformat()
+    return jsonify({'ok': True, 'total': len(rows), 'participaciones': rows})
+
+
+@bp.route('/competiciones/detalle-circuito/<int:id_circuito>', methods=['GET'])
+@either_auth
+def detalle_participaciones_circuito(id_circuito):
+    """Participaciones detalladas de un circuito en el rango+filtros actuales.
+    Se llama al desplegar una fila del listado de competiciones."""
+    where, vals, err = _filtro_where_participaciones(
+        g.id_manager, request.args,
+        extra_where="p.id_circuito = %s", extra_vals=[int(id_circuito)])
+    if err:
+        return jsonify({'ok': False, 'error': err}), 403
+    sql = f"""
+        SELECT p.participacion_id, p.id_cliente, p.cliente_nombre,
+               p.circuito_nombre, p.modalidad,
+               p.fecha_realizado, p.completado,
+               p.sexo_snapshot, p.edad_snapshot, p.grupo_edad_snapshot,
+               p.categoria_snapshot, p.num_estaciones_snapshot,
+               COALESCE(
+                   (p.raw_data->>'tiempoTotalMs')::bigint,
+                   ((p.raw_data->>'tiempoTotalSegundos')::float * 1000)::bigint
+               ) AS tiempo_total_ms,
+               (p.raw_data->>'puntosTotales')::float AS puntos_totales,
+               (p.raw_data->>'repsValidasTotales')::int AS reps_validas
+          FROM competicion_participacion p
+         WHERE {' AND '.join(where)}
+         ORDER BY p.fecha_realizado DESC NULLS LAST
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, vals)
+        rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        if isinstance(r.get('fecha_realizado'), dt.datetime):
+            r['fecha_realizado'] = r['fecha_realizado'].isoformat()
+    return jsonify({'ok': True, 'total': len(rows), 'participaciones': rows})
 
 
 @bp.route('/competiciones/sync', methods=['POST'])

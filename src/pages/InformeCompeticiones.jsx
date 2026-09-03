@@ -9,7 +9,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Award, Loader2, RefreshCw, Users, Trophy, CalendarDays,
-  ChevronUp, ChevronDown, ChevronsUpDown, Tag, VenusAndMars,
+  ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Tag, VenusAndMars,
 } from 'lucide-react'
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar,
@@ -22,6 +22,7 @@ import CentroSelector from '../components/CentroSelector'
 import {
   getRoundIdentity, informeCompeticiones, informeCompeticionesEstado,
   informeCompeticionesSync, categoriasList,
+  informeCompeticionesDetalleCliente, informeCompeticionesDetalleCircuito,
 } from '../utils/configApi'
 import { formatDate } from '../utils/formatters'
 
@@ -31,6 +32,16 @@ function isoDaysAgo(n) {
 }
 const HOY = new Date().toISOString().slice(0, 10)
 const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('es-ES'))
+function fmtTiempo(ms) {
+  if (ms == null || Number(ms) <= 0) return '—'
+  const totalSec = Math.round(Number(ms) / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+const fmtSexo = (s) => ({ M: 'H', F: 'M' })[s] || '—'
 
 const MODALIDADES = [
   { key: '',        label: 'Todas' },
@@ -73,22 +84,78 @@ export default function InformeCompeticiones() {
   const [sortComp, setSortComp] = useState({ col: 'fecha', dir: 'desc' })
   const [sortTop,  setSortTop]  = useState({ col: 'competiciones', dir: 'desc' })
 
+  // Filas desplegadas + caché de detalle (evita re-fetch al alternar)
+  const [expandedComp, setExpandedComp] = useState(() => new Set())
+  const [expandedCli,  setExpandedCli]  = useState(() => new Set())
+  const [detalleComp,  setDetalleComp]  = useState(() => new Map())  // id_circuito → participaciones[]
+  const [detalleCli,   setDetalleCli]   = useState(() => new Map())  // id_cliente  → participaciones[]
+  const [loadingComp,  setLoadingComp]  = useState(() => new Set())
+  const [loadingCli,   setLoadingCli]   = useState(() => new Set())
+
+  // Parámetros de filtro comunes (para agregado y para detalle expandible).
+  const filtrosParams = useMemo(() => ({
+    desde, hasta,
+    ...(modalidad ? { modalidad } : {}),
+    ...(sexo ? { sexo } : {}),
+    ...(categoriaId ? { categoria: categoriaId } : {}),
+    ...(idTrainer ? { id_trainer: idTrainer } : {}),
+  }), [desde, hasta, modalidad, sexo, categoriaId, idTrainer])
+
   const cargar = useCallback(async () => {
     if (!identity?.managerId) return
     setLoading(true)
     try {
-      const d = await informeCompeticiones(identity, {
-        desde, hasta, limit: 200,
-        ...(modalidad ? { modalidad } : {}),
-        ...(sexo ? { sexo } : {}),
-        ...(categoriaId ? { categoria: categoriaId } : {}),
-        ...(idTrainer ? { id_trainer: idTrainer } : {}),
-      })
+      const d = await informeCompeticiones(identity, { ...filtrosParams, limit: 200 })
       setData(d)
     } catch (e) {
       toast.error(`Error cargando informe: ${e.message}`)
     } finally { setLoading(false) }
-  }, [identity?.managerId, desde, hasta, modalidad, sexo, categoriaId, idTrainer])
+  }, [identity?.managerId, filtrosParams])
+
+  // Al cambiar cualquier filtro se limpia la caché de detalles y se cierran
+  // las filas expandidas (para no mezclar detalles del filtro anterior).
+  useEffect(() => {
+    setDetalleComp(new Map())
+    setDetalleCli(new Map())
+    setExpandedComp(new Set())
+    setExpandedCli(new Set())
+  }, [filtrosParams])
+
+  const toggleComp = useCallback(async (id) => {
+    setExpandedComp(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+    if (detalleComp.has(id) || loadingComp.has(id)) return
+    setLoadingComp(prev => new Set(prev).add(id))
+    try {
+      const d = await informeCompeticionesDetalleCircuito(identity, id, filtrosParams)
+      setDetalleComp(prev => new Map(prev).set(id, d.participaciones || []))
+    } catch (e) {
+      toast.error(`Error cargando detalle: ${e.message}`)
+    } finally {
+      setLoadingComp(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
+  }, [identity, filtrosParams, detalleComp, loadingComp])
+
+  const toggleCli = useCallback(async (id) => {
+    setExpandedCli(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+    if (detalleCli.has(id) || loadingCli.has(id)) return
+    setLoadingCli(prev => new Set(prev).add(id))
+    try {
+      const d = await informeCompeticionesDetalleCliente(identity, id, filtrosParams)
+      setDetalleCli(prev => new Map(prev).set(id, d.participaciones || []))
+    } catch (e) {
+      toast.error(`Error cargando detalle: ${e.message}`)
+    } finally {
+      setLoadingCli(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
+  }, [identity, filtrosParams, detalleCli, loadingCli])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -344,87 +411,68 @@ export default function InformeCompeticiones() {
         <div style={{ display: 'grid', gap: 16 }}>
           {/* ── Gráficos ──────────────────────────────────────────────── */}
           <div style={{ display: 'grid', gap: 16,
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
-            <Card style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
-                            fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)',
-                            fontSize: 15 }}>
-                Participaciones por día
-                <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400,
-                               marginLeft: 8 }}>
-                  serie diaria en el periodo
-                </span>
-              </div>
-              <div style={{ padding: 12, height: 260 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data?.serie_diaria || []}
-                             margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-                    <XAxis
-                      dataKey="dia"
-                      tickFormatter={(v) => v?.slice(5) || ''}
-                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
-                      minTickGap={20}
-                    />
-                    <YAxis
-                      allowDecimals={false}
-                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
-                      width={36}
-                    />
-                    <Tooltip
-                      contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
-                                      borderRadius: 8, fontSize: 12 }}
-                      labelStyle={{ color: 'var(--text-0)' }}
-                      labelFormatter={(v) => formatDate(v)}
-                    />
-                    <Line type="monotone" dataKey="participaciones"
-                          stroke="var(--green)" strokeWidth={2}
-                          dot={false} name="Participaciones" />
-                    <Line type="monotone" dataKey="clientes"
-                          stroke="#5b9cf6" strokeWidth={2}
-                          strokeDasharray="4 3" dot={false} name="Clientes" />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </Card>
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+            <ChartCard title="Clientes por día"
+                       subtitle="clientes distintos que participaron cada día">
+              <LineChart data={data?.serie_diaria || []}
+                         margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="dia" tickFormatter={(v) => v?.slice(5) || ''}
+                       tick={{ fontSize: 11, fill: 'var(--text-3)' }} minTickGap={20} />
+                <YAxis allowDecimals={false}
+                       tick={{ fontSize: 11, fill: 'var(--text-3)' }} width={36} />
+                <Tooltip
+                  contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
+                                  borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: 'var(--text-0)' }}
+                  labelFormatter={(v) => formatDate(v)}
+                />
+                <Line type="monotone" dataKey="clientes"
+                      stroke="#5b9cf6" strokeWidth={2}
+                      dot={false} name="Clientes" />
+              </LineChart>
+            </ChartCard>
 
-            <Card style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
-                            fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)',
-                            fontSize: 15 }}>
-                Participaciones por día de la semana
-                <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400,
-                               marginLeft: 8 }}>
-                  acumulado del periodo
-                </span>
-              </div>
-              <div style={{ padding: 12, height: 260 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={data?.por_dia_semana || []}
-                            margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-                    <XAxis
-                      dataKey="nombre"
-                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
-                    />
-                    <YAxis
-                      allowDecimals={false}
-                      tick={{ fontSize: 11, fill: 'var(--text-3)' }}
-                      width={36}
-                    />
-                    <Tooltip
-                      contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
-                                      borderRadius: 8, fontSize: 12 }}
-                      labelStyle={{ color: 'var(--text-0)' }}
-                      cursor={{ fill: 'rgba(45,212,168,0.08)' }}
-                    />
-                    <Bar dataKey="participaciones"
-                         fill="var(--green)" radius={[6, 6, 0, 0]}
-                         name="Participaciones" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </Card>
+            <ChartCard title="Por día de la semana"
+                       subtitle="acumulado del periodo (clientes distintos)">
+              <BarChart data={data?.por_dia_semana || []}
+                        margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="nombre" tick={{ fontSize: 11, fill: 'var(--text-3)' }} />
+                <YAxis allowDecimals={false}
+                       tick={{ fontSize: 11, fill: 'var(--text-3)' }} width={36} />
+                <Tooltip
+                  contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
+                                  borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: 'var(--text-0)' }}
+                  cursor={{ fill: 'rgba(91,156,246,0.08)' }}
+                />
+                <Bar dataKey="clientes"
+                     fill="#5b9cf6" radius={[6, 6, 0, 0]}
+                     name="Clientes" />
+              </BarChart>
+            </ChartCard>
+
+            <ChartCard title="Participaciones por día"
+                       subtitle="intentos totales (informativo)">
+              <LineChart data={data?.serie_diaria || []}
+                         margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
+                <XAxis dataKey="dia" tickFormatter={(v) => v?.slice(5) || ''}
+                       tick={{ fontSize: 11, fill: 'var(--text-3)' }} minTickGap={20} />
+                <YAxis allowDecimals={false}
+                       tick={{ fontSize: 11, fill: 'var(--text-3)' }} width={36} />
+                <Tooltip
+                  contentStyle={{ background: 'var(--bg-2)', border: '1px solid var(--line)',
+                                  borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: 'var(--text-0)' }}
+                  labelFormatter={(v) => formatDate(v)}
+                />
+                <Line type="monotone" dataKey="participaciones"
+                      stroke="var(--green)" strokeWidth={2}
+                      dot={false} name="Participaciones" />
+              </LineChart>
+            </ChartCard>
           </div>
 
           {/* ── Tabla de competiciones ────────────────────────────────── */}
@@ -437,6 +485,7 @@ export default function InformeCompeticiones() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
+                    <th style={{ ...thStyle, width: 30 }}></th>
                     <SortHeader align="left" state={sortComp}
                                 col="nombre" onClick={c => toggleSort(sortComp, setSortComp, c)}>
                       Competición
@@ -460,31 +509,56 @@ export default function InformeCompeticiones() {
                   </tr>
                 </thead>
                 <tbody>
-                  {competiciones.map((c) => (
-                    <tr key={c.id_circuito || `${c.nombre}-${c.fecha}`}
-                        style={{ borderBottom: '1px solid var(--line)' }}>
-                      <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600,
-                                   color: 'var(--text-0)' }}>
-                        {c.nombre || `Circuito #${c.id_circuito}`}
-                      </td>
-                      <td style={{ ...tdStyle, textAlign: 'left' }}>
-                        <ModBadge modalidad={c.modalidad} />
-                      </td>
-                      <td style={{ ...tdStyle, textAlign: 'left' }}>{formatDate(c.fecha)}</td>
-                      <td style={tdStyle}>{fmtNum(c.participantes)}</td>
-                      <td style={tdStyle}>{fmtNum(c.clientes_distintos)}</td>
-                    </tr>
-                  ))}
+                  {competiciones.map((c) => {
+                    const cid = c.id_circuito
+                    const isOpen = expandedComp.has(cid)
+                    const detalle = detalleComp.get(cid)
+                    const cargando = loadingComp.has(cid)
+                    return (
+                      <FragmentRow key={cid || `${c.nombre}-${c.fecha}`}
+                                   isOpen={isOpen} colSpan={6}
+                                   detalle={detalle} cargando={cargando}
+                                   renderDetalle={() => (
+                                     <DetalleCircuito filas={detalle} />
+                                   )}>
+                        <tr onClick={() => cid && toggleComp(cid)}
+                            style={{ borderBottom: '1px solid var(--line)',
+                                     cursor: cid ? 'pointer' : 'default',
+                                     background: isOpen ? 'var(--bg-1)' : 'transparent' }}>
+                          <td style={{ ...tdStyle, textAlign: 'center', width: 30 }}>
+                            <ChevronRight size={14}
+                              style={{ transform: isOpen ? 'rotate(90deg)' : 'none',
+                                       transition: 'transform 0.15s',
+                                       color: 'var(--text-3)' }} />
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600,
+                                       color: 'var(--text-0)' }}>
+                            {c.nombre || `Circuito #${cid}`}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'left' }}>
+                            <ModBadge modalidad={c.modalidad} />
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: 'left' }}>{formatDate(c.fecha)}</td>
+                          <td style={tdStyle}>{fmtNum(c.participantes)}</td>
+                          <td style={tdStyle}>{fmtNum(c.clientes_distintos)}</td>
+                        </tr>
+                      </FragmentRow>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
           </Card>
 
-          {/* ── Top clientes ──────────────────────────────────────────── */}
+          {/* ── Clientes participantes ────────────────────────────────── */}
           <Card style={{ padding: 0, overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
-                          fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)', fontSize: 15 }}>
-              Top clientes
+                          fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)', fontSize: 15,
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Clientes participantes</span>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400 }}>
+                {topClientes.length} clientes · toca una fila para ver sus competiciones
+              </span>
             </div>
             {!topClientes.length ? (
               <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-2)', fontSize: 13 }}>
@@ -495,10 +569,19 @@ export default function InformeCompeticiones() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-2)' }}>
-                      <th style={thStyle}>#</th>
+                      <th style={{ ...thStyle, width: 30 }}></th>
+                      <th style={{ ...thStyle, width: 36 }}>#</th>
                       <SortHeader align="left" state={sortTop}
                                   col="nombre" onClick={c => toggleSort(sortTop, setSortTop, c)}>
                         Cliente
+                      </SortHeader>
+                      <SortHeader state={sortTop}
+                                  col="sexo" onClick={c => toggleSort(sortTop, setSortTop, c)}>
+                        Sexo
+                      </SortHeader>
+                      <SortHeader state={sortTop}
+                                  col="grupo_edad" onClick={c => toggleSort(sortTop, setSortTop, c)}>
+                        Edad
                       </SortHeader>
                       <SortHeader state={sortTop}
                                   col="competiciones" onClick={c => toggleSort(sortTop, setSortTop, c)}>
@@ -508,19 +591,47 @@ export default function InformeCompeticiones() {
                                   col="participaciones" onClick={c => toggleSort(sortTop, setSortTop, c)}>
                         Participaciones
                       </SortHeader>
+                      <SortHeader align="left" state={sortTop}
+                                  col="ultima_fecha" onClick={c => toggleSort(sortTop, setSortTop, c)}>
+                        Última
+                      </SortHeader>
                     </tr>
                   </thead>
                   <tbody>
-                    {topClientes.map((c, idx) => (
-                      <tr key={c.id_cliente}
-                          style={{ borderBottom: '1px solid var(--line)' }}>
-                        <td style={{ ...tdStyle, color: 'var(--text-3)', width: 36 }}>{idx + 1}</td>
-                        <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600,
-                                     color: 'var(--text-0)' }}>{c.nombre || `Cliente #${c.id_cliente}`}</td>
-                        <td style={tdStyle}>{fmtNum(c.competiciones)}</td>
-                        <td style={tdStyle}>{fmtNum(c.participaciones)}</td>
-                      </tr>
-                    ))}
+                    {topClientes.map((c, idx) => {
+                      const clid = c.id_cliente
+                      const isOpen = expandedCli.has(clid)
+                      const detalle = detalleCli.get(clid)
+                      const cargando = loadingCli.has(clid)
+                      return (
+                        <FragmentRow key={clid || idx}
+                                     isOpen={isOpen} colSpan={8}
+                                     detalle={detalle} cargando={cargando}
+                                     renderDetalle={() => (
+                                       <DetalleCliente filas={detalle} />
+                                     )}>
+                          <tr onClick={() => clid && toggleCli(clid)}
+                              style={{ borderBottom: '1px solid var(--line)',
+                                       cursor: clid ? 'pointer' : 'default',
+                                       background: isOpen ? 'var(--bg-1)' : 'transparent' }}>
+                            <td style={{ ...tdStyle, textAlign: 'center', width: 30 }}>
+                              <ChevronRight size={14}
+                                style={{ transform: isOpen ? 'rotate(90deg)' : 'none',
+                                         transition: 'transform 0.15s',
+                                         color: 'var(--text-3)' }} />
+                            </td>
+                            <td style={{ ...tdStyle, color: 'var(--text-3)', width: 36 }}>{idx + 1}</td>
+                            <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600,
+                                         color: 'var(--text-0)' }}>{c.nombre || `Cliente #${clid}`}</td>
+                            <td style={tdStyle}>{fmtSexo(c.sexo)}</td>
+                            <td style={tdStyle}>{c.grupo_edad || '—'}</td>
+                            <td style={tdStyle}>{fmtNum(c.competiciones)}</td>
+                            <td style={tdStyle}>{fmtNum(c.participaciones)}</td>
+                            <td style={{ ...tdStyle, textAlign: 'left' }}>{formatDate(c.ultima_fecha)}</td>
+                          </tr>
+                        </FragmentRow>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -595,6 +706,156 @@ function ModCard({ modalidad, row, onClick }) {
       </div>
     </Card>
   )
+}
+
+function ChartCard({ title, subtitle, children }) {
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)',
+                    fontFamily: 'Outfit', fontWeight: 700, color: 'var(--text-0)',
+                    fontSize: 15 }}>
+        {title}
+        {subtitle && (
+          <span style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 400,
+                         marginLeft: 8 }}>
+            {subtitle}
+          </span>
+        )}
+      </div>
+      <div style={{ padding: 12, height: 240 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          {children}
+        </ResponsiveContainer>
+      </div>
+    </Card>
+  )
+}
+
+function FragmentRow({ isOpen, colSpan, cargando, detalle, renderDetalle, children }) {
+  return (
+    <>
+      {children}
+      {isOpen && (
+        <tr style={{ background: 'var(--bg-1)', borderBottom: '1px solid var(--line)' }}>
+          <td colSpan={colSpan} style={{ padding: 0 }}>
+            {cargando
+              ? <div style={{ padding: 24, textAlign: 'center' }}>
+                  <Loader2 size={16} className="animate-spin" style={{ color: 'var(--green)' }} />
+                </div>
+              : (detalle == null
+                  ? <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                      —
+                    </div>
+                  : (detalle.length === 0
+                      ? <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                          Sin participaciones para el filtro actual.
+                        </div>
+                      : renderDetalle()))}
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+function DetalleCliente({ filas }) {
+  const [sortDet, setSortDet] = useState({ col: 'fecha_realizado', dir: 'desc' })
+  const sorted = useMemo(() => sortRows(filas, sortDet), [filas, sortDet])
+  const toggle = (col) => setSortDet(s => (s.col === col
+    ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+    : { col, dir: col === 'circuito_nombre' ? 'asc' : 'desc' }))
+  return (
+    <div style={{ padding: '8px 16px 12px' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--line)' }}>
+            <SortHeader align="left" state={sortDet}
+                        col="circuito_nombre" onClick={toggle}>Competición</SortHeader>
+            <SortHeader align="left" state={sortDet}
+                        col="modalidad" onClick={toggle}>Modalidad</SortHeader>
+            <SortHeader align="left" state={sortDet}
+                        col="fecha_realizado" onClick={toggle}>Fecha</SortHeader>
+            <SortHeader state={sortDet} col="tiempo_total_ms" onClick={toggle}>Tiempo</SortHeader>
+            <SortHeader state={sortDet} col="num_estaciones_snapshot" onClick={toggle}>Pruebas</SortHeader>
+            <SortHeader state={sortDet} col="completado" onClick={toggle}>Estado</SortHeader>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((p) => (
+            <tr key={p.participacion_id} style={{ borderBottom: '1px solid var(--line)' }}>
+              <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600, color: 'var(--text-0)' }}>
+                {p.circuito_nombre || `Circuito #${p.id_circuito}`}
+              </td>
+              <td style={{ ...tdStyle, textAlign: 'left' }}>
+                <ModBadge modalidad={p.modalidad} />
+              </td>
+              <td style={{ ...tdStyle, textAlign: 'left' }}>{formatDate(p.fecha_realizado)}</td>
+              <td style={tdStyle}>{fmtTiempo(p.tiempo_total_ms)}</td>
+              <td style={tdStyle}>{fmtNum(p.num_estaciones_snapshot)}</td>
+              <td style={tdStyle}>{p.completado
+                ? <span style={{ color: 'var(--green)' }}>✓</span>
+                : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function DetalleCircuito({ filas }) {
+  const [sortDet, setSortDet] = useState({ col: 'fecha_realizado', dir: 'desc' })
+  const sorted = useMemo(() => sortRows(filas, sortDet), [filas, sortDet])
+  const toggle = (col) => setSortDet(s => (s.col === col
+    ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+    : { col, dir: col === 'cliente_nombre' ? 'asc' : 'desc' }))
+  return (
+    <div style={{ padding: '8px 16px 12px' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--line)' }}>
+            <SortHeader align="left" state={sortDet}
+                        col="cliente_nombre" onClick={toggle}>Cliente</SortHeader>
+            <SortHeader align="left" state={sortDet}
+                        col="fecha_realizado" onClick={toggle}>Fecha</SortHeader>
+            <SortHeader state={sortDet} col="tiempo_total_ms" onClick={toggle}>Tiempo</SortHeader>
+            <SortHeader state={sortDet} col="sexo_snapshot" onClick={toggle}>Sexo</SortHeader>
+            <SortHeader state={sortDet} col="grupo_edad_snapshot" onClick={toggle}>Edad</SortHeader>
+            <SortHeader state={sortDet} col="completado" onClick={toggle}>Estado</SortHeader>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((p) => (
+            <tr key={p.participacion_id} style={{ borderBottom: '1px solid var(--line)' }}>
+              <td style={{ ...tdStyle, textAlign: 'left', fontWeight: 600, color: 'var(--text-0)' }}>
+                {p.cliente_nombre || `Cliente #${p.id_cliente}`}
+              </td>
+              <td style={{ ...tdStyle, textAlign: 'left' }}>{formatDate(p.fecha_realizado)}</td>
+              <td style={tdStyle}>{fmtTiempo(p.tiempo_total_ms)}</td>
+              <td style={tdStyle}>{fmtSexo(p.sexo_snapshot)}</td>
+              <td style={tdStyle}>{p.grupo_edad_snapshot || '—'}</td>
+              <td style={tdStyle}>{p.completado
+                ? <span style={{ color: 'var(--green)' }}>✓</span>
+                : <span style={{ color: 'var(--text-3)' }}>—</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function sortRows(rows, { col, dir }) {
+  const arr = [...(rows || [])]
+  const mul = dir === 'asc' ? 1 : -1
+  return arr.sort((a, b) => {
+    const av = a?.[col]; const bv = b?.[col]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mul
+    return String(av).localeCompare(String(bv), 'es') * mul
+  })
 }
 
 function SortHeader({ state, col, onClick, align = 'right', children }) {

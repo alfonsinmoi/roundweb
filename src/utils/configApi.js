@@ -496,6 +496,21 @@ export const informeCompeticionesEstado = (identity) =>
   _requestRoot('GET', '/api/informes/competiciones/estado', identity)
 export const informeCompeticionesSync = (identity, force = false) =>
   _requestRoot('POST', `/api/informes/competiciones/sync${force ? '?force=1' : ''}`, identity)
+
+// Detalle expandible: participaciones filtradas por cliente o por circuito.
+// Los `params` son los mismos filtros de la vista agregada (desde, hasta,
+// modalidad, sexo, categoria, id_trainer) para que el detalle sea coherente.
+function _competiQs(params = {}) {
+  const qs = new URLSearchParams()
+  for (const k of ['desde', 'hasta', 'id_trainer', 'modalidad', 'sexo', 'categoria']) {
+    if (params[k]) qs.set(k, params[k])
+  }
+  return qs.toString() ? `?${qs}` : ''
+}
+export const informeCompeticionesDetalleCliente = (identity, idCliente, params = {}) =>
+  _requestRoot('GET', `/api/informes/competiciones/detalle-cliente/${idCliente}${_competiQs(params)}`, identity)
+export const informeCompeticionesDetalleCircuito = (identity, idCircuito, params = {}) =>
+  _requestRoot('GET', `/api/informes/competiciones/detalle-circuito/${idCircuito}${_competiQs(params)}`, identity)
 // Competiciones de UN cliente concreto (usado por la ficha de cliente).
 export const competicionesCliente = (idCliente, identity) =>
   _requestRoot('GET', `/api/informes/competiciones/cliente/${idCliente}`, identity)
