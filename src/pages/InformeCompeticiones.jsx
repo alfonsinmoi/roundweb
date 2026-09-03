@@ -18,6 +18,7 @@ import {
 import { Card, Btn } from '../components/UI'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
+import CentroSelector from '../components/CentroSelector'
 import {
   getRoundIdentity, informeCompeticiones, informeCompeticionesEstado,
   informeCompeticionesSync, categoriasList,
@@ -60,6 +61,7 @@ export default function InformeCompeticiones() {
   const [modalidad, setModalidad] = useState('')
   const [sexo, setSexo] = useState('')
   const [categoriaId, setCategoriaId] = useState('')
+  const [idTrainer, setIdTrainer] = useState('')
 
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -80,12 +82,13 @@ export default function InformeCompeticiones() {
         ...(modalidad ? { modalidad } : {}),
         ...(sexo ? { sexo } : {}),
         ...(categoriaId ? { categoria: categoriaId } : {}),
+        ...(idTrainer ? { id_trainer: idTrainer } : {}),
       })
       setData(d)
     } catch (e) {
       toast.error(`Error cargando informe: ${e.message}`)
     } finally { setLoading(false) }
-  }, [identity?.managerId, desde, hasta, modalidad, sexo, categoriaId])
+  }, [identity?.managerId, desde, hasta, modalidad, sexo, categoriaId, idTrainer])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -226,8 +229,11 @@ export default function InformeCompeticiones() {
           <span style={{ color: 'var(--text-3)', fontSize: 12 }}>→</span>
           <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={inputStyle} />
         </div>
+        <CentroSelector value={idTrainer} onChange={setIdTrainer}
+                        style={{ marginTop: 12, paddingTop: 12,
+                                 borderTop: '1px solid var(--line)' }} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center',
-                      marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+                      marginTop: 12 }}>
           <span style={{ fontSize: 11, color: 'var(--text-3)', textTransform: 'uppercase',
                          letterSpacing: '0.04em', marginRight: 4 }}>Modalidad</span>
           {MODALIDADES.map((m) => (

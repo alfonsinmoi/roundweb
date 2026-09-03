@@ -22,6 +22,7 @@ import {
 } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { getRoundIdentity } from '../utils/configApi'
+import CentroSelector from '../components/CentroSelector'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ export default function InformeAsistencia() {
   const [desde, setDesde]         = useState(fmtDate(addDays(hoy, -DEFAULT_DAYS_BACK)))
   const [hasta, setHasta]         = useState(fmtDate(addDays(hoy, DEFAULT_DAYS_FORWARD)))
   const [claseFilter, setClaseFilter] = useState('')
+  const [idTrainerFilter, setIdTrainerFilter] = useState('')
   const [showFilters, setShowFilters] = useState(false)
 
   // tab y setTab se derivan ahora de la URL (ver arriba). No hay useState local.
@@ -293,9 +295,10 @@ export default function InformeAsistencia() {
       const d = new Date(s.dateStart)
       if (d < dDesde || d > dHasta) return false
       if (claseFilter && salaActName(s) !== claseFilter) return false
+      if (idTrainerFilter && String(s.idTrainer || '') !== String(idTrainerFilter)) return false
       return true
     }).sort((a, b) => new Date(a.dateStart) - new Date(b.dateStart))
-  }, [salas, desde, hasta, claseFilter, catActividades])
+  }, [salas, desde, hasta, claseFilter, catActividades, idTrainerFilter])
 
   // Lista de ACTIVIDADES (no clases) disponibles: nombre canónico del catálogo
   // si la sala tiene idActividad, o el nombre crudo de la sala como fallback.
@@ -1282,6 +1285,10 @@ export default function InformeAsistencia() {
         onTogglePersonalizar={() => setShowFilters(v => !v)}
         personalizando={showFilters}
       />
+
+      {/* Filtro por centro (solo se pinta si es manager sin impersonar) */}
+      <CentroSelector value={idTrainerFilter} onChange={setIdTrainerFilter}
+                      style={{ marginBottom: 14 }} />
 
       {/* Panel de filtros personalizado (rango libre) */}
       {showFilters && (

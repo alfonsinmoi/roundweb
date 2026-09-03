@@ -15,6 +15,7 @@ import {
 import { Card, Btn, Badge } from '../components/UI'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
+import CentroSelector from '../components/CentroSelector'
 import {
   getRoundIdentity, informeEjercicios, informeEjerciciosEstado,
   informeEjerciciosSync,
@@ -95,6 +96,7 @@ export default function InformeEjercicios() {
   const [desde, setDesde] = useState(isoDaysAgo(90))
   const [hasta, setHasta] = useState(HOY)
   const [sexo, setSexo] = useState('')
+  const [idTrainer, setIdTrainer] = useState('')
   const [franjaEdad, setFranjaEdad] = useState('')
   const [diaSemana, setDiaSemana] = useState('')
   const [franjaHora, setFranjaHora] = useState('')
@@ -114,12 +116,13 @@ export default function InformeEjercicios() {
         desde, hasta, sexo, franja_edad: franjaEdad,
         dia_semana: diaSemana, franja_horaria: franjaHora,
         group_by: groupBy, limit: 200,
+        ...(idTrainer ? { id_trainer: idTrainer } : {}),
       })
       setData(d)
     } catch (e) {
       toast.error(`Error cargando informe: ${e.message}`)
     } finally { setLoading(false) }
-  }, [identity?.managerId, desde, hasta, sexo, franjaEdad, diaSemana, franjaHora, groupBy])
+  }, [identity?.managerId, desde, hasta, sexo, franjaEdad, diaSemana, franjaHora, groupBy, idTrainer])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -212,6 +215,9 @@ export default function InformeEjercicios() {
           <span style={{ color: 'var(--text-3)', fontSize: 12 }}>→</span>
           <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} style={inputStyle} />
         </div>
+        <CentroSelector value={idTrainer} onChange={setIdTrainer}
+                        style={{ marginTop: 12, paddingTop: 12,
+                                 borderTop: '1px solid var(--line)' }} />
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
           <select value={sexo} onChange={e => setSexo(e.target.value)} style={inputStyle}>
             {SEXOS.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
